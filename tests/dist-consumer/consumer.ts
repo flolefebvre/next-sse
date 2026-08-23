@@ -16,6 +16,7 @@ import {
   type Entry,
   type Page,
   type Publisher,
+  type StoredEntry,
   type Transport,
   type Unsubscribe,
 } from "@flefebvre/next-sse/transport";
@@ -53,6 +54,7 @@ export type Types = [
   Entry,
   Page,
   Publisher,
+  StoredEntry,
   Transport,
   Unsubscribe,
 ];

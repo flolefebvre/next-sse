@@ -11,8 +11,16 @@ export type Entry =
   | { readonly v: 1; readonly type: "message"; channel: string; event: string; payload: unknown }
   | { readonly v: 1; readonly type: "control"; control: "kick"; key?: string; channel?: string };
 
+/**
+ * An Entry as it comes back out of the log: the envelope that was published, plus the Cursor
+ * the Transport minted for it. The Cursor is not part of the stored JSON (ADR-0006's envelope
+ * is what an external publisher writes, and it has none); the Transport attaches it on the way
+ * out, from the position it already holds.
+ */
+export type StoredEntry = Entry & { readonly cursor: Cursor };
+
 /** What one page of a `read` answers: Entries and whether the caller has caught up. */
-export type Page = { entries: Entry[]; done: boolean } | { gone: true };
+export type Page = { entries: StoredEntry[]; done: boolean } | { gone: true };
 
 /** Detaches a listener from the live feed. */
 export type Unsubscribe = () => void;
@@ -34,7 +42,10 @@ export interface Publisher {
  */
 export interface Transport extends Publisher {
   read(after: Cursor | undefined, limit: number): Promise<Page>;
-  subscribe(listener: (entry: Entry) => void, options: { onGap: () => void }): Promise<Unsubscribe>;
+  subscribe(
+    listener: (entry: StoredEntry) => void,
+    options: { onGap: () => void },
+  ): Promise<Unsubscribe>;
 }
 
 /** Every failure a Transport reports, so an App can catch the family in one clause. */

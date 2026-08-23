@@ -1,0 +1,158 @@
+import { expect, test, vi } from "vitest";
+
+import { createMemoryTransport } from "./memory.js";
+import { TransportClosedError, type Entry, type StoredEntry } from "./index.js";
+
+const message = (channel: string, payload: unknown): Entry => ({
+  v: 1,
+  type: "message",
+  channel,
+  event: "message",
+  payload,
+});
+
+/** What the Messages of a page carry, which is what a test about ordering wants to compare. */
+const payloadsOf = (entries: StoredEntry[]): unknown[] =>
+  entries.filter((entry) => entry.type === "message").map((entry) => entry.payload);
+
+/** The whole log, however many pages it takes, so a test never depends on the page size. */
+const readAll = async (
+  transport: ReturnType<typeof createMemoryTransport>,
+  after?: string,
+): Promise<StoredEntry[]> => {
+  const page = await transport.read(after, 100);
+  if ("gone" in page) throw new Error("the log answered gone");
+
+  return page.entries;
+};
+
+test("publish returns the Cursor it minted, and the log hands that same Cursor back", async () => {
+  const transport = createMemoryTransport();
+
+  const first = await transport.publish(message("chat:42", { text: "one" }));
+  const second = await transport.publish(message("chat:42", { text: "two" }));
+
+  expect(first).not.toBe(second);
+  expect((await readAll(transport)).map((entry) => entry.cursor)).toEqual([first, second]);
+});
+
+test("an Entry comes back out of the log as it was published, and is not the object published", async () => {
+  const transport = createMemoryTransport();
+  const entry = message("chat:42", { text: "one" });
+
+  const cursor = await transport.publish(entry);
+  entry.channel = "chat:other";
+
+  const [stored] = await readAll(transport);
+  expect(stored).toEqual({ ...message("chat:42", { text: "one" }), cursor });
+});
+
+test("tail answers a Cursor on an empty log, and that Cursor reads from the start", async () => {
+  const transport = createMemoryTransport();
+
+  const beforeAnything = await transport.tail();
+  expect(typeof beforeAnything).toBe("string");
+  expect(beforeAnything).not.toBe("");
+
+  const cursor = await transport.publish(message("chat:42", { text: "one" }));
+  expect(await readAll(transport, beforeAnything)).toHaveLength(1);
+  expect(await transport.tail()).toBe(cursor);
+});
+
+test("read pages strictly after a Cursor and reports whether the caller has caught up", async () => {
+  const transport = createMemoryTransport();
+  const first = await transport.publish(message("chat:42", { text: "one" }));
+  await transport.publish(message("chat:42", { text: "two" }));
+  await transport.publish(message("chat:42", { text: "three" }));
+
+  const page = await transport.read(first, 1);
+  if ("gone" in page) throw new Error("the log answered gone");
+
+  expect(payloadsOf(page.entries)).toEqual([{ text: "two" }]);
+  expect(page.done).toBe(false);
+
+  const rest = await transport.read(page.entries[0]?.cursor, 100);
+  if ("gone" in rest) throw new Error("the log answered gone");
+
+  expect(payloadsOf(rest.entries)).toEqual([{ text: "three" }]);
+  expect(rest.done).toBe(true);
+});
+
+test("read from the tail of the log answers no Entries and done", async () => {
+  const transport = createMemoryTransport();
+  const cursor = await transport.publish(message("chat:42", { text: "one" }));
+
+  expect(await transport.read(cursor, 100)).toEqual({ entries: [], done: true });
+});
+
+test("read without a Cursor answers the whole log", async () => {
+  const transport = createMemoryTransport();
+  await transport.publish(message("chat:42", { text: "one" }));
+  await transport.publish(message("chat:42", { text: "two" }));
+
+  expect(await readAll(transport)).toHaveLength(2);
+});
+
+test("read answers gone for a Cursor this log never minted", async () => {
+  const transport = createMemoryTransport();
+  const other = createMemoryTransport();
+  await transport.publish(message("chat:42", { text: "one" }));
+
+  const foreign = await other.publish(message("chat:42", { text: "elsewhere" }));
+
+  expect(await transport.read(foreign, 100)).toEqual({ gone: true });
+  expect(await transport.read("not-a-cursor", 100)).toEqual({ gone: true });
+  expect(await transport.read("", 100)).toEqual({ gone: true });
+});
+
+test("subscribe delivers every later Entry, with its Cursor, including this Instance's own", async () => {
+  const transport = createMemoryTransport();
+  await transport.publish(message("chat:42", { text: "before" }));
+
+  const received: StoredEntry[] = [];
+  await transport.subscribe((entry) => received.push(entry), { onGap: () => undefined });
+
+  const cursor = await transport.publish(message("chat:42", { text: "after" }));
+  const kick = await transport.publish({ v: 1, type: "control", control: "kick", key: "user-7" });
+
+  expect(received).toEqual([
+    { ...message("chat:42", { text: "after" }), cursor },
+    { v: 1, type: "control", control: "kick", key: "user-7", cursor: kick },
+  ]);
+});
+
+test("several listeners attach to the one log, and unsubscribing detaches only its own", async () => {
+  const transport = createMemoryTransport();
+  const one = vi.fn();
+  const two = vi.fn();
+
+  const detach = await transport.subscribe(one, { onGap: () => undefined });
+  await transport.subscribe(two, { onGap: () => undefined });
+
+  await transport.publish(message("chat:42", { text: "one" }));
+  detach();
+  await transport.publish(message("chat:42", { text: "two" }));
+
+  expect(one).toHaveBeenCalledTimes(1);
+  expect(two).toHaveBeenCalledTimes(2);
+});
+
+test("a closed Transport answers nothing further, and closing twice is not an error", async () => {
+  const transport = createMemoryTransport();
+  const listener = vi.fn();
+  await transport.subscribe(listener, { onGap: () => undefined });
+  await transport.publish(message("chat:42", { text: "one" }));
+
+  await transport.close();
+  await transport.close();
+
+  await expect(transport.publish(message("chat:42", { text: "two" }))).rejects.toThrow(
+    TransportClosedError,
+  );
+  await expect(transport.tail()).rejects.toThrow(TransportClosedError);
+  await expect(transport.read(undefined, 100)).rejects.toThrow(TransportClosedError);
+  await expect(transport.subscribe(listener, { onGap: () => undefined })).rejects.toThrow(
+    TransportClosedError,
+  );
+  expect(listener).toHaveBeenCalledTimes(1);
+});
