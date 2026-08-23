@@ -6,6 +6,6 @@
  */
 export function notImplemented(name: string): never {
   throw new Error(
-    `${name} is not implemented: @flefebvre/next-sse 0.1.0 is a scaffold and carries no protocol yet.`,
+    `${name} is not implemented: this build of @flefebvre/next-sse is a scaffold and carries no protocol yet.`,
   );
 }

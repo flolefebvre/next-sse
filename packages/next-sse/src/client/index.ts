@@ -1,13 +1,19 @@
 import { notImplemented } from "../internal/not-implemented.js";
 
-/**
- * The opaque value a server component hands the client to make server-rendered data live:
- * the data it read, and the Cursor taken just before that read.
- */
-export type Snapshot<Data = unknown> = { readonly data: Data };
+declare const snapshotBrand: unique symbol;
 
-/** Where a Connection stands, as the hooks report it. */
-export type Status = "connecting" | "open" | "closed";
+/**
+ * The one value a server component hands the client to make server-rendered data live: the
+ * data it read, and the Cursor taken just before that read. Opaque by construction (ADR-0007)
+ * — only `sse.snapshot` mints one, and the client never sees the Cursor inside it.
+ */
+export type Snapshot<Data = unknown> = {
+  readonly data: Data;
+  readonly [snapshotBrand]: true;
+};
+
+/** Where a Connection stands, as the hooks report it (ADR-0007). */
+export type Status = "connecting" | "replaying" | "live" | "reconnecting" | "refused";
 
 /**
  * The client-side entry a React tree is built on: one Connection, shared by every hook.
