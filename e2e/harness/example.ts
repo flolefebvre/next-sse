@@ -84,17 +84,25 @@ async function waitUntilServing(url: string, child: ChildProcess): Promise<void>
       throw new Error(`the example app exited with code ${String(child.exitCode)} before serving`);
     }
 
-    try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(READY_POLL_MS * 5) });
-      if (response.ok) return;
-    } catch {
-      /* not listening yet */
-    }
+    const response = await tryFetch(url);
+    if (response?.ok === true) return;
 
     await delay(READY_POLL_MS);
   }
 
   throw new Error(`the example app did not serve ${url} within ${String(READY_TIMEOUT_MS)}ms`);
+}
+
+/**
+ * One readiness poll. A process that is not listening yet refuses the connection, which is
+ * the expected answer for as long as the Instance is booting, not a failure of the run.
+ */
+async function tryFetch(url: string): Promise<Response | undefined> {
+  try {
+    return await fetch(url, { signal: AbortSignal.timeout(READY_POLL_MS * 5) });
+  } catch {
+    return undefined;
+  }
 }
 
 async function stop(child: ChildProcess): Promise<void> {
