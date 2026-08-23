@@ -5,6 +5,7 @@ import { beforeEach, expect, test } from "vitest";
 import type { Cursor } from "../transport/index.js";
 import { createMemoryTransport } from "../transport/memory.js";
 
+import { framesOf, type Frames } from "./frames.testkit.js";
 import { initSSE } from "./index.js";
 import { getInstance } from "./instance.js";
 
@@ -12,14 +13,6 @@ beforeEach(() => {
   const globals = globalThis as unknown as { [key: symbol]: unknown };
   delete globals[Symbol.for("@flefebvre/next-sse")];
 });
-
-/** One SSE block, as a client parses it: the fields it carried, by name. */
-interface Frame {
-  id?: string;
-  event?: string;
-  data?: string;
-  retry?: string;
-}
 
 /**
  * The App of these tests: one Channel with one declared event. The Registry is loosely typed
@@ -44,10 +37,8 @@ const appWith = (transport = createMemoryTransport()): ChatApp => {
   }) as unknown as ChatApp;
 };
 
-const connect = async (sse: ChatApp, query: string, signal?: AbortSignal): Promise<Response> =>
-  sse.handlers.GET(
-    new Request(`http://example.test/api/sse${query}`, signal ? { signal } : undefined),
-  );
+const connect = async (sse: ChatApp, query: string, init?: RequestInit): Promise<Response> =>
+  sse.handlers.GET(new Request(`http://example.test/api/sse${query}`, init));
 
 /**
  * A Connection past its opening sequence, which is where every test about the live feed starts.
@@ -60,49 +51,6 @@ const liveConnection = async (sse: ChatApp, query: string): Promise<Frames> => {
 
   return frames;
 };
-
-/** Reads SSE blocks off a response body, one at a time, in the order they were written. */
-interface Frames {
-  next: () => Promise<Frame>;
-  cancel: () => Promise<void>;
-}
-
-function framesOf(response: Response): Frames {
-  const reader = (response.body ?? new ReadableStream<Uint8Array>()).getReader();
-  const decoder = new TextDecoder();
-  let buffered = "";
-
-  return {
-    async next(): Promise<Frame> {
-      for (;;) {
-        const end = buffered.indexOf("\n\n");
-        if (end !== -1) {
-          const block = buffered.slice(0, end);
-          buffered = buffered.slice(end + 2);
-
-          return parse(block);
-        }
-
-        const { done, value } = await reader.read();
-        if (done) throw new Error("the stream ended before the next block");
-        buffered += decoder.decode(value);
-      }
-    },
-    cancel: () => reader.cancel(),
-  };
-}
-
-function parse(block: string): Frame {
-  const frame: Frame = {};
-  for (const line of block.split("\n")) {
-    const [name, value] = [line.slice(0, line.indexOf(":")), line.slice(line.indexOf(":") + 2)];
-    if (name === "id" || name === "event" || name === "data" || name === "retry") {
-      frame[name] = value;
-    }
-  }
-
-  return frame;
-}
 
 test("a Connection that names no Channel is refused before anything is opened", async () => {
   const sse = appWith();
@@ -206,7 +154,7 @@ test("a Connection may name several Channels", async () => {
 test("a client that goes away leaves no Connection behind and no listener on the request", async () => {
   const sse = appWith();
   const client = new AbortController();
-  const response = await connect(sse, "?channel=chat:42", client.signal);
+  const response = await connect(sse, "?channel=chat:42", { signal: client.signal });
   const frames = framesOf(response);
   await frames.next();
 
@@ -265,5 +213,109 @@ test("a re-evaluated Registry publishes into the log the open Connections are re
       payload: { text: "after the edit" },
     }),
   });
+  await frames.cancel();
+});
+
+/**
+ * The whole gap-free sequence on the wire: the Cursor it asked for in `ready`, the retry, the
+ * one Message it missed, `caught-up`, and then the live feed — with nothing repeated at the
+ * seam between the replay and the feed.
+ */
+test("a Connection that brings a Cursor opens on it, is replayed what it missed, then caught up", async () => {
+  const transport = createMemoryTransport();
+  const sse = appWith(transport);
+  const chat = sse.chat({ roomId: "42" });
+  const from = await chat.message({ text: "the last it saw" });
+  const missed = await chat.message({ text: "missed" });
+
+  const frames = framesOf(await connect(sse, `?channel=chat:42&cursor=${from}`));
+
+  expect(await frames.next()).toEqual({
+    event: "ready",
+    data: JSON.stringify({ cursor: from, refused: [] }),
+  });
+  expect(await frames.next()).toEqual({ retry: "3000" });
+  expect(await frames.next()).toEqual({
+    id: missed,
+    data: JSON.stringify({ channel: "chat:42", event: "message", payload: { text: "missed" } }),
+  });
+  expect(await frames.next()).toEqual({ event: "caught-up", data: "{}" });
+
+  const live = await chat.message({ text: "live" });
+  expect((await frames.next()).id).toBe(live);
+  await frames.cancel();
+});
+
+test("Last-Event-ID wins over the Cursor in the query", async () => {
+  const transport = createMemoryTransport();
+  const sse = appWith(transport);
+  const chat = sse.chat({ roomId: "42" });
+  const stale = await transport.tail();
+  await chat.message({ text: "the query would replay this" });
+  const header = await chat.message({ text: "and this" });
+  const wanted = await chat.message({ text: "only this one is missing" });
+
+  const frames = framesOf(
+    await connect(sse, `?channel=chat:42&cursor=${stale}`, {
+      headers: { "Last-Event-ID": header },
+    }),
+  );
+
+  expect(JSON.parse((await frames.next()).data ?? "")).toEqual({ cursor: header, refused: [] });
+  await frames.next();
+
+  expect((await frames.next()).id).toBe(wanted);
+  expect(await frames.next()).toEqual({ event: "caught-up", data: "{}" });
+  await frames.cancel();
+});
+
+test("an empty Cursor is no Cursor at all: the Connection adopts the tail, live-only", async () => {
+  const transport = createMemoryTransport();
+  const sse = appWith(transport);
+  await sse.chat({ roomId: "42" }).message({ text: "long before" });
+  const tail = await transport.tail();
+
+  const frames = framesOf(
+    await connect(sse, "?channel=chat:42&cursor=", { headers: { "Last-Event-ID": "" } }),
+  );
+
+  expect(JSON.parse((await frames.next()).data ?? "")).toEqual({ cursor: tail, refused: [] });
+  await frames.next();
+
+  expect(await frames.next()).toEqual({ event: "caught-up", data: "{}" });
+  await frames.cancel();
+});
+
+/**
+ * ADR-0006 supersedes ADR-0004 here: a Cursor the log cannot serve is never a `400`, because
+ * the client core retries a non-200 with the same URL forever. It is a `200` stream carrying
+ * the tail as its Cursor and a `reset` in band, so the App refetches once and goes on live.
+ */
+test.each([
+  ["one the log has dropped", true],
+  ["one no log ever minted", false],
+])("a Cursor %s is a 200 stream with a reset, never a non-200", async (_case, dropped) => {
+  const transport = createMemoryTransport({ retention: { cap: 1 } });
+  const sse = appWith(transport);
+  const chat = sse.chat({ roomId: "42" });
+  const stale = await chat.message({ text: "one" });
+  await chat.message({ text: "two" });
+  await chat.message({ text: "three" });
+  const cursor = dropped ? stale : "not-a-cursor";
+
+  const response = await connect(sse, `?channel=chat:42&cursor=${cursor}`);
+  const frames = framesOf(response);
+
+  expect(response.status).toBe(200);
+  expect(await frames.next()).toEqual({
+    event: "ready",
+    data: JSON.stringify({ cursor: await transport.tail(), refused: [] }),
+  });
+  expect(await frames.next()).toEqual({ retry: "3000" });
+  expect(await frames.next()).toEqual({ event: "reset", data: "{}" });
+  expect(await frames.next()).toEqual({ event: "caught-up", data: "{}" });
+
+  const live = await chat.message({ text: "after the reset" });
+  expect((await frames.next()).id).toBe(live);
   await frames.cancel();
 });

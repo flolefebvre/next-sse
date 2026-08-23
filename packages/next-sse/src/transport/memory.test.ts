@@ -156,3 +156,107 @@ test("a closed Transport answers nothing further, and closing twice is not an er
   );
   expect(listener).toHaveBeenCalledTimes(1);
 });
+
+test("the cap bounds the log, and a Cursor into what it dropped is gone", async () => {
+  const transport = createMemoryTransport({ retention: { cap: 2 } });
+  const first = await transport.publish(message("chat:42", { text: "one" }));
+  const second = await transport.publish(message("chat:42", { text: "two" }));
+  await transport.publish(message("chat:42", { text: "three" }));
+  await transport.publish(message("chat:42", { text: "four" }));
+
+  expect(payloadsOf(await readAll(transport))).toEqual([{ text: "three" }, { text: "four" }]);
+  expect(await transport.read(first, 100)).toEqual({ gone: true });
+  expect(payloadsOf(await readAll(transport, second))).toEqual([
+    { text: "three" },
+    { text: "four" },
+  ]);
+});
+
+/**
+ * The Cursor of the newest dropped Entry is the exact boundary (ADR-0006): nothing published
+ * after it was lost, so it still reads, while everything below it is gone. Trimming takes
+ * Entries out of the log, never positions out of the sequence: what the log mints next carries
+ * on from where it was, however little of it is left.
+ */
+test("the Cursor of the last dropped Entry still reads: gone is exact, not approximate", async () => {
+  const transport = createMemoryTransport({ retention: { cap: 1 } });
+  const first = await transport.publish(message("chat:42", { text: "one" }));
+  const second = await transport.publish(message("chat:42", { text: "two" }));
+  const third = await transport.publish(message("chat:42", { text: "three" }));
+
+  expect(await transport.read(first, 100)).toEqual({ gone: true });
+  expect(payloadsOf(await readAll(transport, second))).toEqual([{ text: "three" }]);
+  expect(await transport.read(third, 100)).toEqual({ entries: [], done: true });
+  expect(new Set([first, second, third]).size).toBe(3);
+  expect(await transport.tail()).toBe(third);
+});
+
+test("the window drops what has aged out, and says so to a Cursor that pointed into it", async () => {
+  vi.useFakeTimers();
+
+  try {
+    const transport = createMemoryTransport({ retention: { window: 300 } });
+    const first = await transport.publish(message("chat:42", { text: "old" }));
+    await transport.publish(message("chat:42", { text: "older still" }));
+
+    vi.advanceTimersByTime(299_000);
+    const recent = await transport.publish(message("chat:42", { text: "recent" }));
+
+    vi.advanceTimersByTime(1000);
+
+    expect(await transport.read(first, 100)).toEqual({ gone: true });
+    expect(payloadsOf(await readAll(transport))).toEqual([{ text: "recent" }]);
+    expect(payloadsOf(await readAll(transport, recent))).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+/**
+ * Retention is enforced when the log is read, not only when it is written: a log nobody
+ * Publishes into any more must not keep answering with Entries it promised to forget.
+ */
+test("a log that went quiet still ages out, and tail keeps answering", async () => {
+  vi.useFakeTimers();
+
+  try {
+    const transport = createMemoryTransport({ retention: { window: 300 } });
+    const cursor = await transport.publish(message("chat:42", { text: "one" }));
+
+    vi.advanceTimersByTime(300_001);
+
+    expect(await transport.read(undefined, 100)).toEqual({ entries: [], done: true });
+    expect(await transport.read(cursor, 100)).toEqual({ entries: [], done: true });
+    expect(await transport.tail()).toBe(cursor);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("retention defaults to the 300 s window and the 10 000 Entry cap of ADR-0006", async () => {
+  vi.useFakeTimers();
+
+  try {
+    const transport = createMemoryTransport();
+    const beforeAnything = await transport.tail();
+
+    for (let n = 0; n < 10_000; n += 1) {
+      await transport.publish(message("chat:42", { text: "one of ten thousand" }));
+    }
+
+    const full = await transport.read(beforeAnything, 20_000);
+    if ("gone" in full) throw new Error("the log answered gone");
+    expect(full.entries).toHaveLength(10_000);
+
+    await transport.publish(message("chat:42", { text: "one too many" }));
+    expect(await transport.read(beforeAnything, 20_000)).toEqual({ gone: true });
+
+    const survivor = await transport.tail();
+    vi.advanceTimersByTime(300_001);
+
+    expect(await transport.read(survivor, 100)).toEqual({ entries: [], done: true });
+    expect(await transport.read(undefined, 100)).toEqual({ entries: [], done: true });
+  } finally {
+    vi.useRealTimers();
+  }
+});

@@ -1,5 +1,5 @@
 import type { Connection, Instance } from "./instance.js";
-import { encodeControl, encodeMessage, encodeRetry, type StoredMessage } from "./wire.js";
+import { encodeControl, encodeMessage, encodeRetry } from "./wire.js";
 
 /** What ADR-0004 tells the client core to wait before reconnecting on its own, in milliseconds. */
 const RETRY_MS = 3000;
@@ -37,14 +37,32 @@ export function createGetHandler(instance: Instance): (request: Request) => Prom
       );
     }
 
-    return new Response(streamFor(instance, request, channels), { headers: HEADERS });
+    return new Response(streamFor(instance, request, channels, cursorOf(request, url)), {
+      headers: HEADERS,
+    });
   };
+}
+
+/**
+ * Where this Connection resumes from, or `undefined` for a live-only connect.
+ *
+ * `Last-Event-ID` wins over `?cursor=` (ADR-0004): the header is what the browser echoes back
+ * from the last block it received, so it is by definition no older than the URL the client core
+ * built when it opened the Connection. Neither is inspected any further — the Cursor is opaque
+ * to the Instance, and a value this log cannot serve is answered with `reset` on a `200` stream
+ * rather than a `400` the core would retry forever.
+ */
+function cursorOf(request: Request, url: URL): string | undefined {
+  const given = [request.headers.get("last-event-id"), url.searchParams.get("cursor")];
+
+  return given.find((value) => value !== null && value !== "") ?? undefined;
 }
 
 function streamFor(
   instance: Instance,
   request: Request,
   channels: ReadonlySet<string>,
+  after: string | undefined,
 ): ReadableStream<Uint8Array> {
   let closed = false;
   let disconnect: (() => void) | undefined;
@@ -73,21 +91,15 @@ function streamFor(
         if (!closed) streamController.enqueue(bytes);
       };
 
-      /**
-       * Until the opening sequence is out, a Message this Connection is subscribed to waits:
-       * `ready` is the first chunk of the stream, whatever the log does in the meantime.
-       */
-      const waiting: StoredMessage[] = [];
-      let opening = true;
       const connection: Connection = {
         channels,
-        deliver(entry) {
-          if (opening) waiting.push(entry);
-          else write(encodeMessage(entry));
-        },
+        deliver: (entry) => write(encodeMessage(entry)),
+        reset: () => write(encodeControl("reset")),
+        caughtUp: () => write(encodeControl("caught-up")),
       };
 
-      disconnect = await instance.open(connection);
+      const opening = await instance.open(connection, { after });
+      disconnect = opening.close;
 
       /**
        * The client may have gone while the Instance was opening the Connection. When the stream
@@ -107,18 +119,13 @@ function streamFor(
       request.signal.addEventListener("abort", abort);
 
       /**
-       * A live-only Connection adopts the log's tail as its Cursor (ADR-0004), so that a client
-       * that never received a Message still reconnects from a position rather than from
-       * nothing. Authorize, and with it a non-empty `refused`, arrives with its own ticket.
+       * The opening sequence, in the order ADR-0004 fixes it: `ready` as the first chunk of the
+       * stream whatever the log is doing, then the retry, then whatever `start` produces — a
+       * `reset`, the replay, `caught-up` — through the Connection's own methods.
        */
-      const cursor = await instance.transport.tail();
-      write(encodeControl("ready", { cursor, refused: [] }));
+      write(encodeControl("ready", { cursor: opening.cursor, refused: [] }));
       write(encodeRetry(RETRY_MS));
-      write(encodeControl("caught-up"));
-
-      opening = false;
-      for (const entry of waiting) write(encodeMessage(entry));
-      waiting.length = 0;
+      await opening.start();
     },
 
     /**

@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 
 import { fakeEventSources, type FakeEventSource } from "./fake-event-source.js";
 import { createClient, SSEClientProvider, type ClientChannels } from "./index.js";
-import { act, flush, mount } from "./react.testkit.js";
+import { act, flush, mount, type Mounted } from "./react.testkit.js";
 
 /**
  * The App of these tests, written the way an App writes it: the Registry is a type, the
@@ -223,4 +223,86 @@ test("a Handle missing a param of its pattern is an error, not a Channel with a 
 
 test("a hook with no provider above it says what to mount", async () => {
   await expect(mount(<Messages />)).rejects.toThrow(/<SSEProvider>/);
+});
+
+/**
+ * A mounted hook on a live Connection, opened the way the Instance opens one: `ready` carrying
+ * the Cursor it settled on, then `caught-up`. The jitter is pinned to zero so that the core's
+ * own retry fires on the next tick rather than up to a second later, which is what lets a
+ * reconnect be driven here with no timer control at all.
+ */
+const liveOn = async (cursor: string): Promise<Mounted> => {
+  vi.spyOn(Math, "random").mockReturnValue(0);
+  const tree = await mount(app(<Messages />));
+  await flush();
+
+  await act(() => {
+    only().ready({ cursor, refused: [] });
+    only().caughtUp();
+  });
+
+  return tree;
+};
+
+/**
+ * The gap-free guarantee as a component sees it. The Connection the browser gave up on is
+ * reopened by the core with the id of the last Message that reached the hook, and the Instance
+ * replays strictly after it — so the list gains what was published while the client was away,
+ * in order, and repeats nothing it already had.
+ */
+test("a Connection the core reopens resumes from its Cursor: nothing lost, nothing twice", async () => {
+  const tree = await liveOn("c0");
+
+  await act(() => {
+    only().message("chat:42", "message", { text: "one" }, "c1");
+    only().message("chat:42", "message", { text: "two" }, "c2");
+  });
+
+  expect(tree.container.textContent).toBe("one|two");
+
+  await act(() => {
+    only().fail();
+  });
+  await flush();
+
+  const resumed = opened[1] as FakeEventSource;
+  expect(resumed.cursor).toBe("c2");
+
+  await act(() => {
+    resumed.ready({ cursor: "c2", refused: [] });
+    resumed.message("chat:42", "message", { text: "three" }, "c3");
+    resumed.caughtUp();
+    resumed.message("chat:42", "message", { text: "four" }, "c4");
+  });
+
+  expect(tree.container.textContent).toBe("one|two|three|four");
+
+  await tree.unmount();
+});
+
+/**
+ * The live-only case of ADR-0004: this hook never received a Message, so the only position it
+ * has is the tail the Instance put in `ready` — and carrying it is what keeps the reconnect
+ * window from swallowing a Message on a Channel that had been quiet.
+ */
+test("a hook that never received a Message still reconnects from the Cursor ready gave it", async () => {
+  const tree = await liveOn("the-tail");
+
+  await act(() => {
+    only().fail();
+  });
+  await flush();
+
+  const resumed = opened[1] as FakeEventSource;
+  expect(resumed.cursor).toBe("the-tail");
+
+  await act(() => {
+    resumed.ready({ cursor: "the-tail", refused: [] });
+    resumed.message("chat:42", "message", { text: "published while it was away" }, "c1");
+    resumed.caughtUp();
+  });
+
+  expect(tree.container.textContent).toBe("published while it was away");
+
+  await tree.unmount();
 });

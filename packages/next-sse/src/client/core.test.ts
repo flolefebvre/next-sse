@@ -307,3 +307,98 @@ test("an error on a Connection the core has already replaced changes nothing", a
   expect(opened).toHaveLength(2);
   expect(subscriber.statuses).toEqual([]);
 });
+
+/**
+ * A Connection that knows where it is: `ready` settled its position, and one Message has moved
+ * it on. This is the state every case about carrying the Cursor starts from.
+ */
+async function positioned(): Promise<{
+  core: Core;
+  opened: FakeEventSource[];
+  subscriber: ReturnType<typeof recorder>;
+}> {
+  const { core, opened } = setup();
+  const subscriber = recorder("chat:42");
+  core.subscribe(subscriber);
+  await tick();
+  only(opened).ready({ cursor: "cursor-7", refused: [] });
+  only(opened).message("chat:42", "message", { text: "one" }, "cursor-8");
+
+  return { core, opened, subscriber };
+}
+
+test("the first Connection carries no Cursor, and the next one carries what ready gave it", async () => {
+  const { core, opened } = setup();
+  core.subscribe(recorder("chat:42"));
+  await tick();
+
+  expect(opened[0]?.cursor).toBe(null);
+
+  only(opened).ready({ cursor: "cursor-7", refused: [] });
+  only(opened).fail();
+  await vi.advanceTimersByTimeAsync(1000);
+
+  expect(opened[1]?.cursor).toBe("cursor-7");
+});
+
+test("the id of the last Message is what the next Connection resumes from", async () => {
+  const { opened } = await positioned();
+
+  only(opened).message("chat:42", "message", { text: "two" }, "cursor-9");
+  only(opened).fail();
+  await vi.advanceTimersByTimeAsync(1000);
+
+  expect(opened[1]?.cursor).toBe("cursor-9");
+});
+
+/**
+ * Every Connection the core opens carries the Cursor, whatever made it open: a Channel-set
+ * change is a reconnect like any other, and a Message published while it happens must not be
+ * lost because the new Connection came up live-only.
+ */
+test("a Channel-set change carries the Cursor, exactly like a retry does", async () => {
+  const { core, opened } = await positioned();
+
+  core.subscribe(recorder("chat:7"));
+  await tick();
+
+  expect(opened[1]?.channels).toEqual(["chat:42", "chat:7"]);
+  expect(opened[1]?.cursor).toBe("cursor-8");
+});
+
+/**
+ * The Cursor is opaque here (ADR-0001): the core has no way to tell whether one is older than
+ * another, and no reason to — the Instance settles the position and says so in `ready`.
+ */
+test("the core carries the Cursor it was last given, without comparing it to the one it had", async () => {
+  const { core, opened } = setup();
+  core.subscribe(recorder("chat:42"));
+  await tick();
+  only(opened).message("chat:42", "message", { text: "one" }, "zzz-9");
+
+  core.subscribe(recorder("chat:7"));
+  await tick();
+  opened[1]?.ready({ cursor: "aaa-1", refused: [] });
+  opened[1]?.fail();
+  await vi.advanceTimersByTimeAsync(1000);
+
+  expect(opened[2]?.cursor).toBe("aaa-1");
+});
+
+/**
+ * Control events are not positions (ADR-0004): they carry no `id:`, so none of them moves the
+ * Cursor — and `reset`, which the App's own handling belongs to another ticket, leaves the
+ * Connection exactly where it was.
+ */
+test("no Control event moves the Cursor, reset included", async () => {
+  const { opened, subscriber } = await positioned();
+
+  only(opened).emit("reset");
+  only(opened).caughtUp();
+  only(opened).emit("heartbeat");
+  only(opened).fail();
+  await vi.advanceTimersByTimeAsync(1000);
+
+  expect(opened[1]?.cursor).toBe("cursor-8");
+  expect(subscriber.statuses).toEqual(["live", "reconnecting"]);
+});

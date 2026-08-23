@@ -77,9 +77,15 @@ interface Subscriber extends Subscription {
  * and later a reopen from a Cursor all go through it, so none of them can drift from the
  * others.
  *
- * Live-only for now: no Cursor travels in the URL and none is remembered, which is the ticket
- * that makes delivery gap-free. The heartbeat watchdog, the max lifetime and the page-lifecycle
- * handling of ADR-0004 belong to the Connection-lifecycle ticket and are not here either.
+ * The Cursor is the third rule, and the core's whole part in gap-free delivery is to carry it:
+ * it remembers the last event id it saw — `ready`'s Cursor to begin with, then every Message's
+ * `id` — and puts it in the URL of every Connection it opens itself. It never parses it, never
+ * compares two of them, and never decides what to replay; the format stays the Transport's
+ * (ADR-0001) and the exactly-once cut stays the Instance's (ADR-0005). A native `EventSource`
+ * reconnect does the same thing for free through `Last-Event-ID`.
+ *
+ * The heartbeat watchdog, the max lifetime and the page-lifecycle handling of ADR-0004 belong
+ * to the Connection-lifecycle ticket and are not here.
  */
 export function createCore({ url, eventSource }: CoreOptions): Core {
   const Connection = eventSource ?? globalThis.EventSource;
@@ -91,6 +97,11 @@ export function createCore({ url, eventSource }: CoreOptions): Core {
   let scheduled = false;
   let attempt = 0;
   let retry: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * The last event id this client saw, and the only thing it stores about position. It travels
+   * back untouched: a Connection carries it in the URL, and the Instance decides what it means.
+   */
+  let lastEventId: string | undefined;
 
   function setStatus(subscriber: Subscriber, status: Status): void {
     if (subscriber.status === status) return;
@@ -126,17 +137,23 @@ export function createCore({ url, eventSource }: CoreOptions): Core {
 
     const query = new URLSearchParams();
     for (const channel of channels) query.append("channel", channel);
+    if (lastEventId !== undefined) query.set("cursor", lastEventId);
     const opened = new Connection(`${url}?${query.toString()}`);
     source = opened;
     setAll(attempt === 0 ? "connecting" : "reconnecting");
 
     /**
      * `ready` is the Instance saying it accepted this Connection, which is what ends a retry
-     * cycle. Its `cursor` belongs to the gap-free ticket and its `refused` to Authorize; the
-     * core reads neither yet rather than parsing fields it would throw away.
+     * cycle. Its Cursor is the Connection's position as the Instance settled it — the one this
+     * client asked for, the log's tail for a live-only connect, or a fresh tail when the one it
+     * brought was gone — and taking it as it comes is what keeps a client that never receives a
+     * Message reconnecting from a position rather than from nothing. `refused` belongs to
+     * Authorize, and is not read yet.
      */
-    opened.addEventListener("ready", () => {
+    opened.addEventListener("ready", (event) => {
       attempt = 0;
+      const { cursor } = JSON.parse(event.data) as { cursor?: unknown };
+      if (typeof cursor === "string" && cursor !== "") lastEventId = cursor;
     });
 
     /**
@@ -144,6 +161,7 @@ export function createCore({ url, eventSource }: CoreOptions): Core {
      * Channel declares, including the ones a Handle publishes dynamically.
      */
     opened.addEventListener("message", (event) => {
+      if (event.lastEventId !== "") lastEventId = event.lastEventId;
       const { channel, event: name, payload } = JSON.parse(event.data) as Envelope;
       for (const subscriber of subscribers) {
         if (subscriber.channel === channel) subscriber.onMessage(name, payload);
