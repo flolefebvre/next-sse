@@ -50,12 +50,24 @@ export function createSSE(
 ): Registry {
   instance.registry = channels;
 
-  const registry = { handlers: { GET: createGetHandler(instance) }, channels } as Registry;
+  const registry: Record<string, unknown> = {};
   for (const [key, declaration] of Object.entries(channels)) {
-    registry[key] = (params = {}) => handleFor(instance, declaration, params);
+    registry[key] = (params: Record<string, string> = {}) =>
+      handleFor(instance, declaration, params);
   }
 
-  return registry;
+  /**
+   * The Registry's own keys are written last, so a Channel that happens to be named after one
+   * cannot take it. ADR-0008 reserves both names and requires a runtime throw for an App that
+   * uses one; that throw pairs with the type-level enforcement and belongs to the typing
+   * ticket. Until it lands, the cost of declaring a Channel called `channels` is that its
+   * Handle factory is missing — loud, at the Publish that needs it — rather than an allowlist
+   * that quietly comes out empty and takes every subscription in the App with it.
+   */
+  registry.handlers = { GET: createGetHandler(instance) };
+  registry.channels = channels;
+
+  return registry as unknown as Registry;
 }
 
 function handleFor(

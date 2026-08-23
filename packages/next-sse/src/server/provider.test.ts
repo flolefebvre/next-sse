@@ -48,6 +48,26 @@ test("what crosses to the client is plain serialisable data", () => {
   expect(JSON.parse(JSON.stringify(shared))).toEqual(shared);
 });
 
+/**
+ * ADR-0008 reserves `handlers` and `channels` as the Registry's own keys, and the runtime
+ * throw for an App that declares a Channel named after one lands with the typing ticket, where
+ * it pairs with the type-level enforcement. What must not happen in the meantime is the quiet
+ * failure: a Channel called `channels` taking the declaration map and leaving the client with
+ * an empty allowlist, which would break every subscription in the App and name nothing.
+ */
+test("a Channel named after one of the Registry's own keys cannot take it", () => {
+  const sse = appWith({
+    channels: { pattern: "channels:{id}", events: {} },
+    chat: { pattern: "chat:{roomId}", events: { message: undefined } },
+  });
+
+  expect(toClientChannels(sse)).toEqual({
+    channels: { pattern: "channels:{id}", events: [] },
+    chat: { pattern: "chat:{roomId}", events: ["message"] },
+  });
+  expect(typeof sse.handlers.GET).toBe("function");
+});
+
 test("the provider hands the allowlist and the route to the client half", () => {
   const sse = appWith({ chat: { pattern: "chat:{roomId}", events: { message: undefined } } });
 
