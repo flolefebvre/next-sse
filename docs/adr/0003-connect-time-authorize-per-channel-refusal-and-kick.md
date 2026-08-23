@@ -1,0 +1,16 @@
+# Connect-time Authorize with per-Channel refusal, revocation by Kick
+
+Authorize runs only when a Connection is opened, once per requested Channel, never per Message. The server opens the stream for the Channels that pass and reports the others in a single in-band `refused` control event naming them; the Connection is closed only when every requested Channel is refused. Denied and unknown Channels are indistinguishable on the wire (unknown is additionally logged server-side as a Registry mismatch). Because a browser `EventSource` exposes neither the status code nor the body of a non-200 response, refusal must travel in-band on a `200` stream; a non-200 is reserved for requests that fail before Authorize, where there is nothing to name.
+
+Lost authorization is handled by Kick: `sse.kick({ key })` or `sse.kick(handle)` writes one control entry to the Transport; every Instance closes its matching Connections after sending a `reconnect` control event, and the client core reconnects immediately with the same Channel set and its Cursor. The fresh Authorize decides what survives: Channels still allowed resume gap-free from the Cursor, the rest surface as refused on their own `useChannel`. Kick carries no policy and no reason; an App that wants to tell the user why publishes a Message before kicking. Control entries are live-only and at-least-once: replay skips them (replaying a Kick would drop a re-authorized Connection again), and `await kick()` resolves when the entry is written, not when Connections are closed. The Key used to address a Kick is an optional `initSSE({ key: (ctx) => string | undefined })`; kicking by Key without one configured is a runtime error, not a silent no-op. The max Connection lifetime is operational and gives no authorization guarantee beyond "Authorize re-runs on that reconnect".
+
+## Considered Options
+
+- Re-running Authorize at publish or delivery time: rejected, it runs App code (possibly a database read) per Connection per Message, with no request to build `ctx` from, and would move authorization into publishers that may live outside Next.js.
+- A per-recipient `filter(ctx, payload)` hook: deferred, a different feature from revocation.
+- Any refused Channel refusing the whole Connection: rejected, with component-driven subscriptions one refused Channel would silence every live update on the page, and a Kick that removes a user from one room would go dark on everything until the App reacted.
+- Targeted revoke (`revoke({ key, channel })` on a live Connection without closing it): rejected, needs a second authorization path and is half of dynamic subscribe/unsubscribe, which is not in v0.1.
+- A `reason` carried by the Kick to the client: rejected, App data in the control contract for something a Message on the user's Channel already does gap-free.
+- Acknowledged Kick (resolves when Connections are closed): rejected, needs a cross-Instance reply channel for a guarantee no caller can act on.
+- Sizing the max Connection lifetime as the revocation bound: rejected, a timer sized for proxies gives a vague guarantee where Kick gives a sharp one.
+- A refused Channel retrying on a timer: rejected, authorization only changes because of an App-side event the App can react to by changing the Channel set.
