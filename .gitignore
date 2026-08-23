@@ -1,3 +1,11 @@
-.claude/worktrees/
 node_modules/
+dist/
+coverage/
+.next/
+next-env.d.ts
+*.log
+.env
+.env.*
+
+.claude/worktrees/
 CLAUDE.local.md
