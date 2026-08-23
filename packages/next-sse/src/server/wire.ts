@@ -12,15 +12,24 @@ export type ControlEvent = "ready" | "heartbeat" | "reconnect" | "caught-up" | "
 const encoder = new TextEncoder();
 
 /**
- * One Message, framed: the Cursor as the event id, the declared event name, the payload as
- * JSON. The `id:` is what the browser echoes back in `Last-Event-ID`, which is how a
- * reconnect resumes where this Connection stopped.
+ * One Message, framed: the Cursor as the event id, and the ADR-0006 envelope — Channel, event
+ * name and payload — as the data.
+ *
+ * The block carries **no `event:` line**. A Message is the unnamed default block of the SSE
+ * grammar (the browser dispatches it as `message`); Control events are the named blocks. That
+ * is the whole rule, and it is what keeps the two apart: a declared event name never reaches
+ * the `event:` field, so an App may declare an event called `heartbeat` or `caught-up` without
+ * it posing as a Control event on the wire. It is also why the Channel travels in the data —
+ * one Connection carries many Channels, and the client core has nothing else to tell them
+ * apart by.
+ *
+ * The `id:` is what the browser echoes back in `Last-Event-ID`, which is how a reconnect
+ * resumes where this Connection stopped.
  */
 export function encodeMessage(entry: StoredMessage): Uint8Array {
   return frame([
     ["id", entry.cursor],
-    ["event", entry.event],
-    ["data", json(entry.payload)],
+    ["data", json({ channel: entry.channel, event: entry.event, payload: entry.payload })],
   ]);
 }
 
@@ -54,9 +63,9 @@ function json(value: unknown): string {
 }
 
 /**
- * A field value with its line breaks taken out. JSON never carries a raw one, but an event
- * name or a Cursor from a publisher outside Next.js is arbitrary text, and a line break in one
- * would end the field early and let the rest of it pose as another field.
+ * A field value with its line breaks taken out. JSON never carries a raw one, but a Cursor is
+ * arbitrary text minted by the Transport, and a line break in one would end the field early and
+ * let the rest of it pose as another field.
  */
 function oneLine(value: string): string {
   return value.replace(/[\r\n]/g, "");

@@ -164,7 +164,7 @@ test("the stream opens on ready, then retry, then caught-up", async () => {
   await frames.cancel();
 });
 
-test("a Message Published after connect arrives on its event name, with its Cursor as the id", async () => {
+test("a Message arrives as an unnamed block: its Cursor as the id, the envelope as the data", async () => {
   const transport = createMemoryTransport();
   const sse = appWith(transport);
   const frames = await liveConnection(sse, "?channel=chat:42");
@@ -173,8 +173,7 @@ test("a Message Published after connect arrives on its event name, with its Curs
 
   expect(await frames.next()).toEqual({
     id: cursor,
-    event: "message",
-    data: JSON.stringify({ text: "hello" }),
+    data: JSON.stringify({ channel: "chat:42", event: "message", payload: { text: "hello" } }),
   });
   await frames.cancel();
 });
@@ -198,7 +197,9 @@ test("a Connection may name several Channels", async () => {
 
   await sse.chat({ roomId: "7" }).message({ text: "seven" });
 
-  expect((await frames.next()).data).toBe(JSON.stringify({ text: "seven" }));
+  expect((await frames.next()).data).toBe(
+    JSON.stringify({ channel: "chat:7", event: "message", payload: { text: "seven" } }),
+  );
   await frames.cancel();
 });
 
@@ -258,8 +259,11 @@ test("a re-evaluated Registry publishes into the log the open Connections are re
 
   expect(await frames.next()).toEqual({
     id: cursor,
-    event: "message",
-    data: JSON.stringify({ text: "after the edit" }),
+    data: JSON.stringify({
+      channel: "chat:42",
+      event: "message",
+      payload: { text: "after the edit" },
+    }),
   });
   await frames.cancel();
 });
