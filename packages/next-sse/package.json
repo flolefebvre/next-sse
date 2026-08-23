@@ -1,0 +1,93 @@
+{
+  "name": "@flefebvre/next-sse",
+  "version": "0.1.0",
+  "description": "Typed, authorization-aware pub/sub over Server-Sent Events for Next.js, gap-free across reconnects, redeploys and the server-render handoff.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Florian Lefebvre <florian.lefebvre.contact@gmail.com>",
+  "homepage": "https://github.com/flolefebvre/next-sse#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flolefebvre/next-sse.git",
+    "directory": "packages/next-sse"
+  },
+  "bugs": {
+    "url": "https://github.com/flolefebvre/next-sse/issues"
+  },
+  "keywords": [
+    "next",
+    "nextjs",
+    "sse",
+    "server-sent-events",
+    "realtime",
+    "pubsub",
+    "redis",
+    "valkey"
+  ],
+  "sideEffects": [
+    "./dist/server/outside-react-server.js"
+  ],
+  "exports": {
+    "./server": {
+      "react-server": {
+        "types": "./dist/server/index.d.ts",
+        "default": "./dist/server/index.js"
+      },
+      "types": "./dist/server/index.d.ts",
+      "default": "./dist/server/outside-react-server.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./transport": {
+      "types": "./dist/transport/index.d.ts",
+      "default": "./dist/transport/index.js"
+    },
+    "./transport/memory": {
+      "types": "./dist/transport/memory.d.ts",
+      "default": "./dist/transport/memory.js"
+    },
+    "./transport/redis": {
+      "types": "./dist/transport/redis.d.ts",
+      "default": "./dist/transport/redis.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "pnpm run clean && tsc -p tsconfig.build.json",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "redis": "^6.2.1"
+  },
+  "peerDependencies": {
+    "next": ">=16.3.0",
+    "react": ">=19.2.0",
+    "typescript": ">=5.9.0",
+    "vitest": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    },
+    "vitest": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
