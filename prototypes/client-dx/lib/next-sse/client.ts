@@ -4,7 +4,7 @@
 //   A  useChannel(handle, handlers, { cursor, onReset })        you own the state, the hook only calls handlers
 //   B  useChannelState(handle, snapshot, reducers)              the hook owns the state, seeded from a snapshot
 //   C  useLive(snapshot, reducers)                              the snapshot carries the Channel too; no Handle
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useOptimistic, useRef, useState, useSyncExternalStore, useTransition } from 'react'
 import { useSSEContext } from './client-provider.tsx'
 import type { Phase, Status } from './core.ts'
 import { fill, type Params, type ParamsArgs } from './pattern.ts'
@@ -31,6 +31,7 @@ export interface Handle<K extends string, P extends string, E extends EventMap> 
 type AnyHandle = Handle<string, string, EventMap>
 type EventsOf<X extends { $events?: EventMap }> = NonNullable<X['$events']>
 export type Handlers<E extends EventMap> = { [Ev in keyof E & string]?: (payload: InferOutput<E[Ev]>, phase: Phase) => void }
+type PendingOf<E extends EventMap> = { [Ev in keyof E]: InferOutput<E[Ev]>[] }
 export type Reducers<E extends EventMap, T> = { [Ev in keyof E & string]?: (state: T, payload: InferOutput<E[Ev]>) => T }
 
 type ChannelsOf<S> = S extends SSE<infer Ch, any> ? Ch : never
@@ -93,7 +94,20 @@ export function createClient<S extends SSE<any, any>>() {
       if (reduce) setState((s) => reduce(s, payload))
     }
     const status = useSubscription(name, snapshot.cursor, (event, payload) => apply(event as keyof EventsOf<H> & string, payload as never), options.onReset)
-    return { state, status, name, apply }
+    const [pending, addPending] = useOptimistic<{ event: string; payload: unknown }[], { event: string; payload: unknown }>([], (list, p) => [...list, p])
+    const [inFlight, startTransition] = useTransition()
+    /** The whole optimistic round in one call: show `optimistic` while `action` runs, then apply its result.
+     * The SSE echo of the same Message is absorbed by the reducer (upsertBy). Round 4; name to be found. */
+    function act<Ev extends keyof EventsOf<H> & string>(event: Ev, optimistic: InferOutput<EventsOf<H>[Ev]> | null, action: () => Promise<InferOutput<EventsOf<H>[Ev]>>) {
+      startTransition(async () => {
+        if (optimistic !== null) addPending({ event, payload: optimistic })
+        apply(event, await action())
+      })
+    }
+    const byEvent = new Proxy({} as PendingOf<EventsOf<H>>, {
+      get: (_, event: string) => pending.filter((p) => p.event === event).map((p) => p.payload),
+    })
+    return { state, status, name, apply, act, inFlight, pending: byEvent }
   }
 
   // ---- C ----

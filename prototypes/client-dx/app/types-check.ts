@@ -82,3 +82,19 @@ export function applyOnB(snapshot: { data: Message[]; cursor: string }) {
   // @ts-expect-error unknown event
   apply('nope', {})
 }
+
+export function actOnB(snapshot: { data: Message[]; cursor: string }) {
+  const { act, pending, inFlight } = useChannelState(channels.chat({ roomId: '1' }), snapshot, { message: upsertBy('id') })
+  const m: Message = { id: '1', roomId: '1', author: 'a', text: 'hi', at: 1 }
+  act('message', m, async () => m)
+  act('message', null, async () => m)
+  pending.message satisfies Message[]
+  pending.typing satisfies { author: string }[]
+  inFlight satisfies boolean
+  // @ts-expect-error the action must return the event's payload
+  act('message', m, async () => 42)
+  // @ts-expect-error wrong optimistic payload
+  act('message', { nope: true }, async () => m)
+  // @ts-expect-error unknown event
+  act('nope', null, async () => m)
+}
