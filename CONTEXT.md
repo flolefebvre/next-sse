@@ -39,3 +39,11 @@ _Avoid_: Auth, guard, permission check
 **Prefix**:
 The per-App namespace applied to everything the Redis Transport writes or subscribes to, so several Apps can share one Redis/Valkey.
 _Avoid_: Namespace, key prefix, scope
+
+**Cursor**:
+The opaque, Transport-minted position in an App's Message flow that a Connection resumes from. One Cursor per Connection, covering all its Channels.
+_Avoid_: Offset, sequence number, last event id, checkpoint
+
+**Reset**:
+The signal to a Connection that its Cursor is unusable (too old, or unknown to the Transport), so the App must refetch its state before continuing live.
+_Avoid_: Resync, invalidate, gap
