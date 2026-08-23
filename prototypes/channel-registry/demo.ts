@@ -13,6 +13,10 @@ import * as Eusage from './variants/e-colocated-names/usage.ts'
 import * as F from './variants/f-shared-colocated/channels.ts'
 import { sse as sseF } from './variants/f-shared-colocated/sse.server.ts'
 import * as Fusage from './variants/f-shared-colocated/usage.ts'
+import * as G from './variants/g-provider/sse.ts'
+import { toClientChannels } from './lib/g/server.ts'
+import { createClient } from './lib/g/client.ts'
+import * as Gusage from './variants/g-provider/usage.ts'
 
 const h = (s: string) => console.log(`\n\x1b[1m${s}\x1b[0m`)
 const row = (...cells: unknown[]) => console.log('  ' + cells.map((c) => (typeof c === 'string' ? c : JSON.stringify(c))).join('  '))
@@ -116,4 +120,31 @@ row('What the client bundle would contain for chat.authorize:', F.chat.authorize
 await publishes(sseF, F.chat, F.announcements)
 Fusage.ChatRoom({ roomId: '42', userId: 'u7' })
 printSubscriptions('shared values, names built on the client')
+
+// ───────────────────────────── Variant G ─────────────────────────────
+console.log('\n══════════ Variant G: one server-only file + <SSEProvider> passes an allowlist down as RSC data ══════════')
+
+h('What crosses to the client (toClientChannels(sse), serialized into the RSC payload by <SSEProvider>)')
+console.log('  ' + JSON.stringify(toClientChannels(G.sse)))
+row('authorize / context / schemas are not in there: the allowlist fails closed')
+
+h('Connect as u7 asking for names (client built them from the provider data; server parses as in C/E)')
+const rG = await G.sse.connect(asUser('u7'), reqC)
+rG.channels.forEach((c) => row(c.name.padEnd(24), '→', (c.key ?? '(no pattern matches)').padEnd(22), c.params ?? '', c.status.toUpperCase()))
+row('Connection:', rG.accepted ? 'ACCEPTED' : 'REFUSED')
+
+await publishes(G.sse, G.chat, G.announcements)
+
+h('Client: handles are { key, params }; useChannel resolves the name from provider data and returns it')
+const { channels: gch, useChannel: gUse } = Gusage.demoClient
+row('channels.chat({ roomId: "42" })', '→', gch.chat({ roomId: '42' }))
+row('useChannel(channels.chat({ roomId: "42" }), {...})', '→', gUse(gch.chat({ roomId: '42' }), { message: () => {}, typing: () => {} }))
+gUse(gch.notifications({ userId: 'u7' }), { notification: () => {} })
+gUse(gch.announcements(), { announcement: () => {} })
+printSubscriptions('names resolved inside the hook from <SSEProvider> data')
+try {
+  createClient<typeof G.sse>(() => { throw new Error('next-sse: <SSEProvider> is missing above this component') }).useChannel(gch.chat({ roomId: '1' }), {})
+} catch (e) {
+  row('Without the provider:', (e as Error).message)
+}
 console.log()
