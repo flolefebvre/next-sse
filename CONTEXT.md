@@ -60,6 +60,10 @@ _Avoid_: Resync, invalidate, gap
 The App's single server-only declaration of all its Channels (pattern, events, Authorize), created by `createSSE`. The source of truth for types on both sides and for what `<SSEProvider>` shares with the client.
 _Avoid_: Config, schema, definitions, manifest
 
+**Control event**:
+An in-band signal from the library to the client core on a Connection (`ready`, `heartbeat`, `reconnect`, `caught-up`, `Reset`). Never a Message: it belongs to no Channel, carries no Cursor and is never replayed.
+_Avoid_: System message, meta event, protocol message
+
 **Handle**:
 A Channel with its params filled in (`chat({ roomId })`), the typed value that Publish, Authorize and `useChannel` agree on. Server Handles are bound to the App and publish directly; client Handles are key plus params, typed from the Registry.
 _Avoid_: Instance, reference, topic object
