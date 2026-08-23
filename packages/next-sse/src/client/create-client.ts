@@ -31,9 +31,12 @@ export interface ChannelSubscription {
   readonly channel: string;
 }
 
-/** One Handle factory per Registry key. `handlers` is the route surface, not a Channel. */
+/**
+ * One Handle factory per Registry key. `handlers` and `channels` are the Registry's own,
+ * reserved for it by ADR-0008, and are not Channels.
+ */
 export type Channels<Registry> = {
-  [Key in Exclude<keyof Registry & string, "handlers">]: (
+  [Key in Exclude<keyof Registry & string, "handlers" | "channels">]: (
     params?: Record<string, string>,
   ) => Handle;
 };

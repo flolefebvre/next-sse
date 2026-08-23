@@ -20,9 +20,16 @@ export type Handle = {
   publish(event: string, payload: unknown): Promise<Cursor>;
 } & Record<string, (payload: unknown) => Promise<Cursor>>;
 
-/** The App's Registry: the route handlers it re-exports, and one Handle factory per Channel. */
+/**
+ * The App's Registry: the route handlers it re-exports, the Channels as declared, and one
+ * Handle factory per Channel.
+ *
+ * `channels` is what `<SSEProvider>` strips down and shares with the client; it is one of the
+ * Registry keys ADR-0008 reserves, precisely because the Registry needs it for itself.
+ */
 export type Registry = {
   handlers: { GET: (request: Request) => Promise<Response> };
+  channels: Record<string, ChannelDeclaration>;
 } & Record<string, (params?: Record<string, string>) => Handle>;
 
 /** Declare one Channel. Authorize and event schemas join this signature with their own tickets. */
@@ -43,7 +50,7 @@ export function createSSE(
 ): Registry {
   instance.registry = channels;
 
-  const registry = { handlers: { GET: createGetHandler(instance) } } as Registry;
+  const registry = { handlers: { GET: createGetHandler(instance) }, channels } as Registry;
   for (const [key, declaration] of Object.entries(channels)) {
     registry[key] = (params = {}) => handleFor(instance, declaration, params);
   }
