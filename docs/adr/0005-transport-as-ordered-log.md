@@ -1,0 +1,23 @@
+# Transport as a dumb ordered log with an equality-only Cursor
+
+The Transport interface is an ordered, bounded, per-App log and nothing more: `publish(entry)` appends and returns the Cursor it minted, `read(after, limit)` pages strictly after a Cursor or answers `gone`, `tail()` reads the current position without writing, `subscribe(listener, { onGap })` delivers every Entry to this Instance from the moment its promise resolves, and `close()` releases the backend. Everything that gives the log meaning (the Registry, Authorize, Connections, routing an Entry to the Connections subscribed to its Channel, skipping control entries on replay, deduplicating where replay meets the live feed) lives in the Instance, written once and shared by every Transport. A third party therefore implements a log, not an SSE server, and the contract suite can verify the whole obligation through that one interface.
+
+**Messages and control entries travel through one `publish`.** An Entry is a library-owned union (`message` | `control`) the Transport round-trips losslessly as JSON without inspecting it, so a new control type (graceful shutdown, later) touches no Transport.
+
+**A Cursor is an opaque string the Instance only ever compares by equality.** ADR-0001 keeps the Cursor format private to the Transport; this ADR makes that literal by giving the Instance no way to order Cursors. The replay→live handoff needs none: the Instance starts buffering the live feed for a new Connection before it issues `read`, so when the last replay page arrives its final Cursor is necessarily in that buffer, and the Instance drops the buffer up to and including that Entry. Ordering is applied inside the Transport (`XRANGE (cursor +`, an array index) where the format is known.
+
+**Availability is not a property; failing operations are the signal.** `publish`, `read` and `tail` settle within a Transport-configured bound and reject with `TransportUnavailableError` when the backend is unreachable (the route answers `503`), `TransportClosedError` after `close()`, and plain `TransportError` for anything else; nothing is retried. The subscription reconnects by itself, resumes from its last seen position and surfaces exactly one event, `onGap`, when that position is gone, which the Instance turns into `Reset` for every Connection it holds.
+
+Further obligations: `subscribe` resolves only once every later Publish is guaranteed to be delivered; several listeners may attach to one backend reader; the feed includes the Instance's own Publishes (one ordering, no local short-circuit); listeners must not throw; a Transport is a plain object from a factory, lazily connected; retention is factory configuration, the interface only requires `gone` to be honest. `Transport extends Publisher` (`publish`, `tail`, `close`), so publisher-only entry points outside Next.js share the Redis implementation without the subscription machinery. The contract suite is exported from the package, Vitest-bound, as `transportContract({ create, backend? })`, and runs in the repository against Memory, Redis and Valkey.
+
+## Considered Options
+
+- A Channel-aware Transport (per-Connection subscriptions, filtering inside the backend): rejected, every Transport would re-implement delivery semantics, and the Redis research settled on one reader per Instance.
+- Separate `publish()` and `control()` methods: rejected, the Transport has no reason to treat them differently, and two methods double the contract surface.
+- `subscribe({ from })` doing replay and live in one stream: rejected, it makes the subscription per Connection, which is what the one-reader-per-Instance design rules out.
+- Ordered Cursors, via a `compare()` method or a lexicographic-sort obligation: rejected, both leak ordering into the Instance and constrain every implementer for a comparison the equality cut makes unnecessary.
+- `read` throwing on a stale Cursor, or silently replaying from the oldest retained Entry: rejected, a stale Cursor is an expected outcome, and silent replay breaks gap-free delivery.
+- An `isAvailable`/`status` property: rejected, a second source of truth that can disagree with the very next call.
+- Transports isolating listener exceptions: rejected, the Instance is the only production listener and already owns per-Connection error handling.
+- An abstract base class to extend: rejected, a second interface to keep in sync.
+- A framework-agnostic contract runner: rejected, more code for a hypothetical non-Vitest user.

@@ -29,8 +29,16 @@ One open SSE connection from a client to an Instance, carrying the set of Channe
 _Avoid_: Socket, stream, session, subscriber
 
 **Transport**:
-The pluggable backend that carries Messages between Instances. The library ships a Memory Transport (single Instance) and a Redis Transport (Redis and Valkey); anyone can write another.
+The pluggable backend that carries Messages between Instances: one ordered, bounded log of Entries per App that every Instance reads in full, with Cursors it mints itself. It knows nothing of Channels' meaning, Authorize or Connections. The library ships a Memory Transport (single Instance) and a Redis Transport (Redis and Valkey); anyone can write another.
 _Avoid_: Adapter, driver, backend, broker
+
+**Entry**:
+One item in a Transport's log: either a Message or a control entry (a Kick), tagged with the Channel it concerns and, once stored, its Cursor. The Transport carries both alike; only the Instance tells them apart.
+_Avoid_: Record, row, packet, frame
+
+**Publisher**:
+The write-only half of a Transport: Publish and the tail read, with no live feed. What a process outside Next.js holds to Publish into an App's log.
+_Avoid_: Producer, writer, client
 
 **Authorize**:
 The App-supplied decision whether a Connection may subscribe to a given Channel, taken per Channel when the Connection is opened (and again on every reconnect), never per Message. A Channel the decision refuses is dropped from the Connection; the others are unaffected.
