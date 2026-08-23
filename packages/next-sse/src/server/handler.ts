@@ -37,14 +37,32 @@ export function createGetHandler(instance: Instance): (request: Request) => Prom
       );
     }
 
-    return new Response(streamFor(instance, request, channels), { headers: HEADERS });
+    return new Response(streamFor(instance, request, channels, cursorOf(request, url)), {
+      headers: HEADERS,
+    });
   };
+}
+
+/**
+ * Where this Connection resumes from, or `undefined` for a live-only connect.
+ *
+ * `Last-Event-ID` wins over `?cursor=` (ADR-0004): the header is what the browser echoes back
+ * from the last block it received, so it is by definition no older than the URL the client core
+ * built when it opened the Connection. Neither is inspected any further — the Cursor is opaque
+ * to the Instance, and a value this log cannot serve is answered with `reset` on a `200` stream
+ * rather than a `400` the core would retry forever.
+ */
+function cursorOf(request: Request, url: URL): string | undefined {
+  const given = [request.headers.get("last-event-id"), url.searchParams.get("cursor")];
+
+  return given.find((value) => value !== null && value !== "") ?? undefined;
 }
 
 function streamFor(
   instance: Instance,
   request: Request,
   channels: ReadonlySet<string>,
+  after: string | undefined,
 ): ReadableStream<Uint8Array> {
   let closed = false;
   let disconnect: (() => void) | undefined;
@@ -80,7 +98,7 @@ function streamFor(
         caughtUp: () => write(encodeControl("caught-up")),
       };
 
-      const opening = await instance.open(connection);
+      const opening = await instance.open(connection, { after });
       disconnect = opening.close;
 
       /**
