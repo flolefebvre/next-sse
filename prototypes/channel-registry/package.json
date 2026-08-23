@@ -1,0 +1,16 @@
+{
+  "name": "prototype-channel-registry",
+  "private": true,
+  "description": "PROTOTYPE, throwaway: typed Channel registry playground for next-sse issue #8",
+  "type": "module",
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "demo": "node --no-warnings demo.ts",
+    "play": "pnpm check && pnpm demo"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "zod": "^4.0.0"
+  }
+}
