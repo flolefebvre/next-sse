@@ -17,6 +17,15 @@ permissions:
   contents: read
 
 jobs:
+  # One job runs the whole ADR-0009 gate, Docker included: the runner has a daemon, so the
+  # integration project's testcontainers and the e2e project's `next start` Instances both run
+  # here.
+  #
+  # When this grows into the ADR-0009 shape — an `integration` matrix over redis:8 and
+  # valkey/valkey:8, and an `e2e` job on valkey/valkey:8 alone — the job named `gate` must
+  # survive as the job that `needs:` them and reports their verdict. `gate` is the required
+  # status check in .github/rulesets/main.json, and a ruleset is only re-imported by hand:
+  # keep the name and the split costs nobody anything.
   gate:
     name: gate
     runs-on: ubuntu-latest
@@ -24,38 +33,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The workspace scaffold hasn't landed yet: until a pnpm-lock.yaml exists at the
-      # root, this job passes without running anything so docs-only commits stay green.
-      # When the scaffold lands, delete this step and the `if:` guards below, and grow
-      # the workflow into the ADR-0009 shape (backend matrix redis:8 + valkey/valkey:8,
-      # e2e job) — then mirror the new job names into .github/rulesets/main.json.
-      - name: Check for the workspace scaffold
-        id: scaffold
-        run: |
-          if [ -f pnpm-lock.yaml ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "No pnpm-lock.yaml yet; skipping the gate until the workspace scaffold lands."
-          fi
-
+      # No `version:` — the action reads `packageManager` from the root package.json, so the
+      # pnpm version is stated in exactly one place.
       - name: Install pnpm
-        if: steps.scaffold.outputs.ready == 'true'
         uses: pnpm/action-setup@v6
-        with:
-          version: 11
 
       - name: Setup Node
-        if: steps.scaffold.outputs.ready == 'true'
         uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
 
       - name: Install dependencies
-        if: steps.scaffold.outputs.ready == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Run gate
-        if: steps.scaffold.outputs.ready == 'true'
         run: pnpm run gate
