@@ -94,6 +94,12 @@ importers:
         specifier: '>=4.0.0'
         version: 4.1.11(@types/node@22.20.1)(jsdom@30.0.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
 
+  tests/dist-consumer:
+    dependencies:
+      '@flefebvre/next-sse':
+        specifier: workspace:*
+        version: link:../../packages/next-sse
+
 packages:
 
   '@asamuzakjp/css-color@6.0.7':
