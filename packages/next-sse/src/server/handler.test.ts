@@ -5,6 +5,7 @@ import { beforeEach, expect, test } from "vitest";
 import type { Cursor } from "../transport/index.js";
 import { createMemoryTransport } from "../transport/memory.js";
 
+import { framesOf, type Frames } from "./frames.testkit.js";
 import { initSSE } from "./index.js";
 import { getInstance } from "./instance.js";
 
@@ -12,14 +13,6 @@ beforeEach(() => {
   const globals = globalThis as unknown as { [key: symbol]: unknown };
   delete globals[Symbol.for("@flefebvre/next-sse")];
 });
-
-/** One SSE block, as a client parses it: the fields it carried, by name. */
-interface Frame {
-  id?: string;
-  event?: string;
-  data?: string;
-  retry?: string;
-}
 
 /**
  * The App of these tests: one Channel with one declared event. The Registry is loosely typed
@@ -58,49 +51,6 @@ const liveConnection = async (sse: ChatApp, query: string): Promise<Frames> => {
 
   return frames;
 };
-
-/** Reads SSE blocks off a response body, one at a time, in the order they were written. */
-interface Frames {
-  next: () => Promise<Frame>;
-  cancel: () => Promise<void>;
-}
-
-function framesOf(response: Response): Frames {
-  const reader = (response.body ?? new ReadableStream<Uint8Array>()).getReader();
-  const decoder = new TextDecoder();
-  let buffered = "";
-
-  return {
-    async next(): Promise<Frame> {
-      for (;;) {
-        const end = buffered.indexOf("\n\n");
-        if (end !== -1) {
-          const block = buffered.slice(0, end);
-          buffered = buffered.slice(end + 2);
-
-          return parse(block);
-        }
-
-        const { done, value } = await reader.read();
-        if (done) throw new Error("the stream ended before the next block");
-        buffered += decoder.decode(value);
-      }
-    },
-    cancel: () => reader.cancel(),
-  };
-}
-
-function parse(block: string): Frame {
-  const frame: Frame = {};
-  for (const line of block.split("\n")) {
-    const [name, value] = [line.slice(0, line.indexOf(":")), line.slice(line.indexOf(":") + 2)];
-    if (name === "id" || name === "event" || name === "data" || name === "retry") {
-      frame[name] = value;
-    }
-  }
-
-  return frame;
-}
 
 test("a Connection that names no Channel is refused before anything is opened", async () => {
   const sse = appWith();
