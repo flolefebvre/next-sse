@@ -1,0 +1,27 @@
+:root { font: 14px/1.4 system-ui, sans-serif; color: #222; background: #fafafa; }
+body { margin: 0; }
+header { display: flex; gap: 1.5rem; align-items: center; padding: .5rem 1rem; background: #fff; border-bottom: 1px solid #ddd; }
+header nav { display: flex; gap: 1rem; }
+header form { margin-left: auto; }
+main { max-width: 720px; margin: 1rem auto; padding: 0 1rem 8rem; }
+a { color: #0366d6; text-decoration: none; }
+ul.messages { list-style: none; padding: 0; margin: 0; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
+ul.messages li { padding: .4rem .75rem; border-bottom: 1px solid #eee; display: flex; gap: .5rem; }
+ul.messages li.pending { opacity: .5; }
+ul.messages li b { min-width: 5rem; }
+ul.messages li small { margin-left: auto; color: #999; font-family: monospace; }
+.status { display: inline-block; padding: 0 .5rem; border-radius: 999px; font-size: 12px; font-family: monospace; background: #eee; }
+.status-live { background: #d4f5d4; } .status-replaying { background: #fff3c4; } .status-connecting, .status-reconnecting { background: #ffe0b3; } .status-refused { background: #f8d0d0; }
+form.composer { display: flex; gap: .5rem; margin-top: .5rem; }
+form.composer input { flex: 1; padding: .4rem; }
+.typing { color: #888; font-style: italic; height: 1.2em; }
+.variant { margin-bottom: .75rem; color: #666; }
+.variant code { background: #eee; padding: 0 .3em; }
+.switcher { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); display: flex; gap: .75rem; align-items: center; padding: .4rem .8rem; background: #111; color: #fff; border-radius: 999px; box-shadow: 0 4px 16px rgba(0,0,0,.3); font-family: monospace; z-index: 10; }
+.switcher button { background: none; border: 0; color: #fff; font-size: 16px; cursor: pointer; }
+.debug { position: fixed; right: 1rem; bottom: 4rem; width: 360px; max-height: 60vh; overflow: auto; background: #fff; border: 1px solid #ccc; border-radius: 6px; padding: .5rem; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.15); }
+.debug h4 { margin: .25rem 0; }
+.debug .levers { display: flex; flex-wrap: wrap; gap: .3rem; margin-bottom: .5rem; }
+.debug button { font-size: 11px; }
+.debug pre { margin: 0; font-size: 11px; white-space: pre-wrap; word-break: break-all; }
+.debug .trace div { border-top: 1px solid #eee; padding: 1px 0; font-family: monospace; }

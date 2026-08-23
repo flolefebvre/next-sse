@@ -1,0 +1,23 @@
+{
+  "name": "prototype-client-dx",
+  "private": true,
+  "description": "PROTOTYPE, throwaway: client DX playground for next-sse issue #13",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "check": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "next": "16.3.2",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "server-only": "^0.0.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.9.0"
+  }
+}
