@@ -79,19 +79,20 @@ if (missing.length > 0) {
 
 /**
  * The exports map read the way Node reads it, from a consumer that resolves the package by
- * name: `./server` must load under the `react-server` condition and must throw under every
- * other one, which is the whole guard against a Client Component importing the Registry. No
- * type checker and no source-level test can observe that — only the built map can.
+ * name: `./server` must resolve to the implementation under the `react-server` condition and
+ * must throw under every other one, which is the whole guard against a Client Component
+ * importing the Registry. No type checker and no source-level test can observe that — only the
+ * built map can.
  */
-const importsServerEntry = (conditions: string[]): { ok: boolean; output: string } => {
+const runInConsumer = (conditions: string[], source: string): { ok: boolean; output: string } => {
   const flags = conditions.map((condition) => `--conditions=${condition}`);
 
   try {
-    const output = execFileSync(
-      process.execPath,
-      [...flags, "--input-type=module", "-e", "await import('@flefebvre/next-sse/server')"],
-      { cwd: CONSUMER_DIR, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
-    );
+    const output = execFileSync(process.execPath, [...flags, "--input-type=module", "-e", source], {
+      cwd: CONSUMER_DIR,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
     return { ok: true, output };
   } catch (error) {
@@ -101,14 +102,36 @@ const importsServerEntry = (conditions: string[]): { ok: boolean; output: string
   }
 };
 
-const underReactServer = importsServerEntry(["react-server"]);
+/**
+ * Under `react-server` the entry is **resolved, not executed**, and that is deliberate.
+ *
+ * `./server` statically imports the `'use client'` entry, because `<SSEProvider>` is a Server
+ * Component that renders `<SSEClientProvider>` (ADR-0002). An RSC bundler cuts the module graph
+ * at that directive and never loads the client half in the server graph. Bare Node has no such
+ * mechanism: it links the graph whole and reaches React's `react-server` build, which by design
+ * exports no `createContext` and no hooks. Executing here would therefore fail on a package
+ * that is correct, and the only way to make it pass would be to contort the shipped provider.
+ *
+ * What resolution still proves is what this check is for: that the map points `react-server` at
+ * the implementation rather than at the throwing stub. The proof that the implementation runs
+ * is in the same gate, one step later and stronger — `test:e2e` builds and boots the example
+ * app, which imports `./server` through Next and renders `<SSEProvider>` for real.
+ */
+const RESOLVED = "process.stdout.write(import.meta.resolve('@flefebvre/next-sse/server'))";
+const underReactServer = runInConsumer(["react-server"], RESOLVED);
 if (!underReactServer.ok) {
   fail(
-    `The ./server entry failed to load under the react-server condition:\n${underReactServer.output}`,
+    `The ./server entry failed to resolve under the react-server condition:\n${underReactServer.output}`,
+  );
+}
+if (!underReactServer.output.endsWith("dist/server/index.js")) {
+  fail(
+    `Under react-server, ./server resolves to ${underReactServer.output}, expected dist/server/index.js`,
   );
 }
 
-const underDefault = importsServerEntry([]);
+/** The ADR-0008 guarantee itself, and the one that must keep executing: it has to throw. */
+const underDefault = runInConsumer([], "await import('@flefebvre/next-sse/server')");
 if (underDefault.ok) {
   fail("The ./server entry loaded outside the react-server condition instead of throwing");
 }
@@ -120,5 +143,5 @@ if (!underDefault.output.includes("react-server")) {
 
 console.log(
   `Tarball OK: ${String(paths.length)} files, ${String(EXPORTS.length - 1)} subpath entries and no root export, ` +
-    "and ./server loads only under react-server.",
+    "and ./server resolves to the implementation only under react-server.",
 );
