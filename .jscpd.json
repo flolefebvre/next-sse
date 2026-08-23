@@ -1,0 +1,14 @@
+{
+  "path": ["packages", "examples", "e2e", "scripts", "tests"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/.next/**",
+    "**/.next-*/**",
+    "**/next-env.d.ts"
+  ],
+  "format": ["typescript", "tsx"],
+  "minTokens": 50,
+  "exitCode": 1,
+  "reporters": ["consoleFull"]
+}

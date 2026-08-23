@@ -1,0 +1,43 @@
+{
+  "name": "next-sse-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Workspace root for @flefebvre/next-sse: the published package, the example app and the gate.",
+  "packageManager": "pnpm@11.15.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint --max-warnings=0",
+    "duplication": "jscpd",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --project unit --project client --project integration",
+    "test:unit": "vitest run --project unit",
+    "test:client": "vitest run --project client",
+    "test:integration": "vitest run --project integration",
+    "test:e2e": "vitest run --project e2e",
+    "build": "pnpm --filter @flefebvre/next-sse run build",
+    "pack:check": "tsx scripts/pack-check.ts",
+    "typecheck:dist": "tsc -p tests/dist-consumer/tsconfig.json",
+    "gate": "tsx scripts/gate.ts format:check,lint,duplication,typecheck,test,build,pack:check,typecheck:dist,test:e2e"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "eslint": "^10.9.0",
+    "eslint-plugin-no-comments": "^1.2.1",
+    "jscpd": "^4.3.0",
+    "jsdom": "^30.0.1",
+    "prettier": "^3.9.6",
+    "redis": "^6.2.1",
+    "testcontainers": "^12.1.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.11"
+  }
+}

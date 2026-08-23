@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true
+  },
+  "include": ["packages/*/src", "e2e/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "*.config.ts"],
+  "exclude": ["**/dist", "**/node_modules", "tests/dist-consumer", "examples"]
+}

@@ -2,7 +2,7 @@
 
 The Redis Transport is one Redis Stream per App, key `{<Prefix>}:log`, and nothing else. `publish` is one `XADD {<Prefix>}:log MAXLEN ~ <retentionCap> * entry <json>`; the Cursor it returns is the stream entry ID (`<ms>-<seq>`, minted on the Redis clock). `read(after)` is `XRANGE {<Prefix>}:log (after + COUNT n`; `tail()` is `XINFO STREAM last-generated-id`, which survives the stream going empty. Every Instance's subscription is a single `XREAD BLOCK 5000 STREAMS {<Prefix>}:log <last-seen>` loop on a `duplicate()`d connection with the per-command timeout disabled, so a blocked read never starves `PING` and is never aborted. Pub/Sub is not used: it is at-most-once, so it would need the stream anyway for replay, and `XREAD BLOCK` wakes blocked readers on `XADD` with the same one-round-trip latency while surviving the Instance's own Redis reconnect without a gap (the loop reissues `XREAD` from its last ID).
 
-**The Prefix is the only isolation, and it sits inside the hash tag.** Pub/Sub and Streams ignore the database index for the purposes that matter here and node-redis's `keyPrefix` never touches channel names, so the library applies the Prefix itself. `{<Prefix>}:` keeps every key an App will ever own in one cluster slot, which is what lets a later per-Channel design use `MULTI` or Lua across them; the cost, one App never spreading over more than one master, is the v0.1 cost model. A Prefix must be non-empty and contain no `{`, `}`, whitespace or control characters; it is otherwise verbatim. The default is `next-sse`, not derived from the App (nothing at runtime names it reliably): two Apps sharing one Redis under the same Prefix *cross-deliver* (App A's `chat:42` reaches App B's subscribers of `chat:42`), which the docs state as the reason to set `NEXT_SSE_PREFIX` per App. The database index in `REDIS_URL` is documented as scoping nothing.
+**The Prefix is the only isolation, and it sits inside the hash tag.** Pub/Sub and Streams ignore the database index for the purposes that matter here and node-redis's `keyPrefix` never touches channel names, so the library applies the Prefix itself. `{<Prefix>}:` keeps every key an App will ever own in one cluster slot, which is what lets a later per-Channel design use `MULTI` or Lua across them; the cost, one App never spreading over more than one master, is the v0.1 cost model. A Prefix must be non-empty and contain no `{`, `}`, whitespace or control characters; it is otherwise verbatim. The default is `next-sse`, not derived from the App (nothing at runtime names it reliably): two Apps sharing one Redis under the same Prefix _cross-deliver_ (App A's `chat:42` reaches App B's subscribers of `chat:42`), which the docs state as the reason to set `NEXT_SSE_PREFIX` per App. The database index in `REDIS_URL` is documented as scoping nothing.
 
 **One stream field, `entry`, holding the Entry as JSON; the version lives inside the JSON.** ADR-0005 wants the Transport to round-trip an Entry without knowing its shape, so that a new control kind touches no Transport; flat stream fields would couple the Redis Transport to the union. The JSON is the stable contract an external publisher writes in any language:
 
@@ -12,7 +12,7 @@ The Redis Transport is one Redis Stream per App, key `{<Prefix>}:log`, and nothi
 { "v": 1, "type": "control", "control": "kick", "channel": "chat:42" }
 ```
 
-Both `message` and `control` are documented (an admin service outside Next.js revoking access is a real Kick). Additions within `v: 1` are additive; `v: 2` only for a breaking change. The Memory Transport stores the same object. An event's Standard Schema *Output* is bounded to `JsonValue` at `channel({ events })` time, so `payload` is what the client receives, typed honestly by construction (`z.date()` is a type error; `z.iso.datetime()` is the fix); no runtime check on the publish path, the bound covers it. On the read path the Instance validates nothing: an unparseable Entry or an unknown `v`, `type` or `control` is skipped and reported once through `onError`; a payload that does not match the schema is delivered as is, external publishers are responsible for it; an Entry whose Channel has no subscriber on this Instance is dropped for free (no Registry lookup, no log: during a rolling deploy, old Instances legitimately see Channels they do not know), logged only under `debug`.
+Both `message` and `control` are documented (an admin service outside Next.js revoking access is a real Kick). Additions within `v: 1` are additive; `v: 2` only for a breaking change. The Memory Transport stores the same object. An event's Standard Schema _Output_ is bounded to `JsonValue` at `channel({ events })` time, so `payload` is what the client receives, typed honestly by construction (`z.date()` is a type error; `z.iso.datetime()` is the fix); no runtime check on the publish path, the bound covers it. On the read path the Instance validates nothing: an unparseable Entry or an unknown `v`, `type` or `control` is skipped and reported once through `onError`; a payload that does not match the schema is delivered as is, external publishers are responsible for it; an Entry whose Channel has no subscriber on this Instance is dropped for free (no Registry lookup, no log: during a rolling deploy, old Instances legitimately see Channels they do not know), logged only under `debug`.
 
 **Retention is a count cap trimmed on every Publish and a time window trimmed by the readers.** `MAXLEN ~ <retentionCap>` rides on every `XADD` (external publishers are told to include it; the Instances trim regardless). There is no time-based stream primitive, so each Instance's reader loop issues `XTRIM {<Prefix>}:log MINID ~ <TIME − retentionWindow>` about once a minute, against the Redis clock; concurrent trims from several Instances are harmless, and the effective window is `retentionWindow` plus up to one trim interval. Enforcing the window at read time only was rejected: it would make `gone` depend on the Instance clock and leave big payloads resident in a quiet App. The Memory Transport applies the same two bounds in process.
 
@@ -20,14 +20,14 @@ Both `message` and `control` are documented (an admin service outside Next.js re
 
 **Client posture and configuration mirror the cache handler.** `connectTimeout` 2 s, `socketTimeout` 15 s, `pingInterval` 10 s, `disableOfflineQueue`, a `reconnectStrategy` that never gives up, lazy connect, `unref()`, a mandatory `error` listener, `withDeadline(operationTimeout)` around `publish`/`read`/`tail`, one `onError(error, operation)` hook; an injected node-redis `client` (standalone, cluster or sentinel, detected structurally) is accepted and `duplicate()`d for the reader. The environment table, parsed in full before `REDIS_URL` is read, unset or empty meaning not given:
 
-| Variable | Option | Default |
-| --- | --- | --- |
-| `REDIS_URL` | `url` | none → Memory Transport |
-| `NEXT_SSE_PREFIX` | `prefix` | `next-sse` |
-| `NEXT_SSE_RETENTION_WINDOW` | `retentionWindow` (seconds) | `300` |
-| `NEXT_SSE_RETENTION_CAP` | `retentionCap` (entries) | `10000` |
-| `NEXT_SSE_OPERATION_TIMEOUT` | `operationTimeout` (ms) | `1000` |
-| `NEXT_SSE_DEBUG` | `debug` | `false` |
+| Variable                     | Option                      | Default                 |
+| ---------------------------- | --------------------------- | ----------------------- |
+| `REDIS_URL`                  | `url`                       | none → Memory Transport |
+| `NEXT_SSE_PREFIX`            | `prefix`                    | `next-sse`              |
+| `NEXT_SSE_RETENTION_WINDOW`  | `retentionWindow` (seconds) | `300`                   |
+| `NEXT_SSE_RETENTION_CAP`     | `retentionCap` (entries)    | `10000`                 |
+| `NEXT_SSE_OPERATION_TIMEOUT` | `operationTimeout` (ms)     | `1000`                  |
+| `NEXT_SSE_DEBUG`             | `debug`                     | `false`                 |
 
 Retention applies to both Transports, so those names carry no `REDIS`. Only Redis 6.2/7.0 features are used (`MAXLEN ~`, `MINID ~`, `XINFO STREAM` 7.0 fields, `XRANGE (`); nothing Redis 8.x-only, so Valkey 8 is a first-class target.
 
