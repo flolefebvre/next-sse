@@ -66,7 +66,8 @@ if (stray.length > 0) {
   fail(`Unexpected files in the tarball: ${stray.join(", ")}`);
 }
 
-const tests = paths.filter((path) => /\.test\.[cm]?[jt]sx?$/.test(path));
+/** Neither a test nor the harness the tests run on has any business in a consumer's install. */
+const tests = paths.filter((path) => /\.(test|testkit)\.[cm]?[jt]sx?$/.test(path));
 if (tests.length > 0) {
   fail(`Test files in the tarball: ${tests.join(", ")}`);
 }
