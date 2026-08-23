@@ -21,7 +21,7 @@
     "test:e2e": "vitest run --project e2e",
     "build": "pnpm --filter @flefebvre/next-sse run build",
     "pack:check": "tsx scripts/pack-check.ts",
-    "typecheck:dist": "tsc -p tests/dist-consumer/tsconfig.json",
+    "typecheck:dist": "tsc -p tests/dist-consumer/tsconfig.json && pnpm --filter next-sse-example-basic typecheck",
     "gate": "tsx scripts/gate.ts format:check,lint,duplication,typecheck,test,build,pack:check,typecheck:dist,test:e2e"
   },
   "devDependencies": {
@@ -38,6 +38,7 @@
     "tsx": "^4.23.12",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.67.0",
+    "undici": "^8.10.0",
     "vitest": "^4.1.11"
   }
 }
