@@ -88,11 +88,12 @@ export function createClient<S extends SSE<any, any>>() {
       setSeen(snapshot)
       setState(snapshot.data)
     }
-    const status = useSubscription(name, snapshot.cursor, (event, payload) => {
+    const apply = <Ev extends keyof EventsOf<H> & string>(event: Ev, payload: InferOutput<EventsOf<H>[Ev]>) => {
       const reduce = (reducers as Record<string, (s: T, p: unknown) => T>)[event]
       if (reduce) setState((s) => reduce(s, payload))
-    }, options.onReset)
-    return { state, status, name }
+    }
+    const status = useSubscription(name, snapshot.cursor, (event, payload) => apply(event as keyof EventsOf<H> & string, payload as never), options.onReset)
+    return { state, status, name, apply }
   }
 
   // ---- C ----

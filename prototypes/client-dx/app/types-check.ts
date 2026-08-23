@@ -73,3 +73,12 @@ export function upsertInference(snapshot: { data: Message[]; cursor: string }) {
     message: upsertBy((m) => m.nope),
   })
 }
+
+export function applyOnB(snapshot: { data: Message[]; cursor: string }) {
+  const { apply } = useChannelState(channels.chat({ roomId: '1' }), snapshot, { message: upsertBy('id') })
+  apply('message', { id: '1', roomId: '1', author: 'a', text: 'hi', at: 1 })
+  // @ts-expect-error wrong payload for apply
+  apply('message', { nope: true })
+  // @ts-expect-error unknown event
+  apply('nope', {})
+}
