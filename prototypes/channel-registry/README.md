@@ -32,6 +32,17 @@ All share `lib/pattern.ts` (`{name}` placeholders, params inferred from the patt
 
 **The trade in one line.** C is the only *import-based* shape where the client holds the real values *and* authorize imports server code freely, at the price of a split. Every colocated import-based shape gives up one: D/E keep authorize free but the client has no values (D: no names; E: restate them), F keeps shared values but authorize goes through `ctx` and its logic is readable in the browser. G sidesteps the import question: the colocated file is never imported by the client, the values cross as *data* at render time (Payload's `createClientConfig` pattern), at the cost of a provider in the root layout and a runtime dependency on it. The [server→client extraction research](https://github.com/flolefebvre/next-sse/blob/research/server-client-extraction/docs/research/server-client-extraction.md) measured that no bundler-level extraction is supported in Next 16.3 and recommends G, with E as the fallback.
 
+## H: G with bound handles (`variants/h-bound/`)
+
+Same file layout and provider as G. `createSSE` returns Channels **bound** to the App, so the instance publishes itself; the client additionally gets one generated hook per Channel. Two spellings on each side, on the same objects, to pick from:
+
+| | spelling 1 | spelling 2 |
+|---|---|---|
+| server | `chat({ roomId }).publish('message', payload)` | `chat({ roomId }).message(payload)` |
+| client | `useChannel(channels.chat({ roomId }), handlers)` | `channels.useChat({ roomId }, handlers)` |
+
+Reserved names become compile errors: events named `name` / `params` / `pattern` / `events` / `publish`, registry keys `channels` / `connect` / `handlers`. `export const { chat, notifications } = sse` gives bare names; `sse.chat(...)` works without it. Note `eslint-plugin-react-hooks` only recognises `Foo.useBar` as a hook when `Foo` is PascalCase, so `channels.useChat` is not checked by rules-of-hooks (it's not flagged either).
+
 ## Things to react to
 
 1. **Which shape?** Colocation is the standing preference; the question is G (provider, data crosses at render time), D (no names on the client), E (restate patterns, compiler-checked) or F (shared file, authorize limited to `ctx`). G's cost is `<SSEProvider sse={sse}>` in the root layout and `useChannel` throwing without it; E's is one typed line per Channel; D changes what the Connection carries; F limits authorize.

@@ -17,6 +17,8 @@ import * as G from './variants/g-provider/sse.ts'
 import { toClientChannels } from './lib/g/server.ts'
 import { createClient } from './lib/g/client.ts'
 import * as Gusage from './variants/g-provider/usage.ts'
+import * as H from './variants/h-bound/sse.ts'
+import * as Husage from './variants/h-bound/usage.ts'
 
 const h = (s: string) => console.log(`\n\x1b[1m${s}\x1b[0m`)
 const row = (...cells: unknown[]) => console.log('  ' + cells.map((c) => (typeof c === 'string' ? c : JSON.stringify(c))).join('  '))
@@ -147,4 +149,26 @@ try {
 } catch (e) {
   row('Without the provider:', (e as Error).message)
 }
+
+// ───────────────────────────── Variant H ─────────────────────────────
+console.log('\n══════════ Variant H: G + bound handles (no sse.publish(chat(...)) double step) ══════════')
+
+h('Server: two spellings on the same instance')
+row("chat({ roomId: '42' }).publish('message', {...})", '→', await H.chat({ roomId: '42' }).publish('message', { id: 'm1', text: '  hi  ', author: 'u7' }))
+row("chat({ roomId: '42' }).message({...})", '→', await H.chat({ roomId: '42' }).message({ id: 'm2', text: 'yo', author: 'u7' }))
+row("sse.chat({ roomId: '42' }).typing({...})", '→', await H.sse.chat({ roomId: '42' }).typing({ userId: 'u7' }))
+row('announcements().announcement({...})', '→', await H.announcements().announcement({ text: 'hello' }))
+try {
+  await H.chat({ roomId: '42' }).message({ id: 'm3', text: '   ', author: 'u7' })
+} catch (e) {
+  row("chat({ roomId: '42' }).message({ text: '   ' })", '→ REJECTED', (e as PayloadError).issues.map((i) => i.message))
+}
+row('instance keys:', Object.keys(H.chat({ roomId: '42' })))
+
+h('Client: two spellings on the same object')
+const { channels: hch, useChannel: hUse } = Husage.demoClient
+row("useChannel(channels.chat({ roomId: '42' }), {...})", '→', hUse(hch.chat({ roomId: '42' }), { message: () => {}, typing: () => {} }))
+row("channels.useChat({ roomId: '42' }, {...})", '→', hch.useChat({ roomId: '42' }, { message: () => {}, typing: () => {} }))
+row("channels.useAnnouncements({...})", '→', hch.useAnnouncements({ announcement: () => {} }))
+printSubscriptions('both spellings record the same subscription')
 console.log()
