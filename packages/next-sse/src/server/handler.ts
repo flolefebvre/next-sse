@@ -26,7 +26,7 @@ const HEADERS = {
 export function createGetHandler(instance: Instance): (request: Request) => Promise<Response> {
   return async function GET(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const channels = new Set(url.searchParams.getAll("channel"));
+    const channels = new Set(url.searchParams.getAll("channel").filter((name) => name !== ""));
 
     if (channels.size === 0) {
       return new Response(

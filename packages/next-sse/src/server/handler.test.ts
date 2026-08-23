@@ -113,6 +113,24 @@ test("a Connection that names no Channel is refused before anything is opened", 
   expect(getInstance().connections.size).toBe(0);
 });
 
+test("a Channel with no name is no Channel at all", async () => {
+  const sse = appWith();
+
+  expect((await connect(sse, "?channel=")).status).toBe(400);
+  expect(getInstance().connections.size).toBe(0);
+});
+
+test("an empty Channel among named ones is dropped, and the rest are honoured", async () => {
+  const transport = createMemoryTransport();
+  const sse = appWith(transport);
+  const frames = await liveConnection(sse, "?channel=&channel=chat:42");
+
+  const cursor = await sse.chat({ roomId: "42" }).message({ text: "hello" });
+
+  expect((await frames.next()).id).toBe(cursor);
+  await frames.cancel();
+});
+
 test("the stream carries exactly the headers of ADR-0004", async () => {
   const sse = appWith();
 
