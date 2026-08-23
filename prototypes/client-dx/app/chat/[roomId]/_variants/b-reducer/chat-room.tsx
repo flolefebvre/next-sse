@@ -6,11 +6,12 @@ import { useOptimistic, useTransition } from 'react'
 import { postMessage, typing } from '@/app/actions'
 import type { Message } from '@/app/db'
 import { channels, useChannelState } from '@/app/sse.client'
-import { MessageList, StatusPill, TypingIndicator, upsert } from '../shared'
+import { upsertBy, type Snapshot } from '@/lib/next-sse/client'
+import { MessageList, StatusPill, TypingIndicator } from '../shared'
 
-export function ChatRoom({ roomId, snapshot }: { roomId: string; snapshot: { data: Message[]; cursor: string } }) {
+export function ChatRoom({ roomId, snapshot }: { roomId: string; snapshot: Snapshot<Message[]> }) {
   const { state: messages, status } = useChannelState(channels.chat({ roomId }), snapshot, {
-    message: (messages, m) => upsert(messages, m),
+    message: upsertBy('id'),
   })
   const [pending, addPending] = useOptimistic<Message[], Message>([], (list, m) => [...list, m])
   const [, start] = useTransition()

@@ -54,3 +54,22 @@ export function client(live: SnapshotOf<typeof sse, 'chat', Message[]>, snapshot
     nope: (ms: Message[]) => ms,
   })
 }
+
+import { upsertBy } from '@/lib/next-sse/client'
+
+export function upsertInference(snapshot: { data: Message[]; cursor: string }) {
+  // property-key spelling: M inferred from the reducer context, wrong keys refused
+  useChannelState(channels.chat({ roomId: '1' }), snapshot, { message: upsertBy('id') })
+  useChannelState(channels.chat({ roomId: '1' }), snapshot, {
+    // @ts-expect-error 'nope' is not a key of Message
+    message: upsertBy('nope'),
+  })
+  // callback spelling: works with an explicit parameter type
+  useChannelState(channels.chat({ roomId: '1' }), snapshot, { message: upsertBy((m: Message) => m.id) })
+  // callback spelling withOUT annotation: contextual inference reaches the lambda (m: Message)…
+  useChannelState(channels.chat({ roomId: '1' }), snapshot, { message: upsertBy((m) => m.id) })
+  useChannelState(channels.chat({ roomId: '1' }), snapshot, {
+    // @ts-expect-error …and it is really Message, not any: unknown properties are refused
+    message: upsertBy((m) => m.nope),
+  })
+}

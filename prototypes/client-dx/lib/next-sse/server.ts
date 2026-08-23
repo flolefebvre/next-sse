@@ -12,8 +12,15 @@ export type EventMap = Record<string, StandardSchemaV1>
 export type Authorize<P extends string, Ctx> = (params: Params<P>, ctx: Ctx) => boolean | Promise<boolean>
 type Reserved = { name?: never; params?: never; pattern?: never; events?: never; publish?: never; snapshot?: never }
 
-/** What `handle.snapshot(read)` returns: the Channel name, the Cursor taken BEFORE `read`, and the data. Serialisable. */
-export interface Snapshot<E extends EventMap, T> {
+/** What `sse.snapshot(read)` returns (variant B): the Cursor taken BEFORE `read`, and the data. The word
+ * "cursor" never appears in App code: the pair travels as one opaque, serialisable value. */
+export interface Snapshot<T> {
+  readonly data: T
+  readonly cursor: string
+}
+
+/** What `handle.snapshot(read)` returns (variant C): a Snapshot that also says which Channel. */
+export interface ChannelSnapshot<E extends EventMap, T> {
   readonly channel: string
   readonly cursor: string
   readonly data: T
@@ -27,7 +34,7 @@ export interface BoundHandle<P extends string, E extends EventMap> {
   readonly params: Params<P>
   readonly $events?: E
   publish<Ev extends keyof E & string>(event: Ev, payload: InferInput<E[Ev]>): Promise<string>
-  snapshot<T>(read: () => T | Promise<T>): Promise<Snapshot<E, T>>
+  snapshot<T>(read: () => T | Promise<T>): Promise<ChannelSnapshot<E, T>>
 }
 export type BoundInstance<P extends string, E extends EventMap> = BoundHandle<P, E> & {
   [Ev in keyof E & string]: (payload: InferInput<E[Ev]>) => Promise<string>
@@ -48,7 +55,7 @@ export type SSE<Ch extends Record<string, AnyBoundChannel<Ctx>>, Ctx> = Ch & {
   /** The Cursor for this request: cached per request, so every server component in one render gets the same one. */
   cursor(): Promise<string>
   /** Take the Cursor, then run the read: `{ data, cursor }`, the order enforced for you. */
-  snapshot<T>(read: () => T | Promise<T>): Promise<{ data: T; cursor: string }>
+  snapshot<T>(read: () => T | Promise<T>): Promise<Snapshot<T>>
   kick(target: { key: string } | BoundHandle<string, EventMap>): Promise<void>
   handlers: { GET: (request: Request) => Promise<Response> }
   readonly $ctx: Ctx

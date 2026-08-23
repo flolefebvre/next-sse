@@ -8,10 +8,20 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useSSEContext } from './client-provider.tsx'
 import type { Phase, Status } from './core.ts'
 import { fill, type Params, type ParamsArgs } from './pattern.ts'
-import type { AnyBoundChannel, EventMap, SSE, Snapshot } from './server.ts'
+import type { AnyBoundChannel, ChannelSnapshot, EventMap, SSE, Snapshot } from './server.ts'
 import type { InferOutput } from './standard-schema.ts'
 
 export type { Status }
+export type { Snapshot } from './server.ts'
+
+/** Reducer sugar for the common "list keyed by id" merge: replace the item with the same key, else append.
+ * Absorbs the snapshot/replay overlap, a Kick's replay and an action echo alike. */
+export function upsertBy<K extends PropertyKey>(key: K): <M extends Record<K, unknown>>(list: M[], item: M) => M[]
+export function upsertBy<M>(key: (item: M) => unknown): (list: M[], item: M) => M[]
+export function upsertBy(key: PropertyKey | ((item: any) => unknown)): (list: any[], item: any) => any[] {
+  const keyOf = typeof key === 'function' ? key : (item: any) => item[key]
+  return (list, item) => (list.some((x) => keyOf(x) === keyOf(item)) ? list.map((x) => (keyOf(x) === keyOf(item) ? item : x)) : [...list, item])
+}
 
 export interface Handle<K extends string, P extends string, E extends EventMap> {
   readonly key: K
@@ -69,7 +79,7 @@ export function createClient<S extends SSE<any, any>>() {
   }
 
   // ---- B ----
-  function useChannelState<H extends HandleOf<S>, T>(handle: H, snapshot: { data: T; cursor: string }, reducers: Reducers<EventsOf<H>, T>, options: { onReset?: () => void } = {}) {
+  function useChannelState<H extends HandleOf<S>, T>(handle: H, snapshot: Snapshot<T>, reducers: Reducers<EventsOf<H>, T>, options: { onReset?: () => void } = {}) {
     const name = useName(handle)
     const [state, setState] = useState(snapshot.data)
     const [seen, setSeen] = useState(snapshot)
@@ -86,7 +96,7 @@ export function createClient<S extends SSE<any, any>>() {
   }
 
   // ---- C ----
-  function useLive<E extends EventMap, T>(snapshot: Snapshot<E, T>, reducers: Reducers<E, T>, options: { onReset?: () => void } = {}) {
+  function useLive<E extends EventMap, T>(snapshot: ChannelSnapshot<E, T>, reducers: Reducers<E, T>, options: { onReset?: () => void } = {}) {
     const [state, setState] = useState(snapshot.data)
     const [seen, setSeen] = useState(snapshot)
     if (seen !== snapshot) {
@@ -116,4 +126,4 @@ export function createClient<S extends SSE<any, any>>() {
 }
 
 /** The type of `handle.snapshot(read)` for Channel `K` of Registry `S`, for a client component's props. */
-export type SnapshotOf<S, K extends keyof ChannelsOf<S> & string, T> = Snapshot<ChannelsOf<S>[K]['events'], T>
+export type SnapshotOf<S, K extends keyof ChannelsOf<S> & string, T> = ChannelSnapshot<ChannelsOf<S>[K]['events'], T>
