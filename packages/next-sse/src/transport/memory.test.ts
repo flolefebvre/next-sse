@@ -174,7 +174,9 @@ test("the cap bounds the log, and a Cursor into what it dropped is gone", async 
 
 /**
  * The Cursor of the newest dropped Entry is the exact boundary (ADR-0006): nothing published
- * after it was lost, so it still reads, while everything below it is gone.
+ * after it was lost, so it still reads, while everything below it is gone. Trimming takes
+ * Entries out of the log, never positions out of the sequence: what the log mints next carries
+ * on from where it was, however little of it is left.
  */
 test("the Cursor of the last dropped Entry still reads: gone is exact, not approximate", async () => {
   const transport = createMemoryTransport({ retention: { cap: 1 } });
@@ -185,16 +187,8 @@ test("the Cursor of the last dropped Entry still reads: gone is exact, not appro
   expect(await transport.read(first, 100)).toEqual({ gone: true });
   expect(payloadsOf(await readAll(transport, second))).toEqual([{ text: "three" }]);
   expect(await transport.read(third, 100)).toEqual({ entries: [], done: true });
-});
-
-test("a log trimmed to nothing keeps minting Cursors that carry on from where it was", async () => {
-  const transport = createMemoryTransport({ retention: { cap: 1 } });
-  const first = await transport.publish(message("chat:42", { text: "one" }));
-  const second = await transport.publish(message("chat:42", { text: "two" }));
-
-  expect(second).not.toBe(first);
-  expect(await transport.tail()).toBe(second);
-  expect(payloadsOf(await readAll(transport, second))).toEqual([]);
+  expect(new Set([first, second, third]).size).toBe(3);
+  expect(await transport.tail()).toBe(third);
 });
 
 test("the window drops what has aged out, and says so to a Cursor that pointed into it", async () => {
