@@ -48,6 +48,10 @@ _Avoid_: Auth, guard, permission check
 Closing Connections from server code so that they reconnect and go through Authorize again. Addresses Connections by their Key or by Channel, reaches every Instance, and carries no reason or policy of its own.
 _Avoid_: Disconnect, revoke, ban, evict
 
+**Drain**:
+The shutdown act of an Instance: refusing new Connections and ending existing ones with `reconnect` so clients move to a surviving Instance without losing Messages.
+_Avoid_: Graceful shutdown, close-all, evacuate
+
 **Key**:
 The opaque identity the App gives a Connection (typically a user or session id), derived once from the request. The only thing the library knows about who holds a Connection; used to address a Kick.
 _Avoid_: User id, identity, principal, owner
