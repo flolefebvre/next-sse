@@ -4,7 +4,7 @@ A Connection is one `GET` on the SSE route (`?channel=` repeated, optional `?cur
 
 **Heartbeat is a named Control event (`heartbeat`, no `id:`), not an SSE comment.** Comments keep proxies alive but are invisible to JavaScript, so the client core could never detect a dead pipe (proxy idle-out, the iOS "stuck OPEN" report). A data-less `id:` block is mishandled by Firefox and WebKit, so the heartbeat carries none and never moves the Cursor. Default 15 s, configurable; the interval travels in `ready` and the core's watchdog reconnects after 3× without bytes.
 
-**Max Connection lifetime is 30 min ±10 % by default (`0` disables)** and ends with the `reconnect` Control event and a close, the same path as Kick and, later, graceful shutdown; the core reconnects at once with its Cursor, so the cut is gap-free. The lifetime re-spreads Connections across Instances after a deploy and bounds Connections a proxy silently dropped.
+**Max Connection lifetime is 30 min ±10 % by default (`0` disables)** and ends with the `reconnect` Control event and a close, the same path as Kick and Drain (ADR-0011); the core reconnects at once with its Cursor, so the cut is gap-free. The lifetime re-spreads Connections across Instances after a deploy and bounds Connections a proxy silently dropped.
 
 **A Transport outage mid-Connection keeps every Connection open**, heartbeating, with no bound; when the Transport recovers the Instance resumes from its last seen position and sends `reset` only if that position is gone. Closing would turn a backend blip into a thundering herd against Instances that are equally cut off. Operators learn about the outage through observability hooks, not through the wire.
 
