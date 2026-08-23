@@ -33,8 +33,16 @@ The pluggable backend that carries Messages between Instances. The library ships
 _Avoid_: Adapter, driver, backend, broker
 
 **Authorize**:
-The App-supplied decision whether a Connection may subscribe to a given Channel, taken when the Connection is opened (and again on every reconnect).
+The App-supplied decision whether a Connection may subscribe to a given Channel, taken per Channel when the Connection is opened (and again on every reconnect), never per Message. A Channel the decision refuses is dropped from the Connection; the others are unaffected.
 _Avoid_: Auth, guard, permission check
+
+**Kick**:
+Closing Connections from server code so that they reconnect and go through Authorize again. Addresses Connections by their Key or by Channel, reaches every Instance, and carries no reason or policy of its own.
+_Avoid_: Disconnect, revoke, ban, evict
+
+**Key**:
+The opaque identity the App gives a Connection (typically a user or session id), derived once from the request. The only thing the library knows about who holds a Connection; used to address a Kick.
+_Avoid_: User id, identity, principal, owner
 
 **Prefix**:
 The per-App namespace applied to everything the Redis Transport writes or subscribes to, so several Apps can share one Redis/Valkey.
