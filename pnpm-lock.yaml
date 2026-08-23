@@ -32,6 +32,9 @@ importers:
       prettier:
         specifier: ^3.9.6
         version: 3.9.6
+      redis:
+        specifier: ^6.2.1
+        version: 6.2.1
       testcontainers:
         specifier: ^12.1.0
         version: 12.1.0
