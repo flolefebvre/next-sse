@@ -12,8 +12,7 @@ export type Snapshot<Data = unknown> = {
   readonly [snapshotBrand]: true;
 };
 
-/** Where a Connection stands, as the hooks report it (ADR-0007). */
-export type Status = "connecting" | "replaying" | "live" | "reconnecting" | "refused";
+export type { Status } from "./core.js";
 
 /**
  * The client-side entry a React tree is built on: one Connection, shared by every hook.
