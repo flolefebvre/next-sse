@@ -14,23 +14,28 @@ pnpm play      # = tsc (every @ts-expect-error in variants/*/usage.ts must fire)
 
 Then open the three files of each variant in an editor and hover: that is the prototype.
 
-## The two variants
+## The four variants
 
-Both share `lib/pattern.ts` (`{name}` placeholders, params inferred from the pattern literal, fill/parse at runtime), `lib/standard-schema.ts` (vendored Standard Schema types, `asType<T>()` for types-only payloads) and `lib/channel.ts` (a Channel is `pattern` + `events: { name: schema }`, an instance `chat({ roomId })` is the typed handle).
+All share `lib/pattern.ts` (`{name}` placeholders, params inferred from the pattern literal, fill/parse at runtime), `lib/standard-schema.ts` (vendored Standard Schema types, `asType<T>()` for types-only payloads) and `lib/channel.ts` (a Channel is `pattern` + `events: { name: schema }`, an instance `chat({ roomId })` is the typed handle). Call sites are the same everywhere: `sse.publish(chat({ roomId }), 'message', {...})` and `useChannel(chat({ roomId }), { message: (m) => ... })`.
 
-| | **C: split registry** (`variants/c-split/`) | **D: colocated, type-only client** (`variants/d-colocated/`) |
-|---|---|---|
-| Declaration | `defineChannel({ pattern, events })` in a **shared** `channels.ts` | `channel({ pattern, events, authorize })` in **one server-only** file |
-| Authorize | `createSSE({ context, channels, authorize: { chat: ({ roomId }, ctx) => … } })`, exhaustive map, params typed from the pattern | inside each `channel({...})`; `initSSE({ context })` binds the ctx type |
-| Client import | the shared module (value): zod + patterns in the client bundle, names built client-side | `import type { sse }` + `createClient<typeof sse>()` Proxy: nothing but types reaches the client |
-| Client handle | `chat({ roomId })` → `{ name: 'chat:42', … }` | `channels.chat({ roomId })` → `{ key: 'chat', params }`: the client never sees a Channel name |
-| Connect request | `?channel=chat:42&channel=…` — server **parses** names back to params | `?channels=[{key,params}]` — no parsing, server **mints** the name after Authorize |
-| Files per App | 2 (`channels.ts`, `channels.server.ts`) | 2 (`sse.server.ts`, `sse.client.ts`) but the client one is 2 lines |
+| | **C: split** | **D: colocated, type-only client** | **E: colocated, client restates patterns** | **F: shared, colocated, ctx-only authorize** |
+|---|---|---|---|---|
+| Folder | `variants/c-split/` | `variants/d-colocated/` | `variants/e-colocated-names/` | `variants/f-shared-colocated/` |
+| Where a Channel is declared | shared `channels.ts`: `defineChannel({ pattern, events })` | one server-only file: `channel({ pattern, events, authorize })` | same as D | shared `channels.ts`: `channel({ pattern, events, authorize })` |
+| Where authorize lives | `createSSE({ authorize: { chat: … } })`, a second file, exhaustive map | next to its Channel | next to its Channel | next to its Channel, **but may only use `(params, ctx)`** |
+| What authorize can import | anything server-side | anything server-side | anything server-side | nothing: capabilities come through `ctx` from the server-only `context(request)` |
+| Client gets | the shared module (patterns + schemas as values) | `import type` + Proxy: types only | `import type` + a pattern map restated once, **compiler-checked** against the server registry | the shared module (patterns + schemas + authorize *code*) |
+| Client knows Channel names | yes | **no**: handle is `{ key, params }` | yes | yes |
+| Connection carries | names (`?channel=chat:42`), server parses | `{ key, params }`, server mints the name | names, server parses | names, server parses |
+| Duplication | none | none | one pattern string per Channel on the client | none |
+| In the client bundle | zod + patterns | nothing | patterns | zod + patterns + authorize function bodies |
+
+**The trade in one line.** C is the only shape where the client holds the real values *and* authorize imports server code freely, at the price of a split. Every colocated shape gives up one: D/E keep authorize free but the client has no values (D: no names; E: restate them), F keeps shared values but authorize goes through `ctx` and its logic is readable in the browser.
 
 ## Things to react to
 
-1. **C or D?** C matches the research recommendation and Inngest/Zero; D keeps Authorize next to its Channel (the ticket's title), and removes schema code from the client bundle. D changes what the Connection carries (`key+params` vs names) — names then exist only server-side and in the Redis wire contract.
-2. **`events` map vs one schema per Channel.** Both variants use `events: { message, typing }`. For single-kind Channels (`notifications`) the extra level is visible at every call site: `publish(x, 'notification', …)`, `useChannel(x, { notification })`.
+1. **Which shape?** Colocation is the standing preference; the question is D (no names on the client), E (restate patterns, compiler-checked) or F (shared file, authorize limited to `ctx`). F's `ctx` doubles as an explicit seam for "what authorize may see"; E's pattern map is a small, impossible-to-get-wrong list; D changes what the Connection carries.
+2. **`events` map vs one schema per Channel.** All variants use `events: { message, typing }`. For single-kind Channels (`notifications`) the extra level is visible at every call site: `publish(x, 'notification', …)`, `useChannel(x, { notification })`.
 3. **Authorize signature**: `(params, ctx) => boolean | Promise<boolean>`, with `ctx` from `context(request)`. No `request` in the params, no way to say *why* a Channel was denied.
 4. **Any unknown or denied Channel refuses the whole Connection** (403 in the demo). Is an unknown name a 403 or a 400?
 5. **Pattern grammar**: `{name}`, literal separators, params must not contain `:` (`fill` throws, `chat:4:2` never matches). Regex per param, optional params and wildcards are deliberately absent.

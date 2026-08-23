@@ -7,6 +7,12 @@ import { sse as sseC } from './variants/c-split/channels.server.ts'
 import * as Cusage from './variants/c-split/usage.ts'
 import * as D from './variants/d-colocated/channels.server.ts'
 import * as Dusage from './variants/d-colocated/usage.ts'
+import * as E from './variants/e-colocated-names/channels.server.ts'
+import { channels as Eclient } from './variants/e-colocated-names/channels.client.ts'
+import * as Eusage from './variants/e-colocated-names/usage.ts'
+import * as F from './variants/f-shared-colocated/channels.ts'
+import { sse as sseF } from './variants/f-shared-colocated/sse.server.ts'
+import * as Fusage from './variants/f-shared-colocated/usage.ts'
 
 const h = (s: string) => console.log(`\n\x1b[1m${s}\x1b[0m`)
 const row = (...cells: unknown[]) => console.log('  ' + cells.map((c) => (typeof c === 'string' ? c : JSON.stringify(c))).join('  '))
@@ -79,4 +85,35 @@ row('GET /api/sse?channels=[{"key":"chat","params":{"roomId":"42"}}] as u7 →',
 await publishes(D.sse, D.chat, D.announcements)
 Dusage.ChatRoom({ roomId: '42', userId: 'u7' })
 printSubscriptions('the client only knows key + params; it never sees a Channel name')
+
+// ───────────────────────────── Variant E ─────────────────────────────
+console.log('\n══════════ Variant E: D\'s server-only colocated registry + client restates patterns (compiler-checked) ══════════')
+
+h('Client-side instances: built from the restated pattern map, so the client has real names')
+for (const i of [Eclient.chat({ roomId: '42' }), Eclient.notifications({ userId: 'u7' }), Eclient.announcements()]) {
+  row(i.pattern.padEnd(28), '→ name', i.name.padEnd(24), 'params', i.params, 'events (runtime)', Object.keys(i.events), '← no schemas on the client')
+}
+h('Connect as u7 asking for names (parsed server-side, as in C)')
+const rE = await E.sse.connect(asUser('u7'), reqC)
+rE.channels.forEach((c) => row(c.name.padEnd(24), '→', (c.key ?? '(no pattern matches)').padEnd(22), c.params ?? '', c.status.toUpperCase()))
+row('Connection:', rE.accepted ? 'ACCEPTED' : 'REFUSED')
+await publishes(E.sse, E.chat, E.announcements)
+Eusage.ChatRoom({ roomId: '42', userId: 'u7' })
+printSubscriptions('names built on the client from the restated patterns')
+
+// ───────────────────────────── Variant F ─────────────────────────────
+console.log('\n══════════ Variant F: one SHARED channels.ts with authorize colocated (ctx-only), tiny server file ══════════')
+
+h('Instances (shared values, same on server and client)')
+for (const i of [F.chat({ roomId: '42' }), F.notifications({ userId: 'u7' }), F.announcements()]) {
+  row(i.pattern.padEnd(28), '→ name', i.name.padEnd(24), 'params', i.params, 'events', Object.keys(i.events))
+}
+h('Connect as u7 asking for names; authorize runs against ctx = { user, isMember }')
+const rF = await sseF.connect(asUser('u7'), reqC)
+rF.channels.forEach((c) => row(c.name.padEnd(24), '→', (c.key ?? '(no pattern matches)').padEnd(22), c.params ?? '', c.status.toUpperCase()))
+row('Connection:', rF.accepted ? 'ACCEPTED' : 'REFUSED')
+row('What the client bundle would contain for chat.authorize:', F.chat.authorize.toString())
+await publishes(sseF, F.chat, F.announcements)
+Fusage.ChatRoom({ roomId: '42', userId: 'u7' })
+printSubscriptions('shared values, names built on the client')
 console.log()
