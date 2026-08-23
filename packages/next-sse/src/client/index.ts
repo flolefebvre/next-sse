@@ -1,4 +1,18 @@
+"use client";
+
 import { notImplemented } from "../internal/not-implemented.js";
+
+export { createClient } from "./create-client.js";
+export type {
+  ChannelSubscription,
+  Channels,
+  Handle,
+  Handlers,
+  SSEClient,
+} from "./create-client.js";
+export { SSEClientProvider } from "./provider.js";
+export type { ClientChannel, ClientChannels, SSEClientProviderProps } from "./provider.js";
+export type { Status } from "./core.js";
 
 declare const snapshotBrand: unique symbol;
 
@@ -11,27 +25,6 @@ export type Snapshot<Data = unknown> = {
   readonly data: Data;
   readonly [snapshotBrand]: true;
 };
-
-export type { Status } from "./core.js";
-
-/**
- * The client-side entry a React tree is built on: one Connection, shared by every hook.
- */
-export function createClient(options?: unknown): never {
-  void options;
-
-  return notImplemented("createClient");
-}
-
-/**
- * The public client provider, for an App that overrides the default Reset behaviour by
- * composition rather than mounting the Server Component provider.
- */
-export function SSEClientProvider(props?: unknown): never {
-  void props;
-
-  return notImplemented("SSEClientProvider");
-}
 
 /**
  * The keyed-merge reducer that covers the Snapshot/replay overlap, Kick replay and the echo

@@ -1,3 +1,4 @@
+import { fillPattern } from "../internal/pattern.js";
 import type { Cursor } from "../transport/index.js";
 
 import { createGetHandler } from "./handler.js";
@@ -55,7 +56,7 @@ function handleFor(
   declaration: ChannelDeclaration,
   params: Record<string, string>,
 ): Handle {
-  const name = channelName(declaration.pattern, params);
+  const name = fillPattern(declaration.pattern, params);
   const publish = (event: string, payload: unknown): Promise<Cursor> =>
     instance.transport.publish({ v: 1, type: "message", channel: name, event, payload });
 
@@ -65,20 +66,4 @@ function handleFor(
   }
 
   return handle;
-}
-
-/**
- * The Channel name a Handle publishes to: the pattern with every `{name}` replaced by the param
- * of that name. A param the caller did not give is an error rather than a Channel name with a
- * brace in it, which would reach the wire and silently match nothing.
- */
-function channelName(pattern: string, params: Record<string, string>): string {
-  return pattern.replace(/\{(\w+)\}/g, (_, name: string) => {
-    const value = params[name];
-    if (value === undefined) {
-      throw new Error(`The Channel "${pattern}" needs a "${name}" param, and none was given.`);
-    }
-
-    return value;
-  });
 }

@@ -60,3 +60,9 @@ export async function flush(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
+
+/**
+ * Do something the outside world does — deliver a frame, fire a timer — and let React catch up
+ * with whatever it caused. Re-exported so a test never reaches for `act` itself.
+ */
+export { act };
