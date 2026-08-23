@@ -2,6 +2,8 @@
 
 A Connection is one `GET` on the SSE route (`?channel=` repeated, optional `?cursor=`, `Last-Event-ID` wins). The handler bails out of prerendering, runs Authorize, and writes a `ready` Control event `{ cursor, heartbeat, refused }` as the first chunk of a `200` stream, followed by `retry: 3000`, the replay, `caught-up`, then the live feed. Only failures before Authorize answer non-200: `400` for no Channels, `503` + `Retry-After` when the Transport is unavailable. A malformed Cursor is not a `400`: the Cursor is opaque to the Instance, the Transport answers `gone` for anything it cannot parse, and the route sends `reset` on a `200` stream (ADR-0006), because the core retries a non-200 with the same URL forever.
 
+**The wire has exactly two block shapes: a Message is the unnamed block, a Control event is a named one.** A Message carries `id: <cursor>` and one `data:` line holding the ADR-0006 envelope — `{ channel, event, payload }` — and **no `event:` line at all**, so the browser dispatches it under the SSE default type. A Control event carries `event: <name>` and a `data:` line, and never an `id:`. Two things follow. The Channel is on the wire, which is what lets the client core demultiplex a Connection carrying many Channels; and a declared event name never reaches the `event:` field, so an App may declare an event called `heartbeat` or `caught-up` without it posing as a Control event — the reserved-name list of ADR-0008 covers property collisions only, and needs no wire entries. The core reads Messages with one listener rather than one per declared name, which also keeps a Handle's dynamic `publish(event, payload)` deliverable.
+
 **Heartbeat is a named Control event (`heartbeat`, no `id:`), not an SSE comment.** Comments keep proxies alive but are invisible to JavaScript, so the client core could never detect a dead pipe (proxy idle-out, the iOS "stuck OPEN" report). A data-less `id:` block is mishandled by Firefox and WebKit, so the heartbeat carries none and never moves the Cursor. Default 15 s, configurable; the interval travels in `ready` and the core's watchdog reconnects after 3× without bytes.
 
 **Max Connection lifetime is 30 min ±10 % by default (`0` disables)** and ends with the `reconnect` Control event and a close, the same path as Kick and Drain (ADR-0011); the core reconnects at once with its Cursor, so the cut is gap-free. The lifetime re-spreads Connections across Instances after a deploy and bounds Connections a proxy silently dropped.
@@ -16,6 +18,7 @@ A Connection is one `GET` on the SSE route (`?channel=` repeated, optional `?cur
 
 ## Considered Options
 
+- The declared event name as the SSE `event:` field, with the payload as the data: rejected, it leaves the Connection's many Channels indistinguishable, makes every declared name collide with the Control namespace, and forces the core to register a listener per name — which silently drops a Handle's dynamic `publish`.
 - Comment heartbeat (`: ping`): rejected, invisible to the client, no liveness watchdog possible.
 - Heartbeat with an `id:` to keep the Cursor fresh: rejected, Firefox drops and WebKit defers the `id` of a data-less block.
 - No max lifetime by default: rejected, Connections never re-balance after a deploy and zombies a proxy dropped silently are never reclaimed; the cost is one gap-free reconnect per half hour.

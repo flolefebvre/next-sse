@@ -2,10 +2,23 @@ import {
   createClient,
   SSEClientProvider,
   upsertBy,
+  type ChannelSubscription,
+  type Channels,
+  type ClientChannel,
+  type ClientChannels,
+  type Handle,
+  type Handlers,
   type Snapshot,
+  type SSEClient,
+  type SSEClientProviderProps,
   type Status,
 } from "@flefebvre/next-sse/client";
-import { initSSE, SSEProvider, toClientChannels } from "@flefebvre/next-sse/server";
+import {
+  initSSE,
+  SSEProvider,
+  toClientChannels,
+  type SSEProviderProps,
+} from "@flefebvre/next-sse/server";
 import { FakeEventSource, transportContract } from "@flefebvre/next-sse/testing";
 import {
   createPublisher,
@@ -50,6 +63,15 @@ export const values = [
 export type Types = [
   Snapshot<{ id: string }>,
   Status,
+  ChannelSubscription,
+  Channels<{ chat: unknown }>,
+  ClientChannel,
+  ClientChannels,
+  Handle,
+  Handlers,
+  SSEClient<{ chat: unknown }>,
+  SSEClientProviderProps,
+  SSEProviderProps,
   Cursor,
   Entry,
   Page,

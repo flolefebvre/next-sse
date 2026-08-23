@@ -6,12 +6,13 @@ import { openStream } from "./harness/stream.js";
 /**
  * The wire, end to end: a client opens a Connection on a running Instance of the built example
  * app, the app Publishes through a bound Handle from an ordinary Route Handler, and the Message
- * comes out of the stream on the event name the Registry declared.
+ * comes out of the stream as an unnamed block carrying its Channel, the event name the Registry
+ * declared, and the payload.
  */
 test("a Publish reaches a Connection", async () => {
   const instance = await startInstance();
   const url = `${instance.url}/api/sse?channel=chat:42`;
-  const stream = openStream(url, ["message"]);
+  const stream = openStream(url);
 
   try {
     const ready = await stream.next("ready");
@@ -30,7 +31,11 @@ test("a Publish reaches a Connection", async () => {
     expect(published.status).toBe(200);
 
     const message = await stream.next("message");
-    expect(JSON.parse(message.data)).toEqual({ text: "hello from a Route Handler" });
+    expect(JSON.parse(message.data)).toEqual({
+      channel: "chat:42",
+      event: "message",
+      payload: { text: "hello from a Route Handler" },
+    });
     expect(message.lastEventId).not.toBe("");
   } finally {
     stream.close();

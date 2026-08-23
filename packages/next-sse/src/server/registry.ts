@@ -1,3 +1,4 @@
+import { fillPattern } from "../internal/pattern.js";
 import type { Cursor } from "../transport/index.js";
 
 import { createGetHandler } from "./handler.js";
@@ -19,9 +20,16 @@ export type Handle = {
   publish(event: string, payload: unknown): Promise<Cursor>;
 } & Record<string, (payload: unknown) => Promise<Cursor>>;
 
-/** The App's Registry: the route handlers it re-exports, and one Handle factory per Channel. */
+/**
+ * The App's Registry: the route handlers it re-exports, the Channels as declared, and one
+ * Handle factory per Channel.
+ *
+ * `channels` is what `<SSEProvider>` strips down and shares with the client; it is one of the
+ * Registry keys ADR-0008 reserves, precisely because the Registry needs it for itself.
+ */
 export type Registry = {
   handlers: { GET: (request: Request) => Promise<Response> };
+  channels: Record<string, ChannelDeclaration>;
 } & Record<string, (params?: Record<string, string>) => Handle>;
 
 /** Declare one Channel. Authorize and event schemas join this signature with their own tickets. */
@@ -42,12 +50,24 @@ export function createSSE(
 ): Registry {
   instance.registry = channels;
 
-  const registry = { handlers: { GET: createGetHandler(instance) } } as Registry;
+  const registry: Record<string, unknown> = {};
   for (const [key, declaration] of Object.entries(channels)) {
-    registry[key] = (params = {}) => handleFor(instance, declaration, params);
+    registry[key] = (params: Record<string, string> = {}) =>
+      handleFor(instance, declaration, params);
   }
 
-  return registry;
+  /**
+   * The Registry's own keys are written last, so a Channel that happens to be named after one
+   * cannot take it. ADR-0008 reserves both names and requires a runtime throw for an App that
+   * uses one; that throw pairs with the type-level enforcement and belongs to the typing
+   * ticket. Until it lands, the cost of declaring a Channel called `channels` is that its
+   * Handle factory is missing — loud, at the Publish that needs it — rather than an allowlist
+   * that quietly comes out empty and takes every subscription in the App with it.
+   */
+  registry.handlers = { GET: createGetHandler(instance) };
+  registry.channels = channels;
+
+  return registry as unknown as Registry;
 }
 
 function handleFor(
@@ -55,7 +75,7 @@ function handleFor(
   declaration: ChannelDeclaration,
   params: Record<string, string>,
 ): Handle {
-  const name = channelName(declaration.pattern, params);
+  const name = fillPattern(declaration.pattern, params);
   const publish = (event: string, payload: unknown): Promise<Cursor> =>
     instance.transport.publish({ v: 1, type: "message", channel: name, event, payload });
 
@@ -65,20 +85,4 @@ function handleFor(
   }
 
   return handle;
-}
-
-/**
- * The Channel name a Handle publishes to: the pattern with every `{name}` replaced by the param
- * of that name. A param the caller did not give is an error rather than a Channel name with a
- * brace in it, which would reach the wire and silently match nothing.
- */
-function channelName(pattern: string, params: Record<string, string>): string {
-  return pattern.replace(/\{(\w+)\}/g, (_, name: string) => {
-    const value = params[name];
-    if (value === undefined) {
-      throw new Error(`The Channel "${pattern}" needs a "${name}" param, and none was given.`);
-    }
-
-    return value;
-  });
 }
