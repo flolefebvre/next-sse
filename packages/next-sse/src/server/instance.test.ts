@@ -329,11 +329,12 @@ test("a live-only connect adopts the tail, and a reconnect from it misses nothin
 
 /**
  * A live-only connect is registered before it reads the tail, so a Publish landing in that
- * window is in its buffer while its Cursor says it is already past it. The same equality cut
- * settles it: the Connection is told about what came after the Cursor it was given, and only
- * that, which is what keeps `ready`'s Cursor honest.
+ * window is in its buffer while the Cursor it adopted already covers it. It is delivered: this
+ * client has seen nothing yet, so that is over-delivery and not a duplicate, and its position
+ * follows what it actually receives. Withholding it would mean ordering two Cursors, which the
+ * Instance cannot do — and could not do reliably anyway against a feed that lags `read`.
  */
-test("a live-only connect is not fed what its adopted tail already covers", async () => {
+test("a live-only connect is fed what landed in its opening window, and still adopts the tail", async () => {
   const transport = createMemoryTransport();
   const instance = getInstance({ transport });
   const { connection, trace } = tracing("chat:42");
@@ -346,10 +347,12 @@ test("a live-only connect is not fed what its adopted tail already covers", asyn
   });
 
   const opening = await instance.open(connection);
+  expect(opening.cursor).toBe(await tail());
+
   await opening.start();
   await transport.publish(message("chat:42", { text: "live" }));
 
-  expect(trace).toEqual(["caught-up", "chat:42 live"]);
+  expect(trace).toEqual(["caught-up", "chat:42 in the opening window", "chat:42 live"]);
 });
 
 test("a Connection that never opened its replay is fed nothing, and leaves no trace behind", async () => {
@@ -363,5 +366,65 @@ test("a Connection that never opened its replay is fed nothing, and leaves no tr
   await transport.publish(message("chat:42", { text: "after it left" }));
 
   expect(trace).toEqual([]);
+  expect(instance.connections.size).toBe(0);
+});
+
+/**
+ * The seam as a Transport whose reader runs behind its `read` presents it: the Entry the replay
+ * ended on reaches the live feed only after the Connection has been handed to it. The contract
+ * promises delivery after `subscribe`, never that the feed keeps up with a concurrent `read`
+ * (ADR-0005), so this is the ordinary case for Redis — and the Connection must still see that
+ * Entry exactly once.
+ */
+test("an Entry the feed delivers late, after the replay carried it, is not delivered twice", async () => {
+  const { transport, instance, from, connection, trace } = await aboutToResume();
+  const behind: (() => void)[] = [];
+  const drain = (): void => {
+    const pending = behind.splice(0, behind.length);
+    for (const late of pending) late();
+  };
+  const subscribe = transport.subscribe.bind(transport);
+  vi.spyOn(transport, "subscribe").mockImplementation((listener, options) =>
+    subscribe((entry) => behind.push(() => listener(entry)), options),
+  );
+  publishingDuringRead(transport, { before: [message("chat:42", { text: "mid-replay" })] });
+
+  await (await instance.open(connection, { after: from })).start();
+  drain();
+  await transport.publish(message("chat:42", { text: "live" }));
+  drain();
+
+  expect(trace).toEqual(["chat:42 missed", "chat:42 mid-replay", "caught-up", "chat:42 live"]);
+});
+
+test("a client that goes away mid-replay stops it, rather than paging the rest of the log", async () => {
+  const transport = createMemoryTransport();
+  const instance = getInstance({ transport });
+  const from = await transport.tail();
+  for (let n = 0; n < 1201; n += 1) {
+    await transport.publish(message("chat:42", { text: `n${String(n)}` }));
+  }
+
+  /** The Connection closes itself in the middle of the replay, the way an abort does. */
+  const leaving: { close?: () => void } = {};
+  const trace: string[] = [];
+  const connection: Connection = {
+    channels: new Set(["chat:42"]),
+    deliver: (entry) => {
+      trace.push((entry.payload as Text).text);
+      if (trace.length === 500) leaving.close?.();
+    },
+    reset: () => trace.push("reset"),
+    caughtUp: () => trace.push("caught-up"),
+  };
+
+  const opening = await instance.open(connection, { after: from });
+  leaving.close = opening.close;
+  const reads = vi.spyOn(transport, "read");
+  await opening.start();
+
+  expect(trace).toHaveLength(500);
+  expect(trace).not.toContain("caught-up");
+  expect(reads).not.toHaveBeenCalled();
   expect(instance.connections.size).toBe(0);
 });

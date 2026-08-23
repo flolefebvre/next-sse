@@ -62,12 +62,15 @@ export interface Instance {
 }
 
 /**
- * One Connection as the Instance holds it: itself, and the live Entries buffered while it is
- * still opening. A buffer of `undefined` is a Connection that has caught up and is live.
+ * One Connection as the Instance holds it: itself, the live Entries buffered while it is still
+ * opening, and the Cursors its replay already carried. A buffer of `undefined` is a Connection
+ * that has caught up and is live; `replayed` of `undefined` is one the live feed has carried
+ * past everything it was replayed.
  */
 interface Held {
   connection: Connection;
   buffer: StoredEntry[] | undefined;
+  replayed: Set<Cursor> | undefined;
 }
 
 interface InstanceState extends Instance {
@@ -115,7 +118,7 @@ async function open(
 ): Promise<Opening> {
   await ensureFeed(state);
 
-  const held: Held = { connection, buffer: [] };
+  const held: Held = { connection, buffer: [], replayed: undefined };
   state.held.set(connection, held);
 
   const close = (): void => {
@@ -147,12 +150,21 @@ async function open(
 
 /**
  * Everything the Connection missed, then the live feed, with no gap and no duplicate between
- * them: replay pages strictly after the Cursor, the buffered live Entries cut up to and
- * including the last one replayed, `caught-up`, then whatever the buffer still holds.
+ * them: replay pages strictly after the Cursor, then `caught-up`, then the live Entries that
+ * were buffered while the replay ran — minus the ones the replay already carried.
  *
- * The Instance never orders two Cursors. The cut is an equality search in the buffer, and an
- * Entry the buffer does not carry is one published before this Connection was registered —
- * which nothing in the buffer can duplicate.
+ * The Instance never orders two Cursors. What the replay carried is remembered as a set, and
+ * the feed skips an Entry that is in it until it meets one that is not, which is the moment the
+ * two have joined up: the feed is ordered, so nothing that was replayed can arrive after
+ * something that was not. Doing it this way rather than cutting the buffer at the last replayed
+ * Cursor is what makes the seam hold for a Transport whose reader runs behind its `read` — a
+ * Redis subscription lagging by one Entry would otherwise deliver that Entry twice.
+ *
+ * A live-only Connection replays nothing, so its set is empty and it is fed whatever landed in
+ * its buffer while it was opening, including Entries the tail it adopted already covers. That
+ * is over-delivery, not duplication: this client has seen nothing yet, its position follows
+ * what it actually receives, and withholding those Entries would take ordering the Instance
+ * does not have — under a lagging reader it could not be done reliably at all.
  */
 async function replay(
   state: InstanceState,
@@ -163,6 +175,7 @@ async function replay(
 ): Promise<void> {
   if (gone) held.connection.reset();
 
+  const replayed = new Set<Cursor>();
   let last = cursor;
   let page = first;
   while (page !== undefined) {
@@ -177,21 +190,27 @@ async function replay(
 
     for (const entry of page.entries) {
       last = entry.cursor;
+      replayed.add(entry.cursor);
       if (entry.type === "message" && held.connection.channels.has(entry.channel)) {
         held.connection.deliver(entry);
       }
     }
 
+    /**
+     * A client that went away mid-replay is owed nothing further: the Connection has left the
+     * table, and paging the rest of the log for it would be work nobody is reading.
+     */
+    if (!state.held.has(held.connection)) return;
+
     page = page.done ? undefined : await state.transport.read(last, REPLAY_PAGE_SIZE);
   }
 
   const buffered = held.buffer ?? [];
-  const seen = buffered.findIndex((entry) => entry.cursor === last);
-  const live = seen === -1 ? buffered : buffered.slice(seen + 1);
   held.buffer = undefined;
+  held.replayed = replayed;
 
   held.connection.caughtUp();
-  for (const entry of live) deliver(held.connection, entry);
+  for (const entry of buffered) feed(held, entry);
 }
 
 /**
@@ -220,9 +239,22 @@ async function ensureFeed(state: InstanceState): Promise<void> {
  */
 function route(state: InstanceState, entry: StoredEntry): void {
   for (const held of state.held.values()) {
-    if (held.buffer === undefined) deliver(held.connection, entry);
+    if (held.buffer === undefined) feed(held, entry);
     else held.buffer.push(entry);
   }
+}
+
+/**
+ * One Entry to a Connection past its replay, unless the replay already carried it. The first
+ * Entry the replay did not carry is where the two joined up, and nothing is checked afterwards.
+ */
+function feed(held: Held, entry: StoredEntry): void {
+  if (held.replayed !== undefined) {
+    if (held.replayed.has(entry.cursor)) return;
+    held.replayed = undefined;
+  }
+
+  deliver(held.connection, entry);
 }
 
 /** One Entry to one live Connection: a Message on a Channel it named, and nothing else. */
