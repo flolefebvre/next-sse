@@ -53,7 +53,7 @@ The opaque identity the App gives a Connection (typically a user or session id),
 _Avoid_: User id, identity, principal, owner
 
 **Prefix**:
-The per-App namespace applied to everything the Redis Transport writes or subscribes to, so several Apps can share one Redis/Valkey.
+The per-App namespace applied to everything the Redis Transport writes or subscribes to, and the only thing keeping Apps apart on a shared Redis/Valkey: two Apps under one Prefix deliver each other's Messages.
 _Avoid_: Namespace, key prefix, scope
 
 **Cursor**:
@@ -61,7 +61,7 @@ The opaque, Transport-minted position in an App's Message flow that a Connection
 _Avoid_: Offset, sequence number, last event id, checkpoint
 
 **Reset**:
-The signal to a Connection that its Cursor is unusable (too old, or unknown to the Transport), so the App must refetch its state before continuing live.
+The signal to a Connection that its Cursor is unusable (too old, malformed, or unknown to the Transport), so the App must refetch its state before continuing live.
 _Avoid_: Resync, invalidate, gap
 
 **Registry**:
@@ -69,7 +69,7 @@ The App's single server-only declaration of all its Channels (pattern, events, A
 _Avoid_: Config, schema, definitions, manifest
 
 **Control event**:
-An in-band signal from the library to the client core on a Connection (`ready`, `heartbeat`, `reconnect`, `caught-up`, `Reset`). Never a Message: it belongs to no Channel, carries no Cursor and is never replayed.
+An in-band signal from the library to the client core on a Connection (`ready`, `heartbeat`, `reconnect`, `caught-up`, `reset`). Never a Message: it belongs to no Channel, carries no Cursor and is never replayed.
 _Avoid_: System message, meta event, protocol message
 
 **Handle**:
