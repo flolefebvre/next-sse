@@ -64,6 +64,10 @@ _Avoid_: Offset, sequence number, last event id, checkpoint
 The signal to a Connection that its Cursor is unusable (too old, malformed, or unknown to the Transport), so the App must refetch its state before continuing live.
 _Avoid_: Resync, invalidate, gap
 
+**Snapshot**:
+The one value a server component hands the client to make server-rendered data live: the data it read and the Cursor taken just before that read, opaque and serialisable. The client resumes the Channel from it without ever seeing the Cursor.
+_Avoid_: Initial data, seed, hydration payload
+
 **Registry**:
 The App's single server-only declaration of all its Channels (pattern, events, Authorize), created by `createSSE`. The source of truth for types on both sides and for what `<SSEProvider>` shares with the client.
 _Avoid_: Config, schema, definitions, manifest
