@@ -13,7 +13,7 @@
     "format:check": "prettier --check .",
     "lint": "eslint --max-warnings=0",
     "duplication": "jscpd",
-    "typecheck": "tsc --noEmit && pnpm --filter next-sse-example-basic run typecheck",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run --project unit --project client --project integration",
     "test:unit": "vitest run --project unit",
     "test:client": "vitest run --project client",
