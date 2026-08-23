@@ -10,21 +10,33 @@ import {
   type Unsubscribe,
 } from "./index.js";
 
+/** How long an Entry stays readable, in seconds, unless the App says otherwise (ADR-0006). */
+const DEFAULT_WINDOW_SECONDS = 300;
+
+/** How many Entries the log keeps at most, unless the App says otherwise (ADR-0006). */
+const DEFAULT_CAP = 10_000;
+
 /**
- * How much of the log is kept. Not honoured yet: this build never trims, so `read` never
- * answers `gone` for an Entry that was published on this Transport. The option is on the
- * factory from the start because ADR-0008 fixes the signature, and the two bounds ADR-0006
- * describes (a count cap and a time window) apply to both Transports.
+ * How much of the log is kept. Both bounds apply to both Transports (ADR-0006): a count cap,
+ * and a time window. What falls outside either is gone, and a Cursor that pointed into it
+ * answers `gone` rather than resuming somewhere arbitrary.
  */
 export interface Retention {
-  /** How long an Entry stays readable, in seconds. */
+  /** How long an Entry stays readable, in seconds. Defaults to 300. */
   window?: number;
-  /** How many Entries the log keeps at most. */
+  /** How many Entries the log keeps at most. Defaults to 10 000. */
   cap?: number;
 }
 
 export interface MemoryTransportOptions {
   retention?: Retention;
+}
+
+/** One Entry as this log holds it: the envelope, its position, and when it was published. */
+interface Held {
+  entry: StoredEntry;
+  position: number;
+  publishedAt: number;
 }
 
 /**
@@ -36,28 +48,55 @@ export interface MemoryTransportOptions {
  * is what `tail()` answers while nothing was ever published (ADR-0004).
  */
 export function createMemoryTransport(options: MemoryTransportOptions = {}): Transport {
-  void options.retention;
+  const windowMs = (options.retention?.window ?? DEFAULT_WINDOW_SECONDS) * 1000;
+  const cap = options.retention?.cap ?? DEFAULT_CAP;
 
   const epoch = randomUUID().slice(0, 8);
-  const log: StoredEntry[] = [];
+  const log: Held[] = [];
   const listeners = new Set<(entry: StoredEntry) => void>();
+  let minted = 0;
+  /**
+   * The highest position this log ever dropped, which is what makes `gone` exact (ADR-0006's
+   * `max-deleted-entry-id` rule): a Cursor at or above it has lost nothing to trimming, and one
+   * below it has. `0` is the position before the first Entry, which nothing can be below.
+   */
+  let dropped = 0;
   let closed = false;
 
   const cursorOf = (position: number): Cursor => `${epoch}-${String(position)}`;
 
   /**
-   * Where a Cursor sits in the log, as an index into it, or `undefined` when this log has no
-   * idea what it is. `<epoch>-0` is a position, not an Entry, so it reads from the start.
+   * Drop what retention no longer covers: everything past the cap, and everything older than
+   * the window. Both bounds are applied before the log is served as well as after it is
+   * appended to, so a log that went quiet still tells the truth about what it has kept.
    */
-  const positionOf = (cursor: Cursor): number | undefined => {
+  const trim = (): void => {
+    const oldest = Date.now() - windowMs;
+    let drop = Math.max(log.length - cap, 0);
+    while (drop < log.length && (log[drop] as Held).publishedAt <= oldest) drop += 1;
+    if (drop === 0) return;
+
+    dropped = (log[drop - 1] as Held).position;
+    log.splice(0, drop);
+  };
+
+  /**
+   * Where a Cursor sits in the log, as an index into it, or `undefined` when this log cannot
+   * serve it: another Transport's epoch, no position at all, a position it never minted, or one
+   * it has since dropped. `<epoch>-0` is a position, not an Entry, so it reads from the start.
+   */
+  const indexOf = (cursor: Cursor): number | undefined => {
     const [cursorEpoch, position] = splitOnce(cursor, "-");
     if (cursorEpoch !== epoch || position === undefined || !/^\d+$/.test(position)) {
       return undefined;
     }
 
-    const index = Number(position);
+    const at = Number(position);
+    if (at > minted || at < dropped) return undefined;
 
-    return index <= log.length ? index : undefined;
+    const first = log[0];
+
+    return first === undefined ? 0 : at - first.position + 1;
   };
 
   const assertOpen = (): void => {
@@ -74,8 +113,10 @@ export function createMemoryTransport(options: MemoryTransportOptions = {}): Tra
        * caller that keeps mutating the object it published cannot reach into the log.
        */
       const envelope = JSON.parse(JSON.stringify(entry)) as Entry;
-      const published: StoredEntry = { ...envelope, cursor: cursorOf(log.length + 1) };
-      log.push(published);
+      minted += 1;
+      const published: StoredEntry = { ...envelope, cursor: cursorOf(minted) };
+      log.push({ entry: published, position: minted, publishedAt: Date.now() });
+      trim();
 
       for (const listener of listeners) listener(published);
 
@@ -84,11 +125,12 @@ export function createMemoryTransport(options: MemoryTransportOptions = {}): Tra
 
     async read(after: Cursor | undefined, limit: number): Promise<Page> {
       assertOpen();
+      trim();
 
-      const from = after === undefined ? 0 : positionOf(after);
+      const from = after === undefined ? 0 : indexOf(after);
       if (from === undefined) return { gone: true };
 
-      const entries = log.slice(from, from + Math.max(limit, 0));
+      const entries = log.slice(from, from + Math.max(limit, 0)).map((held) => held.entry);
 
       return { entries, done: from + entries.length >= log.length };
     },
@@ -96,7 +138,7 @@ export function createMemoryTransport(options: MemoryTransportOptions = {}): Tra
     async tail(): Promise<Cursor> {
       assertOpen();
 
-      return cursorOf(log.length);
+      return cursorOf(minted);
     },
 
     async subscribe(
