@@ -29,7 +29,16 @@ export class FakeEventSource implements EventSourceLike {
 
   /** The Channels this Connection asked for, read back off the URL the core built. */
   get channels(): string[] {
-    return new URL(this.url, "http://localhost").searchParams.getAll("channel");
+    return this.query.getAll("channel");
+  }
+
+  /** The Cursor this Connection resumes from, or `null` when it opened live-only. */
+  get cursor(): string | null {
+    return this.query.get("cursor");
+  }
+
+  private get query(): URLSearchParams {
+    return new URL(this.url, "http://localhost").searchParams;
   }
 
   addEventListener(type: string, listener: (event: MessageEventLike) => void): void {
