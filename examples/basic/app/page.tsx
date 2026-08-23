@@ -1,6 +1,6 @@
 import { ROOM_ID, sse } from "@/lib/sse";
 
-import { Live } from "./live";
+import { Messages } from "./messages";
 
 /**
  * Publish from a server action: the form posts, the action Publishes through the bound Handle,
@@ -24,7 +24,7 @@ export default function Home() {
         <input name="text" aria-label="Message" autoComplete="off" />
         <button type="submit">Publish</button>
       </form>
-      <Live roomId={ROOM_ID} />
+      <Messages roomId={ROOM_ID} />
     </main>
   );
 }
