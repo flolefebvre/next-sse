@@ -47,3 +47,11 @@ _Avoid_: Offset, sequence number, last event id, checkpoint
 **Reset**:
 The signal to a Connection that its Cursor is unusable (too old, or unknown to the Transport), so the App must refetch its state before continuing live.
 _Avoid_: Resync, invalidate, gap
+
+**Registry**:
+The App's single server-only declaration of all its Channels (pattern, events, Authorize), created by `createSSE`. The source of truth for types on both sides and for what `<SSEProvider>` shares with the client.
+_Avoid_: Config, schema, definitions, manifest
+
+**Handle**:
+A Channel with its params filled in (`chat({ roomId })`), the typed value that Publish, Authorize and `useChannel` agree on. Server Handles are bound to the App and publish directly; client Handles are key plus params, typed from the Registry.
+_Avoid_: Instance, reference, topic object
