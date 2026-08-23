@@ -10,3 +10,7 @@ next-env.d.ts
 
 .claude/worktrees/
 CLAUDE.local.md
+
+# `next dev` (16.3+) writes these into the app it runs, and rewrites them on every run.
+examples/*/AGENTS.md
+examples/*/CLAUDE.md
