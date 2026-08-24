@@ -17,7 +17,11 @@ test("a refused Channel is dropped while the others stream", async () => {
 
   try {
     const ready = await stream.next("ready");
-    expect(JSON.parse(ready.data)).toEqual({ cursor: expect.any(String), refused: ["admin"] });
+    expect(JSON.parse(ready.data)).toEqual({
+      cursor: expect.any(String),
+      refused: ["admin"],
+      heartbeat: 15_000,
+    });
 
     await stream.next("caught-up");
 

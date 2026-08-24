@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 
 import type { Entry, Transport } from "../transport/index.js";
 
-import { selectTransport } from "./select-transport.js";
+import { outageLog, selectTransport } from "./select-transport.js";
 
 const message: Entry = {
   v: 1,
@@ -83,4 +83,28 @@ test("a value the environment cannot mean is refused before any Transport is cho
   expect(() => selectTransport({ env: { NEXT_SSE_RETENTION_CAP: "lots" } })).toThrow(
     /NEXT_SSE_RETENTION_CAP/,
   );
+});
+
+/**
+ * A Transport outage is reported several times a second at the source, for as long as it lasts
+ * (ADR-0006). What an operator needs is one line saying the backend is away, not four a second
+ * saying it again, so the Instance keeps the first and counts the rest.
+ */
+test("an outage is one line, then at most one a minute, saying what it swallowed", () => {
+  vi.useFakeTimers();
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const report = outageLog();
+
+  report(new Error("down"), "subscribe");
+  for (let n = 0; n < 240; n += 1) report(new Error("down"), "subscribe");
+
+  expect(warn).toHaveBeenCalledTimes(1);
+  expect(warn.mock.calls[0]?.[0]).toContain('during "subscribe"');
+
+  vi.advanceTimersByTime(60_000);
+  report(new Error("down"), "read");
+
+  expect(warn).toHaveBeenCalledTimes(2);
+  expect(warn.mock.calls[1]?.[0]).toContain("and 240 more");
+  vi.useRealTimers();
 });

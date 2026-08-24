@@ -21,6 +21,15 @@ export type ControlEvent = "ready" | "heartbeat" | "reconnect" | "caught-up" | "
 export interface Ready {
   cursor?: Cursor;
   refused: string[];
+  /**
+   * How often this Connection will be sent a `heartbeat`, in milliseconds, so that the client
+   * core can watch the pipe without the interval being configured on both sides (ADR-0004).
+   * `0` is a Connection that will not be heartbeated at all, and disarms the watchdog.
+   *
+   * Absent for the one stream that is no Connection: every Channel refused, nothing to carry,
+   * nothing to watch.
+   */
+  heartbeat?: number;
 }
 
 const encoder = new TextEncoder();

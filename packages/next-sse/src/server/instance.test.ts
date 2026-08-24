@@ -2,6 +2,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 
 import type { ChannelRecord } from "../internal/channel.js";
 import { createMemoryTransport } from "../transport/memory.js";
+import { TransportUnavailableError } from "../transport/index.js";
 import type { Entry, Transport } from "../transport/index.js";
 
 import { getInstance, type Connection, type Instance } from "./instance.js";
@@ -31,6 +32,7 @@ const connectionOn = (...channels: string[]): Connection => ({
   deliver: vi.fn<(entry: StoredMessage) => void>(),
   reset: vi.fn<() => void>(),
   caughtUp: vi.fn<() => void>(),
+  reconnect: vi.fn<() => void>(),
 });
 
 /**
@@ -47,6 +49,7 @@ const tracing = (...channels: string[]): { connection: Connection; trace: string
       deliver: (entry) => trace.push(`${entry.channel} ${(entry.payload as Text).text}`),
       reset: () => trace.push("reset"),
       caughtUp: () => trace.push("caught-up"),
+      reconnect: () => trace.push("reconnect"),
     },
     trace,
   };
@@ -443,6 +446,7 @@ test("a client that goes away mid-replay stops it, rather than paging the rest o
     },
     reset: () => trace.push("reset"),
     caughtUp: () => trace.push("caught-up"),
+    reconnect: () => leaving.close?.(),
   };
 
   const opening = await instance.open(connection, { after: from });
@@ -454,4 +458,136 @@ test("a client that goes away mid-replay stops it, rather than paging the rest o
   expect(trace).not.toContain("caught-up");
   expect(reads).not.toHaveBeenCalled();
   expect(instance.connections.size).toBe(0);
+});
+
+/**
+ * The two durations of ADR-0004, as the Instance resolves them: the App's value, or the default
+ * when it configured none. `0` is a value — the feature off — and never a stand-in for "use the
+ * default", which is what makes `heartbeat: 0` a Connection with no heartbeat at all.
+ */
+test("the lifecycle durations are the App's, or the defaults, with 0 meaning off", () => {
+  expect(getInstance()).toMatchObject({ heartbeat: 15_000, maxLifetime: 30 * 60_000 });
+  expect(getInstance({ heartbeat: 0, maxLifetime: 0 })).toMatchObject({
+    heartbeat: 0,
+    maxLifetime: 0,
+  });
+  expect(getInstance({ heartbeat: 250 })).toMatchObject({
+    heartbeat: 250,
+    maxLifetime: 30 * 60_000,
+  });
+});
+
+/**
+ * Handed to `setTimeout`, a negative delay fires at once and `NaN` fires at once too, so a
+ * mistyped option would become every Connection ending the instant it opened. It is refused
+ * where it is written instead.
+ */
+test.each([
+  ["a negative interval", { heartbeat: -1 }],
+  ["an interval that is no number at all", { maxLifetime: Number.NaN }],
+])("%s is refused at the configuration rather than armed", (_case, options) => {
+  expect(() => getInstance(options)).toThrow(/milliseconds/);
+});
+
+/**
+ * A Transport whose live feed can be made to lose its place, the way a reader resuming after an
+ * outage does when the log has moved past where it was.
+ */
+const withGap = (): { transport: Transport; gap: () => void } => {
+  const memory = createMemoryTransport();
+  let lostPlace: (() => void) | undefined;
+
+  return {
+    transport: {
+      ...memory,
+      subscribe: (listener, options) => {
+        lostPlace = options.onGap;
+
+        return memory.subscribe(listener, options);
+      },
+    },
+    gap: () => lostPlace?.(),
+  };
+};
+
+/**
+ * The Transport came back somewhere the log no longer serves, so every Connection this Instance
+ * holds is behind a gap nobody can describe: they are told to refetch, and not one of them is
+ * closed. Closing would turn a backend blip into a herd against Instances equally cut off
+ * (ADR-0004).
+ */
+test("a gap on the live feed tells every live Connection to refetch, and closes none", async () => {
+  const { transport, gap } = withGap();
+  const instance = getInstance({ transport });
+  const one = tracing("chat:42");
+  const other = tracing("chat:7");
+  await (await instance.open(one.connection)).start();
+  await (await instance.open(other.connection)).start();
+
+  gap();
+
+  expect(one.trace).toEqual(["caught-up", "reset"]);
+  expect(other.trace).toEqual(["caught-up", "reset"]);
+  expect(instance.connections.size).toBe(2);
+});
+
+/**
+ * A Connection that is still opening cannot be told anything: its `ready` has not been written
+ * and its replay is still walking the log. The `reset` waits for the place a `reset` belongs —
+ * the end of the replay, before `caught-up`.
+ */
+test("a gap while a Connection is still opening reaches it with its replay, never before", async () => {
+  const { transport, gap } = withGap();
+  const instance = getInstance({ transport });
+  const from = await transport.tail();
+  await transport.publish(message("chat:42", { text: "missed" }));
+  const { connection, trace } = tracing("chat:42");
+
+  const opening = await instance.open(connection, { after: from });
+  gap();
+  expect(trace).toEqual([]);
+
+  await opening.start();
+
+  expect(trace).toEqual(["chat:42 missed", "reset", "caught-up"]);
+});
+
+/**
+ * The subscription is opened once and remembered, and a rejected promise must not be what is
+ * remembered: the Transport rejects for as long as the backend is away, and the first connect
+ * of an outage would otherwise be the answer to every connect for the length of the process.
+ */
+test("a subscription that could not be opened is not remembered", async () => {
+  const memory = createMemoryTransport();
+  let away = true;
+  const transport: Transport = {
+    ...memory,
+    subscribe: (listener, options) => {
+      if (away) throw new TransportUnavailableError("the backend is away");
+
+      return memory.subscribe(listener, options);
+    },
+  };
+  const instance = getInstance({ transport });
+
+  await expect(instance.open(connectionOn("chat:42"))).rejects.toThrow(TransportUnavailableError);
+  expect(instance.connections.size).toBe(0);
+
+  away = false;
+  const opening = await instance.open(connectionOn("chat:42"));
+
+  expect(opening.cursor).toBe(await transport.tail());
+  expect(instance.connections.size).toBe(1);
+});
+
+/**
+ * Past the 32-bit delay a timer takes, `setTimeout` fires almost at once: a 30-day `maxLifetime`
+ * would be every Connection ending on the spot rather than in a month. The value is refused
+ * rather than quietly turned into its opposite.
+ */
+test("a duration longer than a timer can hold is refused, not silently inverted", () => {
+  expect(() => getInstance({ maxLifetime: 30 * 24 * 60 * 60_000 })).toThrow(/about 24 days/);
+  expect(getInstance({ maxLifetime: 2_147_483_647 })).toMatchObject({
+    maxLifetime: 2_147_483_647,
+  });
 });

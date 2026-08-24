@@ -1,10 +1,12 @@
 import { getEventListeners } from "node:events";
 
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import type { Cursor, Transport } from "../transport/index.js";
+import { TransportUnavailableError } from "../transport/index.js";
+import type { Transport } from "../transport/index.js";
 import { createMemoryTransport } from "../transport/memory.js";
 
+import { chatApp, type ChatApp } from "./chat-app.testkit.js";
 import { framesOf, type Frames } from "./frames.testkit.js";
 import { asType, initSSE } from "./index.js";
 import { getInstance } from "./instance.js";
@@ -15,31 +17,18 @@ beforeEach(() => {
 });
 
 /**
- * The App of these tests: one Channel with one declared event. The Registry is loosely typed
- * until the typing ticket infers it, so the tests name the shape they expect of it — which is
- * the runtime shape the final types will describe.
+ * The cases about timing run on fake timers, with the interval shortened through the App's own
+ * configuration rather than through a branch this library only takes in a test.
  */
-interface ChatHandle {
-  publish(event: string, payload: unknown): Promise<Cursor>;
-  message(payload: unknown): Promise<Cursor>;
-}
+afterEach(() => {
+  vi.useRealTimers();
+});
 
-interface ChatApp {
-  handlers: { GET: (request: Request) => Promise<Response> };
-  chat(params?: Record<string, string>): ChatHandle;
-}
-
-const appWith = (transport = createMemoryTransport()): ChatApp => {
-  const { channel, createSSE } = initSSE({ transport });
-
-  return createSSE({
-    chat: channel({
-      pattern: "chat:{roomId}",
-      events: { message: asType<{ text: string }>(), typing: asType<{ who: string }>() },
-      authorize: () => true,
-    }),
-  }) as unknown as ChatApp;
-};
+/** The App of these tests, as every suite about Connections builds it. */
+const appWith = (
+  transport = createMemoryTransport(),
+  lifecycle: { heartbeat?: number; maxLifetime?: number } = {},
+): ChatApp => chatApp({ transport, ...lifecycle });
 
 /**
  * An App whose Channel is guarded by the decision the test hands it, with a context built from
@@ -86,6 +75,17 @@ const liveConnection = async (sse: ChatApp, query: string): Promise<Frames> => {
   await frames.next();
 
   return frames;
+};
+
+/**
+ * The end of a Connection, as its client reads it: the `reconnect` Control event, the end of the
+ * stream, and nothing of it left in the Instance's table. Every ending goes through one primitive,
+ * so every test of one asserts the same three things.
+ */
+const endsWithReconnect = async (frames: Frames): Promise<void> => {
+  expect(await frames.next()).toEqual({ event: "reconnect", data: "{}" });
+  await expect(frames.next()).rejects.toThrow("the stream ended");
+  expect(getInstance().connections.size).toBe(0);
 };
 
 test("a Connection that names no Channel is refused before anything is opened", async () => {
@@ -141,7 +141,7 @@ test("the stream opens on ready, then retry, then caught-up", async () => {
 
   expect(await frames.next()).toEqual({
     event: "ready",
-    data: JSON.stringify({ cursor: tail, refused: [] }),
+    data: JSON.stringify({ cursor: tail, refused: [], heartbeat: 15_000 }),
   });
   expect(await frames.next()).toEqual({ retry: "3000" });
   expect(await frames.next()).toEqual({ event: "caught-up", data: "{}" });
@@ -273,7 +273,7 @@ test("a Connection that brings a Cursor opens on it, is replayed what it missed,
 
   expect(await frames.next()).toEqual({
     event: "ready",
-    data: JSON.stringify({ cursor: from, refused: [] }),
+    data: JSON.stringify({ cursor: from, refused: [], heartbeat: 15_000 }),
   });
   expect(await frames.next()).toEqual({ retry: "3000" });
   expect(await frames.next()).toEqual({
@@ -302,7 +302,11 @@ test("Last-Event-ID wins over the Cursor in the query", async () => {
     }),
   );
 
-  expect(JSON.parse((await frames.next()).data ?? "")).toEqual({ cursor: header, refused: [] });
+  expect(JSON.parse((await frames.next()).data ?? "")).toEqual({
+    cursor: header,
+    refused: [],
+    heartbeat: 15_000,
+  });
   await frames.next();
 
   expect((await frames.next()).id).toBe(wanted);
@@ -320,7 +324,11 @@ test("an empty Cursor is no Cursor at all: the Connection adopts the tail, live-
     await connect(sse, "?channel=chat:42&cursor=", { headers: { "Last-Event-ID": "" } }),
   );
 
-  expect(JSON.parse((await frames.next()).data ?? "")).toEqual({ cursor: tail, refused: [] });
+  expect(JSON.parse((await frames.next()).data ?? "")).toEqual({
+    cursor: tail,
+    refused: [],
+    heartbeat: 15_000,
+  });
   await frames.next();
 
   expect(await frames.next()).toEqual({ event: "caught-up", data: "{}" });
@@ -350,7 +358,7 @@ test.each([
   expect(response.status).toBe(200);
   expect(await frames.next()).toEqual({
     event: "ready",
-    data: JSON.stringify({ cursor: await transport.tail(), refused: [] }),
+    data: JSON.stringify({ cursor: await transport.tail(), refused: [], heartbeat: 15_000 }),
   });
   expect(await frames.next()).toEqual({ retry: "3000" });
   expect(await frames.next()).toEqual({ event: "reset", data: "{}" });
@@ -375,6 +383,7 @@ test("a refused Channel is dropped from the Connection, and the others stream", 
   expect(JSON.parse((await frames.next()).data ?? "")).toEqual({
     cursor: await transport.tail(),
     refused: ["chat:secret"],
+    heartbeat: 15_000,
   });
   await frames.next();
   expect(await frames.next()).toEqual({ event: "caught-up", data: "{}" });
@@ -528,4 +537,262 @@ test("an App that derives no Key opens Connections without one", async () => {
 
   expect([...getInstance().connections][0]?.key).toBeUndefined();
   await frames.cancel();
+});
+
+/**
+ * The heartbeat is what keeps a proxy from idling a quiet Connection out, and what the client
+ * core watches to tell a live pipe from one that died without saying so. It is a named Control
+ * event rather than an SSE comment precisely so that JavaScript can see it, and it carries no
+ * `id:`, so it can fall anywhere in the stream without moving anybody's Cursor (ADR-0004).
+ */
+test("a Connection is heartbeated on the interval this App configured", async () => {
+  vi.useFakeTimers();
+  const sse = appWith(createMemoryTransport(), { heartbeat: 100 });
+  const frames = await liveConnection(sse, "?channel=chat:42");
+
+  await vi.advanceTimersByTimeAsync(100);
+  expect(await frames.next()).toEqual({ event: "heartbeat", data: "{}" });
+
+  await vi.advanceTimersByTimeAsync(100);
+  expect(await frames.next()).toEqual({ event: "heartbeat", data: "{}" });
+
+  await frames.cancel();
+});
+
+/**
+ * The interval travels in `ready` so that the two sides cannot be configured apart: the client
+ * watchdog is 3× whatever this Connection was actually given, not 3× what the browser bundle
+ * was built believing.
+ */
+test("the interval this App configured is what ready carries", async () => {
+  const sse = appWith(createMemoryTransport(), { heartbeat: 100 });
+
+  const frames = framesOf(await connect(sse, "?channel=chat:42"));
+
+  expect(JSON.parse((await frames.next()).data ?? "")).toEqual({
+    cursor: expect.any(String),
+    refused: [],
+    heartbeat: 100,
+  });
+  await frames.cancel();
+});
+
+/** `0` is off, and never "use the default": a Connection nothing will write to unprompted. */
+test("a heartbeat of 0 is a Connection that is never heartbeated", async () => {
+  vi.useFakeTimers();
+  const sse = appWith(createMemoryTransport(), { heartbeat: 0, maxLifetime: 0 });
+  const frames = framesOf(await connect(sse, "?channel=chat:42"));
+
+  expect(JSON.parse((await frames.next()).data ?? "").heartbeat).toBe(0);
+  await frames.next();
+  expect(await frames.next()).toEqual({ event: "caught-up", data: "{}" });
+
+  await vi.advanceTimersByTimeAsync(60 * 60_000);
+  const live = await sse.chat({ roomId: "42" }).message({ text: "an hour later" });
+
+  expect((await frames.next()).id).toBe(live);
+  await frames.cancel();
+});
+
+/**
+ * A timer still firing at a stream nobody reads outlives the client by the length of the
+ * process, which is why it is cleared on the one teardown every ending goes through.
+ */
+test("a client that goes away leaves no heartbeat behind", async () => {
+  vi.useFakeTimers();
+  const sse = appWith(createMemoryTransport(), { heartbeat: 100 });
+  const frames = await liveConnection(sse, "?channel=chat:42");
+
+  await frames.cancel();
+
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+/**
+ * The max lifetime, and with it the one way a Connection is ended from the server side: the
+ * `reconnect` Control event and the end of the stream. The client core comes back at once with
+ * its Cursor, which is what makes the cut gap-free — and what Kick and Drain will reuse whole.
+ */
+test("a Connection that reaches its max lifetime is ended with reconnect", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(Math, "random").mockReturnValue(0.5);
+  const sse = appWith(createMemoryTransport(), { maxLifetime: 1000 });
+  const frames = await liveConnection(sse, "?channel=chat:42");
+
+  await vi.advanceTimersByTimeAsync(1000);
+
+  await endsWithReconnect(frames);
+});
+
+/**
+ * ±10 % full jitter, drawn per Connection: an Instance whose Connections all started together
+ * does not end them together, which is the herd the lifetime exists to prevent.
+ */
+test.each([
+  ["the low end of the spread", 0, 900],
+  ["the high end of the spread", 1, 1100],
+])("a Connection ends at %s", async (_case, random, expected) => {
+  vi.useFakeTimers();
+  vi.spyOn(Math, "random").mockReturnValue(random);
+  const sse = appWith(createMemoryTransport(), { maxLifetime: 1000 });
+  await liveConnection(sse, "?channel=chat:42");
+
+  await vi.advanceTimersByTimeAsync(expected - 1);
+  expect(getInstance().connections.size).toBe(1);
+
+  await vi.advanceTimersByTimeAsync(1);
+  expect(getInstance().connections.size).toBe(0);
+});
+
+test("a maxLifetime of 0 is a Connection nothing brings to an end", async () => {
+  vi.useFakeTimers();
+  const sse = appWith(createMemoryTransport(), { maxLifetime: 0, heartbeat: 0 });
+  const frames = await liveConnection(sse, "?channel=chat:42");
+
+  await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+
+  expect(getInstance().connections.size).toBe(1);
+  expect(vi.getTimerCount()).toBe(0);
+  const live = await sse.chat({ roomId: "42" }).message({ text: "a day later" });
+  expect((await frames.next()).id).toBe(live);
+  await frames.cancel();
+});
+
+/**
+ * A Transport that is away: every operation rejects promptly and nothing is queued, which is
+ * what the Redis Transport does behind a backend it cannot reach (ADR-0006).
+ */
+const unreachable = (): Transport => {
+  const away = (): never => {
+    throw new TransportUnavailableError("the backend is away");
+  };
+
+  return {
+    publish: away,
+    read: away,
+    tail: away,
+    subscribe: away,
+    close: async () => undefined,
+  } as unknown as Transport;
+};
+
+/**
+ * The one non-200 a working App can answer after Authorize: the Instance cannot reach its log,
+ * so it cannot serve this Connection at all. It is a status rather than a stream that breaks
+ * after its headers, which is what lets a load balancer read it — and the client core retries
+ * it forever, because a `503` is a Transport that will come back (ADR-0004).
+ */
+test("a connect while the Transport is away is a 503 saying when to come back", async () => {
+  const sse = appWith(unreachable());
+
+  const response = await connect(sse, "?channel=chat:42");
+
+  expect(response.status).toBe(503);
+  expect(response.headers.get("Retry-After")).toBe("5");
+  expect(getInstance().connections.size).toBe(0);
+});
+
+/**
+ * The bound on a Connection nobody is reading. A slow client accumulates on the Instance for as
+ * long as its Connection lasts, and neither the heartbeat nor the max lifetime bounds that: what
+ * does is ending the Connection the one way a Connection is ended. Nothing is dropped — the
+ * client comes back with its Cursor and is replayed what it had not read — so the cost of being
+ * slow is a round trip per megabyte rather than an Instance's memory.
+ */
+test("a Connection whose client is not reading is ended with reconnect, not left to grow", async () => {
+  const sse = appWith(createMemoryTransport(), { heartbeat: 0, maxLifetime: 0 });
+  const response = await connect(sse, "?channel=chat:42");
+  const text = "x".repeat(100_000);
+
+  for (let n = 0; n < 12; n += 1) {
+    await sse.chat({ roomId: "42" }).message({ text });
+  }
+
+  expect(getInstance().connections.size).toBe(0);
+
+  const frames = framesOf(response);
+  const seen: string[] = [];
+  for (;;) {
+    const frame = await frames.next();
+    if (frame.event === "reconnect") break;
+    seen.push(frame.event ?? (frame.id === undefined ? "retry" : "message"));
+  }
+
+  expect(seen.slice(0, 3)).toEqual(["ready", "retry", "caught-up"]);
+  const delivered = seen.filter((event) => event === "message").length;
+  expect(delivered).toBeGreaterThan(0);
+  expect(delivered).toBeLessThan(12);
+  await expect(frames.next()).rejects.toThrow("the stream ended");
+});
+
+/**
+ * A Transport whose tail this test holds, so that a Connection can be caught in the window it is
+ * registered in but not yet opened — which is the window a Kick or a Drain walking the Connection
+ * table reaches it in.
+ */
+const holdingTheTail = (): { transport: Transport; release: () => void } => {
+  const memory = createMemoryTransport();
+  let release = (): void => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  return {
+    transport: {
+      ...memory,
+      tail: async () => {
+        await held;
+
+        return memory.tail();
+      },
+    },
+    release: () => {
+      release();
+    },
+  };
+};
+
+/**
+ * The primitive Kick and Drain will rest on, exercised the way they will use it: over the
+ * Instance's Connection table, on a Connection that is still opening. It is told where it stands
+ * and to come back, and it runs no replay — what it missed is the next Connection's to carry, and
+ * it has the Cursor to ask for it with.
+ */
+test("a Connection ended while it is still opening carries ready, the retry and reconnect", async () => {
+  const { transport, release } = holdingTheTail();
+  const sse = appWith(transport, { heartbeat: 0, maxLifetime: 0 });
+  const responding = connect(sse, "?channel=chat:42");
+  await vi.waitFor(() => expect(getInstance().connections.size).toBe(1));
+
+  const [held] = [...getInstance().connections];
+  held?.reconnect();
+  release();
+
+  const frames = framesOf(await responding);
+  expect((await frames.next()).event).toBe("ready");
+  expect(await frames.next()).toEqual({ retry: "3000" });
+  await endsWithReconnect(frames);
+});
+
+test("ending a Connection twice ends it once", async () => {
+  const sse = appWith(createMemoryTransport(), { heartbeat: 0, maxLifetime: 0 });
+  const frames = await liveConnection(sse, "?channel=chat:42");
+  const [held] = [...getInstance().connections];
+
+  held?.reconnect();
+  held?.reconnect();
+
+  await endsWithReconnect(frames);
+});
+
+test("ending a Connection whose client has already gone does nothing at all", async () => {
+  const sse = appWith(createMemoryTransport(), { heartbeat: 0, maxLifetime: 0 });
+  const client = new AbortController();
+  await connect(sse, "?channel=chat:42", { signal: client.signal });
+  const [held] = [...getInstance().connections];
+
+  client.abort();
+
+  expect(() => held?.reconnect()).not.toThrow();
+  expect(getInstance().connections.size).toBe(0);
 });

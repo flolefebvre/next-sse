@@ -16,7 +16,11 @@ test("a Publish reaches a Connection", async () => {
 
   try {
     const ready = await stream.next("ready");
-    expect(JSON.parse(ready.data)).toEqual({ cursor: expect.any(String), refused: [] });
+    expect(JSON.parse(ready.data)).toEqual({
+      cursor: expect.any(String),
+      refused: [],
+      heartbeat: 15_000,
+    });
     expect(ready.lastEventId).toBe("");
 
     await stream.next("caught-up");
