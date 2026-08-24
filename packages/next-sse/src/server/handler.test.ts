@@ -2,6 +2,7 @@ import { getEventListeners } from "node:events";
 
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
+import { TransportUnavailableError } from "../transport/index.js";
 import type { Cursor, Transport } from "../transport/index.js";
 import { createMemoryTransport } from "../transport/memory.js";
 
@@ -669,4 +670,38 @@ test("a maxLifetime of 0 is a Connection nothing brings to an end", async () => 
   const live = await sse.chat({ roomId: "42" }).message({ text: "a day later" });
   expect((await frames.next()).id).toBe(live);
   await frames.cancel();
+});
+
+/**
+ * A Transport that is away: every operation rejects promptly and nothing is queued, which is
+ * what the Redis Transport does behind a backend it cannot reach (ADR-0006).
+ */
+const unreachable = (): Transport => {
+  const away = (): never => {
+    throw new TransportUnavailableError("the backend is away");
+  };
+
+  return {
+    publish: away,
+    read: away,
+    tail: away,
+    subscribe: away,
+    close: async () => undefined,
+  } as unknown as Transport;
+};
+
+/**
+ * The one non-200 a working App can answer after Authorize: the Instance cannot reach its log,
+ * so it cannot serve this Connection at all. It is a status rather than a stream that breaks
+ * after its headers, which is what lets a load balancer read it — and the client core retries
+ * it forever, because a `503` is a Transport that will come back (ADR-0004).
+ */
+test("a connect while the Transport is away is a 503 saying when to come back", async () => {
+  const sse = appWith(unreachable());
+
+  const response = await connect(sse, "?channel=chat:42");
+
+  expect(response.status).toBe(503);
+  expect(response.headers.get("Retry-After")).toBe("5");
+  expect(getInstance().connections.size).toBe(0);
 });

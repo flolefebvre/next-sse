@@ -2,6 +2,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 
 import type { ChannelRecord } from "../internal/channel.js";
 import { createMemoryTransport } from "../transport/memory.js";
+import { TransportUnavailableError } from "../transport/index.js";
 import type { Entry, Transport } from "../transport/index.js";
 
 import { getInstance, type Connection, type Instance } from "./instance.js";
@@ -486,4 +487,95 @@ test.each([
   ["an interval that is no number at all", { maxLifetime: Number.NaN }],
 ])("%s is refused at the configuration rather than armed", (_case, options) => {
   expect(() => getInstance(options)).toThrow(/milliseconds/);
+});
+
+/**
+ * A Transport whose live feed can be made to lose its place, the way a reader resuming after an
+ * outage does when the log has moved past where it was.
+ */
+const withGap = (): { transport: Transport; gap: () => void } => {
+  const memory = createMemoryTransport();
+  let lostPlace: (() => void) | undefined;
+
+  return {
+    transport: {
+      ...memory,
+      subscribe: (listener, options) => {
+        lostPlace = options.onGap;
+
+        return memory.subscribe(listener, options);
+      },
+    },
+    gap: () => lostPlace?.(),
+  };
+};
+
+/**
+ * The Transport came back somewhere the log no longer serves, so every Connection this Instance
+ * holds is behind a gap nobody can describe: they are told to refetch, and not one of them is
+ * closed. Closing would turn a backend blip into a herd against Instances equally cut off
+ * (ADR-0004).
+ */
+test("a gap on the live feed tells every live Connection to refetch, and closes none", async () => {
+  const { transport, gap } = withGap();
+  const instance = getInstance({ transport });
+  const one = tracing("chat:42");
+  const other = tracing("chat:7");
+  await (await instance.open(one.connection)).start();
+  await (await instance.open(other.connection)).start();
+
+  gap();
+
+  expect(one.trace).toEqual(["caught-up", "reset"]);
+  expect(other.trace).toEqual(["caught-up", "reset"]);
+  expect(instance.connections.size).toBe(2);
+});
+
+/**
+ * A Connection that is still opening cannot be told anything: its `ready` has not been written
+ * and its replay is still walking the log. The `reset` waits for the place a `reset` belongs —
+ * the end of the replay, before `caught-up`.
+ */
+test("a gap while a Connection is still opening reaches it with its replay, never before", async () => {
+  const { transport, gap } = withGap();
+  const instance = getInstance({ transport });
+  const from = await transport.tail();
+  await transport.publish(message("chat:42", { text: "missed" }));
+  const { connection, trace } = tracing("chat:42");
+
+  const opening = await instance.open(connection, { after: from });
+  gap();
+  expect(trace).toEqual([]);
+
+  await opening.start();
+
+  expect(trace).toEqual(["chat:42 missed", "reset", "caught-up"]);
+});
+
+/**
+ * The subscription is opened once and remembered, and a rejected promise must not be what is
+ * remembered: the Transport rejects for as long as the backend is away, and the first connect
+ * of an outage would otherwise be the answer to every connect for the length of the process.
+ */
+test("a subscription that could not be opened is not remembered", async () => {
+  const memory = createMemoryTransport();
+  let away = true;
+  const transport: Transport = {
+    ...memory,
+    subscribe: (listener, options) => {
+      if (away) throw new TransportUnavailableError("the backend is away");
+
+      return memory.subscribe(listener, options);
+    },
+  };
+  const instance = getInstance({ transport });
+
+  await expect(instance.open(connectionOn("chat:42"))).rejects.toThrow(TransportUnavailableError);
+  expect(instance.connections.size).toBe(0);
+
+  away = false;
+  const opening = await instance.open(connectionOn("chat:42"));
+
+  expect(opening.cursor).toBe(await transport.tail());
+  expect(instance.connections.size).toBe(1);
 });

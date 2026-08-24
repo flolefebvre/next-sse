@@ -44,8 +44,51 @@ export function selectTransport(
   return deferredTransport(async () => {
     const { createRedisTransport } = await load();
 
-    return createRedisTransport({ ...environment, url });
+    return createRedisTransport({ ...environment, url, onError: outageLog() });
   });
+}
+
+/**
+ * How long the Instance stays quiet about a Transport it has already reported as unreachable,
+ * in milliseconds.
+ */
+const OUTAGE_LOG_EVERY_MS = 60_000;
+
+/**
+ * What the Instance says about a Transport it cannot reach, and how often.
+ *
+ * An outage is noisy at the source and has to be: the reader fails fast and reissues its read
+ * several times a second for as long as the backend is away (ADR-0006), and slowing it down
+ * would slow the recovery it is waiting for. So the coalescing lives here, on the Instance
+ * side — one line when the failures start, then at most one a minute while they go on, saying
+ * how many were swallowed in between.
+ *
+ * It is wired onto the Transport this library builds for an App that configured none. An App
+ * that brings its own Transport brought its own `onError` with it, and the `Transport` contract
+ * has no seam to wrap it through — growing one for a log line is not a trade this makes.
+ */
+export function outageLog(): (error: unknown, operation: string) => void {
+  let reportedAt: number | undefined;
+  let quiet = 0;
+
+  return (error, operation) => {
+    const now = Date.now();
+    if (reportedAt !== undefined && now - reportedAt < OUTAGE_LOG_EVERY_MS) {
+      quiet += 1;
+
+      return;
+    }
+
+    const swallowed = quiet === 0 ? "" : ` (and ${String(quiet)} more since the last of these)`;
+    reportedAt = now;
+    quiet = 0;
+    console.warn(
+      `next-sse: this Instance could not reach its Transport during "${operation}"` +
+        `${swallowed}. Open Connections are held and heartbeating; they resume by themselves ` +
+        `when the Transport is back, and new ones are answered 503 until then.`,
+      error,
+    );
+  };
 }
 
 /**

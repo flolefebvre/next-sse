@@ -1,11 +1,21 @@
 import type { ChannelRecord, DeclaredAuthorize } from "../internal/channel.js";
 import { matchPattern } from "../internal/pattern.js";
+import { TransportError } from "../transport/index.js";
 
 import type { Connection, Instance } from "./instance.js";
 import { encodeControl, encodeMessage, encodeRetry, type Ready } from "./wire.js";
 
 /** What ADR-0004 tells the client core to wait before reconnecting on its own, in milliseconds. */
 const RETRY_MS = 3000;
+
+/**
+ * What the `503` of a connect during a Transport outage tells whoever can read it, in seconds.
+ * A browser `EventSource` is not one of them — it sees no header of a failed connect, and the
+ * client core backs off on its own schedule (ADR-0004) — so this is for the proxies and load
+ * balancers in between, which is part of why a `503` beats a stream that breaks after its
+ * headers.
+ */
+const RETRY_AFTER_SECONDS = 5;
 
 /** Exactly the headers ADR-0004 names, and nothing else. */
 const HEADERS = {
@@ -80,9 +90,25 @@ export function createGetHandler(instance: Instance): (request: Request) => Prom
       return new Response(refusedStream({ refused: decided.refused }), { headers: HEADERS });
     }
 
-    return new Response(streamFor(instance, request, decided, cursorOf(request, url)), {
-      headers: HEADERS,
-    });
+    /**
+     * The Connection is opened **before** the `Response` exists, and that is what makes the one
+     * failure left answerable: a Transport that cannot be reached rejects here, where a status is
+     * still free to be chosen. Inside a `200` body it would be a stream that broke after its
+     * headers, which the client would retry as a dead pipe rather than read as an Instance
+     * saying "not now" (ADR-0004).
+     */
+    try {
+      return new Response(await streamFor(instance, request, decided, cursorOf(request, url)), {
+        headers: HEADERS,
+      });
+    } catch (error) {
+      if (!(error instanceof TransportError)) throw error;
+
+      return new Response("This Instance cannot reach its Transport right now. Try again.", {
+        status: 503,
+        headers: { "Retry-After": String(RETRY_AFTER_SECONDS) },
+      });
+    }
   };
 }
 
@@ -194,17 +220,53 @@ function cursorOf(request: Request, url: URL): string | undefined {
   return given.find((value) => value !== null && value !== "") ?? undefined;
 }
 
-function streamFor(
+/**
+ * One Connection, opened and then written: the Instance is asked for it here, and what comes
+ * back is the stream that carries it.
+ *
+ * Opening it before the stream — rather than inside the stream's own `start` — is what lets a
+ * Transport that cannot be reached be a status rather than a broken body. Everything the
+ * Connection may be told in the window that opens with it (a `reset` from a gap on the live
+ * feed, an ending from a Kick or a Drain) waits until the stream has written `ready`, because
+ * `ready` is the first chunk of every Connection whatever else is going on (ADR-0004).
+ */
+async function streamFor(
   instance: Instance,
   request: Request,
   { allowed, refused, key }: Decision,
   after: string | undefined,
-): ReadableStream<Uint8Array> {
+): Promise<ReadableStream<Uint8Array>> {
   let closed = false;
-  let disconnect: (() => void) | undefined;
   let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
   let heartbeats: ReturnType<typeof setInterval> | undefined;
   let lifetime: ReturnType<typeof setTimeout> | undefined;
+  const waiting: Uint8Array[] = [];
+
+  const connection: Connection = {
+    channels: allowed,
+    key,
+    deliver: (entry) => write(encodeMessage(entry)),
+    reset: () => write(encodeControl("reset")),
+    caughtUp: () => write(encodeControl("caught-up")),
+    reconnect: () => {
+      write(encodeControl("reconnect"));
+      dispose(true);
+    },
+  };
+
+  const opening = await instance.open(connection, { after });
+
+  /**
+   * Nothing can reach this Connection before this line: until `open` resolves, the Instance is
+   * its only holder and holds it as one that is still opening. Which is why what follows may be
+   * written against a Connection that certainly exists, and is hoisted to where the Connection's
+   * own methods, defined above it, can close over it.
+   */
+  function write(bytes: Uint8Array): void {
+    if (closed) return;
+    if (controller === undefined) waiting.push(bytes);
+    else controller.enqueue(bytes);
+  }
 
   /**
    * The one teardown, whichever way the Connection ended. `endStream` is false when the stream
@@ -213,68 +275,49 @@ function streamFor(
    * Every timer this Connection armed is cleared here, and here only: a heartbeat still firing
    * at a stream nobody reads is a leak that outlives the client by the length of the process.
    */
-  const dispose = (endStream: boolean): void => {
+  function dispose(endStream: boolean): void {
     if (closed) return;
     closed = true;
     clearInterval(heartbeats);
     clearTimeout(lifetime);
     request.signal.removeEventListener("abort", abort);
-    disconnect?.();
+    opening.close();
     if (endStream) controller?.close();
-  };
+  }
 
   function abort(): void {
     dispose(true);
   }
 
+  /**
+   * The client may have gone while the Instance was opening the Connection: Next aborts the
+   * request as soon as the response's socket closes, and that can happen before this stream is
+   * ever pulled from. The Connection is released here, and the stream closes on its first breath
+   * rather than being held open for a socket nobody is on.
+   */
+  if (request.signal.aborted) dispose(true);
+  else request.signal.addEventListener("abort", abort);
+
   return new ReadableStream<Uint8Array>({
     async start(streamController) {
-      controller = streamController;
-      const write = (bytes: Uint8Array): void => {
-        if (!closed) streamController.enqueue(bytes);
-      };
-
-      const connection: Connection = {
-        channels: allowed,
-        key,
-        deliver: (entry) => write(encodeMessage(entry)),
-        reset: () => write(encodeControl("reset")),
-        caughtUp: () => write(encodeControl("caught-up")),
-        reconnect: () => {
-          write(encodeControl("reconnect"));
-          dispose(true);
-        },
-      };
-
-      const opening = await instance.open(connection, { after });
-      disconnect = opening.close;
-
-      /**
-       * The client may have gone while the Instance was opening the Connection. When the stream
-       * was already cancelled, teardown has run without a Connection to release, so this one
-       * releases itself; otherwise it is an ordinary abort.
-       */
       if (closed) {
-        disconnect();
+        streamController.close();
 
         return;
       }
-      if (request.signal.aborted) {
-        dispose(true);
-
-        return;
-      }
-      request.signal.addEventListener("abort", abort);
+      controller = streamController;
 
       /**
        * The opening sequence, in the order ADR-0004 fixes it: `ready` as the first chunk of the
        * stream whatever the log is doing — carrying the Channels Authorize refused, so a page
        * hears about a refusal in the same breath as the Connection opening — then the retry,
-       * then whatever `start` produces: a `reset`, the replay, `caught-up`.
+       * then anything this Connection was told while it was opening, then whatever `start`
+       * produces: a `reset`, the replay, `caught-up`.
        */
       const heartbeat = instance.heartbeat;
       write(encodeControl("ready", { cursor: opening.cursor, refused, heartbeat } satisfies Ready));
       write(encodeRetry(RETRY_MS));
+      for (const bytes of waiting.splice(0)) write(bytes);
 
       /**
        * The heartbeat starts with the Connection rather than with its live feed: a replay long
@@ -292,7 +335,7 @@ function streamFor(
       /**
        * The Connection's own end, armed at the same moment: when it comes, it comes through the
        * one primitive that ends a Connection at all, so the max lifetime, a Kick and a Drain are
-       * the same three bytes on the wire and the same teardown behind it.
+       * the same three bytes on the wire and the same teardown behind them.
        */
       const maxLifetime = instance.maxLifetime;
       if (maxLifetime > 0) {

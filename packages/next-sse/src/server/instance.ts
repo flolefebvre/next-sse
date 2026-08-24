@@ -125,6 +125,13 @@ interface Held {
   connection: Connection;
   buffer: StoredEntry[] | undefined;
   replayed: Set<Cursor> | undefined;
+  /**
+   * The live feed lost its place while this Connection was still opening, so it is owed a
+   * `reset` it cannot be given yet: nothing may reach a Connection before the `ready` the
+   * handler has not written, and its replay is still walking a log that moved under it. It is
+   * delivered where a `reset` belongs, just before `caught-up`.
+   */
+  gap: boolean;
 }
 
 interface InstanceState extends Instance {
@@ -201,7 +208,7 @@ async function open(
 ): Promise<Opening> {
   await ensureFeed(state);
 
-  const held: Held = { connection, buffer: [], replayed: undefined };
+  const held: Held = { connection, buffer: [], replayed: undefined, gap: false };
   state.held.set(connection, held);
 
   const close = (): void => {
@@ -292,6 +299,10 @@ async function replay(
   held.buffer = undefined;
   held.replayed = replayed;
 
+  if (held.gap) {
+    held.gap = false;
+    held.connection.reset();
+  }
   held.connection.caughtUp();
   for (const entry of buffered) feed(held, entry);
 }
@@ -300,18 +311,46 @@ async function replay(
  * The one subscription this Instance holds, started with the first Connection: every Instance
  * reads the whole log once and routes what it reads itself (ADR-0005), rather than asking the
  * Transport for anything Channel-shaped.
+ *
+ * A subscription that could not be opened is **not** remembered. The Transport rejects while
+ * the backend is away (ADR-0006), and a rejected promise left in the slot would answer every
+ * later connect with the failure of the first one — the outage would outlive itself for the
+ * length of the process.
  */
 async function ensureFeed(state: InstanceState): Promise<void> {
-  state.feed ??= state.transport.subscribe(
+  const feed = (state.feed ??= state.transport.subscribe(
     (entry) => {
       route(state, entry);
     },
     {
-      onGap: () => undefined,
+      onGap: () => {
+        gap(state);
+      },
     },
-  );
+  ));
 
-  await state.feed;
+  try {
+    await feed;
+  } catch (error) {
+    if (state.feed === feed) state.feed = undefined;
+    throw error;
+  }
+}
+
+/**
+ * The live feed came back somewhere the log no longer serves: everything this Instance holds is
+ * behind a gap it cannot describe, so every Connection is told to refetch and carries on live
+ * (ADR-0004). Nothing is closed — a Transport outage is not the client's failure, and closing
+ * would turn a backend blip into a herd against Instances that were equally cut off.
+ *
+ * The Transport reports it once per resume, and only when the position it resumed from is below
+ * what the log still serves; an outage that lost nothing costs the Connections nothing.
+ */
+function gap(state: InstanceState): void {
+  for (const held of state.held.values()) {
+    if (held.buffer === undefined) held.connection.reset();
+    else held.gap = true;
+  }
 }
 
 /**
