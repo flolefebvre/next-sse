@@ -156,10 +156,10 @@ function stepsOf(segment: string): Step[] {
 }
 
 /**
- * The shortest text both segments accept, spelled out, or `undefined` when there is none.
+ * A text both segments accept, spelled out, or `undefined` when they accept none in common.
  *
  * Two positions walk together, and the only choice is what a `more` does: stand aside and let
- * the walk move on without it, or take the character the other side is asking for. Every pair of
+ * the walk move on without it, or absorb whatever the other side's step asks for. Every pair of
  * positions is answered once, so the walk is over in a step per pair.
  */
 function sharedSegment(left: Step[], right: Step[]): string | undefined {
