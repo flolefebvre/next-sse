@@ -2,7 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { fillPattern } from "../internal/pattern.js";
+import type { ChannelRecord, EventMap, EventsOf, PatternOf } from "../internal/channel.js";
+import { fillPattern, type ParamsArgs } from "../internal/pattern.js";
+import type { ReservedRegistryKey } from "../internal/reserved.js";
+import type { InferOutput } from "../internal/standard-schema.js";
 
 import type { Status } from "./core.js";
 import { useSSEContext } from "./provider.js";
@@ -16,13 +19,19 @@ import { useSSEContext } from "./provider.js";
  * importing the Registry module — which holds Authorize and whatever Authorize imports
  * (ADR-0002).
  */
-export interface Handle {
-  readonly key: string;
+export interface Handle<Key extends string = string> {
+  readonly key: Key;
   readonly params: Record<string, string>;
 }
 
-/** What to do with each event a Channel carries. An event with no handler is ignored. */
-export type Handlers = Record<string, (payload: unknown) => void>;
+/**
+ * What to do with each event a Channel carries. An event with no handler is ignored, and a
+ * payload is the schema's Output: what the Publish validated, and so what the wire carries
+ * (ADR-0006).
+ */
+export type Handlers<Events extends EventMap = EventMap> = {
+  [Name in keyof Events & string]?: (payload: InferOutput<Events[Name]>) => void;
+};
 
 /** What `useChannel` gives back: where the Connection stands, and the Channel it resolved to. */
 export interface ChannelSubscription {
@@ -32,33 +41,43 @@ export interface ChannelSubscription {
 }
 
 /**
- * One Handle factory per Registry key. `handlers` and `channels` are the Registry's own,
- * reserved for it by ADR-0008, and are not Channels.
+ * The App's Channels, read off the Registry type: the declarations, which is the one place
+ * both sides agree on a pattern and its events.
+ */
+type ChannelsOf<Registry> = Registry extends { channels: infer Declared extends ChannelRecord }
+  ? Declared
+  : never;
+
+/**
+ * One Handle factory per Channel, taking the params its pattern names. The Registry's own keys
+ * (ADR-0008) are excluded from the list they are declared in, never restated here.
  */
 export type Channels<Registry> = {
-  [Key in Exclude<keyof Registry & string, "handlers" | "channels">]: (
-    params?: Record<string, string>,
-  ) => Handle;
+  [Key in Exclude<keyof ChannelsOf<Registry> & string, ReservedRegistryKey>]: (
+    ...args: ParamsArgs<PatternOf<ChannelsOf<Registry>[Key]>>
+  ) => Handle<Key>;
 };
 
 export interface SSEClient<Registry> {
   /** `channels.chat({ roomId })`: a Handle, built from nothing but its key and its params. */
   readonly channels: Channels<Registry>;
   /** Subscribe to a Channel for as long as the component is mounted. */
-  useChannel(handle: Handle, handlers: Handlers): ChannelSubscription;
+  useChannel<Key extends keyof ChannelsOf<Registry> & string>(
+    handle: Handle<Key>,
+    handlers: Handlers<EventsOf<ChannelsOf<Registry>[Key]>>,
+  ): ChannelSubscription;
 }
 
 /**
  * The client's entry: `createClient<typeof sse>()` in a `'use client'` module of the App, with
  * the Registry brought in by `import type` so no value of it crosses into the browser bundle.
  *
- * Payloads are `unknown` and every key is accepted until the Registry infers its own types;
- * the call site is already the final one, so that ticket narrows this without an App changing
- * a line.
+ * Everything the client is typed by comes through that one type argument: which Channels
+ * exist, what params each pattern needs, and what each event's payload is. Nothing of the
+ * Registry exists at runtime here — the Channel names themselves come from the provider's
+ * data, at render time (ADR-0002).
  */
-export function createClient<
-  Registry extends object = Record<string, unknown>,
->(): SSEClient<Registry> {
+export function createClient<Registry extends { channels: ChannelRecord }>(): SSEClient<Registry> {
   const channels = new Proxy({} as Channels<Registry>, {
     get: (_, key) =>
       typeof key === "string"
