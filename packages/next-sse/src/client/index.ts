@@ -13,18 +13,7 @@ export type {
 export { SSEClientProvider } from "./provider.js";
 export type { ClientChannel, ClientChannels, SSEClientProviderProps } from "./provider.js";
 export type { Status } from "./core.js";
-
-declare const snapshotBrand: unique symbol;
-
-/**
- * The one value a server component hands the client to make server-rendered data live: the
- * data it read, and the Cursor taken just before that read. Opaque by construction (ADR-0007)
- * — only `sse.snapshot` mints one, and the client never sees the Cursor inside it.
- */
-export type Snapshot<Data = unknown> = {
-  readonly data: Data;
-  readonly [snapshotBrand]: true;
-};
+export type { Snapshot } from "../internal/snapshot.js";
 
 /**
  * The keyed-merge reducer that covers the Snapshot/replay overlap, Kick replay and the echo
