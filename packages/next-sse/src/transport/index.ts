@@ -69,14 +69,36 @@ export interface Transport extends Publisher {
   ): Promise<Unsubscribe>;
 }
 
-/** Every failure a Transport reports, so an App can catch the family in one clause. */
-export class TransportError extends Error {}
+/**
+ * Every failure a Transport reports, so an App can catch the family in one clause.
+ *
+ * Each of them names itself, as `DeadlineError` and `InvalidPayloadError` do: a subclass of
+ * `Error` that sets no `name` is printed as `Error` by every logger and test runner there is,
+ * and a backend failure that says only `Error: Socket closed unexpectedly` costs whoever reads
+ * it the one thing the taxonomy is for — knowing which kind of failure it was (#86).
+ */
+export class TransportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TransportError";
+  }
+}
 
 /** The backend is unreachable, or did not answer within the operation timeout. */
-export class TransportUnavailableError extends TransportError {}
+export class TransportUnavailableError extends TransportError {
+  constructor(message: string) {
+    super(message);
+    this.name = "TransportUnavailableError";
+  }
+}
 
 /** The Transport has been closed, and answers nothing further. */
-export class TransportClosedError extends TransportError {}
+export class TransportClosedError extends TransportError {
+  constructor(message: string) {
+    super(message);
+    this.name = "TransportClosedError";
+  }
+}
 
 /**
  * An App's Registry as a worker is allowed to know it: its Channel declarations, and nothing

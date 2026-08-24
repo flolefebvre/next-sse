@@ -6,6 +6,7 @@ import type { Transport } from "../transport/index.js";
 
 import { chatApp, type ChatApp } from "./chat-app.testkit.js";
 import { framesOf, type Frames } from "./frames.testkit.js";
+import { DrainingError } from "./drain.js";
 import { getInstance } from "./instance.js";
 
 /**
@@ -390,4 +391,16 @@ test("a window that is not a duration is refused, and false is the one value tha
   expect(getInstance({ transport: createMemoryTransport(), drain: false })).toMatchObject({
     draining: false,
   });
+});
+
+/**
+ * The refusal a draining Instance answers with names itself, like every other failure this
+ * library throws: an `Error` subclass that sets no `name` is printed as `Error` by every logger
+ * there is, and what an App has to see in its log is which refusal it was (#86).
+ */
+test("the refusal a draining Instance answers with says what it is", () => {
+  const refusal = new DrainingError("nope");
+
+  expect(refusal.name).toBe("DrainingError");
+  expect(String(refusal)).toBe("DrainingError: nope");
 });
