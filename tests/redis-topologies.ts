@@ -112,7 +112,9 @@ export async function startClusterTopology(): Promise<RunningTopology> {
  * Sentinel client resolves the master and carries the Transport's commands to it (#57 rules
  * failover out of scope, and a reader that survives one is a separate claim).
  *
- * The nodes it answers are the sentinel's, which is what a Sentinel client is pointed at.
+ * The node it answers is the sentinel, which is what a Sentinel client is pointed at. The
+ * master's port is published to the host all the same, and has to be: the client is sent there
+ * by the address the sentinel answers, and every command of the Transport then goes to it.
  */
 export async function startSentinelTopology(): Promise<RunningTopology> {
   const [master, sentinel] = await freePorts(2);
