@@ -176,8 +176,8 @@ export async function readerSurvivesAQuietLog(client: RedisClientLike): Promise<
  */
 export const FAILOVER_DELIVERY_BOUND_MS = 20_000;
 
-/** How long the Publish after a promotion is retried while the client re-resolves the master. */
-const FAILOVER_PUBLISH_BOUND_MS = 20_000;
+/** How long the client is given to find the promoted master again before the case Publishes. */
+const FAILOVER_USABLE_BOUND_MS = 20_000;
 
 /** How long the whole failover case is given: the promotion, then both bounds above, with room. */
 export const FAILOVER_TIMEOUT_MS = 120_000;
@@ -197,9 +197,11 @@ interface Reported {
  * acceptable — the next Publish arrives with the gap covered, or a Reset is raised — within a
  * bound stated in one place above; an unbounded hang fails here rather than in production.
  *
- * The Publish after the promotion is retried inside its own bound: the shared client has to
- * re-resolve the master too, and a `MOVED` or a dropped socket on the write path is not what
- * this case is about. What it costs is measured and narrated with the rest.
+ * The write path has to find the new master too, and that is not what this case is about — but
+ * it cannot be retried past, either: an `XADD` that failed its deadline may still have been
+ * written, so a retried Publish is a Publish that may land twice. So the case waits for the
+ * client with a `tail`, which reads and writes nothing and can be asked again for as long as it
+ * takes, and Publishes exactly once after it. What that wait costs is measured with the rest.
  */
 export async function readerSurvivesAFailover(
   client: RedisClientLike,
@@ -227,10 +229,12 @@ export async function readerSurvivesAFailover(
     await topology.promote(logKeyOf(prefix));
     const promoted = Date.now();
 
-    await vi.waitFor(() => transport.publish(tick("after")), {
-      timeout: FAILOVER_PUBLISH_BOUND_MS,
+    await vi.waitFor(() => transport.tail(), {
+      timeout: FAILOVER_USABLE_BOUND_MS,
       interval: 100,
     });
+    const usable = Date.now();
+    await transport.publish(tick("after"));
     const published = Date.now();
 
     await vi.waitFor(() => expect(seen).toHaveLength(2), {
@@ -245,10 +249,11 @@ export async function readerSurvivesAFailover(
      * prints what it actually took.
      */
     console.info(
-      `[#79] ${where}: publish accepted ${String(published - promoted)}ms after the promotion, ` +
+      `[#79] ${where}: the log was readable again ${String(usable - promoted)}ms after the ` +
+        `promotion, the Publish accepted ${String(published - usable)}ms after that and ` +
         `delivered ${String(delivered - published)}ms after that; ` +
-        `${String(gaps.length)} reset(s) ${describe(gaps, promoted)}; ` +
-        `${String(failures.length)} reported failure(s) ${describe(failures, promoted)}`,
+        `${String(gaps.length)} reset(s)${describe(gaps, promoted)}; ` +
+        `${String(failures.length)} reported failure(s)${describe(failures, promoted)}`,
     );
 
     expect(seen.map((entry) => entry.type === "message" && entry.payload)).toEqual([
@@ -269,5 +274,5 @@ function tick(payload: string): Entry {
 function describe(reported: Reported[], since: number): string {
   return reported.length === 0
     ? ""
-    : `[${reported.map((one) => `+${String(one.at - since)}ms ${one.what}`).join("; ")}]`;
+    : ` [${reported.map((one) => `+${String(one.at - since)}ms ${one.what}`).join("; ")}]`;
 }

@@ -130,6 +130,13 @@ rejects with one of:
 | `TransportClosedError`      | the Transport has been closed                         |
 | `TransportError`            | the family; catch this to catch all three             |
 
+**A Publish that rejects may still have been written.** The deadline bounds how long the Instance
+waits, not what the server did with the command: an `XADD` that timed out can have landed all the
+same. The Transport never retries one — so an App that retries a Publish itself is choosing
+at-least-once, and must either tolerate the duplicate Message or carry its own idempotency in the
+payload. A failover is when this is most likely: the write path is re-resolving the master exactly
+while the deadline runs out.
+
 A Transport outage mid-Connection does **not** drop clients: Connections are held open and
 heartbeated for as long as it lasts, and the Instance resumes from its last position on recovery
 — sending a Reset only if that position is gone. New connects during the outage are answered
