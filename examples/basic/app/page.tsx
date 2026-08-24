@@ -1,4 +1,4 @@
-import { headers } from "next/headers";
+import { cookies } from "next/headers";
 import { Suspense } from "react";
 
 import { listAnnouncements, listMessages, listNotices, listNotifications } from "@/lib/messages";
@@ -19,18 +19,26 @@ import { RoleSwitch } from "./role";
  * page rather than lost. No line of this App ever names a Cursor or holds one: the pair travels
  * as a single opaque value, and it crosses to the Client Component as an ordinary prop.
  *
- * Reading the request's headers is what keeps the read at request time: with Cache Components
+ * Reading the request's cookies is what keeps the read at request time: with Cache Components
  * on, a component that is not marked `use cache` and does not touch request data would otherwise
  * be prerendered at build, and a Snapshot baked into HTML resumes from a Cursor that is minutes
  * or days old. This one needs the session anyway — the `connection()` of the previous version
  * did nothing else.
+ *
+ * It is `cookies()` and not `headers().get('cookie')`, and the difference is a whole class of
+ * bug: a server action that writes a cookie and then revalidates its own path re-renders this
+ * component inside that same request, whose `Cookie` header is still the one the browser sent.
+ * Read from the header, this page answers the click that changed the role with the role from
+ * before it — the switch below would flip the Connection and never flip the page. `cookies()`
+ * reads the store the action just wrote to. Whatever an App reads per request and may change
+ * inside a request goes through it.
  *
  * The admin Snapshot is the other half of the lesson: Authorize guards the stream, and the
  * server render guards the page. A guest is refused the `admin` Channel by the Registry, and is
  * handed no notices to render either — the two decisions are separate, and an App owes both.
  */
 async function Room() {
-  const session = sessionFrom((await headers()).get("cookie"));
+  const session = sessionFrom((await cookies()).toString());
   const messages = await sse.snapshot(() => listMessages(ROOM_ID));
   const notices = await sse.snapshot(() => (session.role === "admin" ? listNotices() : []));
   const notifications = await sse.snapshot(() => listNotifications(session.userId));
