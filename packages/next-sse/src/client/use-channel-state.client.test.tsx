@@ -238,3 +238,23 @@ test("an event with no reducer leaves the state where it was", async () => {
 
   await tree.unmount();
 });
+
+/**
+ * The same refusal through the other hook, which is the point of both going through one
+ * primitive: nothing in `useChannelState` knows what `refused` is. The list the server rendered
+ * stays on the page — it is what this reader is allowed to have seen — and it simply never
+ * moves.
+ */
+test("a refused Channel shows as refused, and the Snapshot stays on the page", async () => {
+  const tree = await mount(app(<Room snapshot={snapshotOf("cursor-1", messagesOf("rendered"))} />));
+  await flush();
+
+  await act(() => {
+    opened[0]?.ready({ refused: ["chat:42"] });
+  });
+
+  expect(tree.container.querySelector("div")?.dataset.status).toBe("refused");
+  expect(tree.container.textContent).toContain("rendered");
+
+  await tree.unmount();
+});

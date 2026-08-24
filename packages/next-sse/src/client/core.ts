@@ -1,8 +1,9 @@
 /**
  * Where a Connection stands, as the hooks report it (ADR-0007).
  *
- * The core reaches `connecting`, `live` and `reconnecting` today. `replaying` needs replay and
- * `refused` needs Authorize; both arrive with the ticket that builds them.
+ * `refused` is the one that is not about the Connection but about this subscriber's own Channel:
+ * the Connection may be live and carrying other Channels perfectly well. It lasts as long as the
+ * Connection that was refused — Authorize decides afresh on the next one.
  */
 export type Status = "connecting" | "replaying" | "live" | "reconnecting" | "refused";
 
@@ -130,6 +131,13 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
 
   let source: EventSourceLike | undefined;
   let open: ReadonlySet<string> = new Set();
+  /**
+   * What the current Connection was refused, as `ready` named it. It belongs to the Connection
+   * and is emptied with every one this core opens: a Channel refused a moment ago is asked for
+   * again on the next connect, because that is the only way a Kick or a change of role can ever
+   * give it back (ADR-0003).
+   */
+  let refused: ReadonlySet<string> = new Set();
   let live = false;
   let scheduled = false;
   let attempt = 0;
@@ -146,8 +154,16 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
     subscriber.onStatus(status);
   }
 
+  /**
+   * Where the Connection stands, to every subscriber it is actually about. A subscriber whose
+   * Channel this Connection refused is not on it: the replay it is carrying and the moment it
+   * goes live are somebody else's news, and telling this one would overwrite the one status it
+   * has that says something true.
+   */
   function setAll(status: Status): void {
-    for (const subscriber of subscribers) setStatus(subscriber, status);
+    for (const subscriber of subscribers) {
+      if (!refused.has(subscriber.channel)) setStatus(subscriber, status);
+    }
   }
 
   function wanted(): Set<string> {
@@ -185,6 +201,7 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
   function openSource(channels: ReadonlySet<string>): void {
     open = channels;
     live = false;
+    refused = new Set();
 
     /**
      * A Cursor a subscriber brought outranks the one this client happens to hold: it is the
@@ -206,13 +223,44 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
      * cycle. Its Cursor is the Connection's position as the Instance settled it — the one this
      * client asked for, the log's tail for a live-only connect, or a fresh tail when the one it
      * brought was gone — and taking it as it comes is what keeps a client that never receives a
-     * Message reconnecting from a position rather than from nothing. `refused` belongs to
-     * Authorize, and is not read yet.
+     * Message reconnecting from a position rather than from nothing.
+     *
+     * **A `ready` with no Cursor is the refusal of every Channel, and is read as exactly that.**
+     * There is no Connection behind it, so there is no position: this client keeps whatever
+     * position it already held and asks the Instance for nothing more. Nothing here should ever
+     * become a fetch for the missing value.
+     *
+     * `refused` is the other half of Authorize (ADR-0003), and it is per Channel: the
+     * subscribers of a refused Channel are told, the rest carry on live, and a Connection that
+     * was refused everything is closed here — the browser would reconnect to it by itself the
+     * moment the server ended the stream, and would be told the same thing forever.
      */
     opened.addEventListener("ready", (event) => {
       attempt = 0;
-      const { cursor } = JSON.parse(event.data) as { cursor?: unknown };
+      const { cursor, refused: names } = JSON.parse(event.data) as {
+        cursor?: unknown;
+        refused?: unknown;
+      };
       if (typeof cursor === "string" && cursor !== "") lastEventId = cursor;
+
+      refused = new Set(Array.isArray(names) ? names.filter(isString) : []);
+      for (const subscriber of subscribers) {
+        if (refused.has(subscriber.channel)) setStatus(subscriber, "refused");
+      }
+
+      /**
+       * Every Channel of this Connection refused: there is nothing left for it to carry. It is
+       * closed rather than retried, because retrying is what the core does about a Connection
+       * the server could not serve — this one was served, and the answer was no. A hook mounting
+       * or unmounting later reopens through the ordinary path, with the whole Channel set, and
+       * Authorize decides again.
+       */
+      if ([...open].every((channel) => refused.has(channel))) {
+        closeSource();
+
+        return;
+      }
+
       if (resumeFrom !== undefined) setAll("replaying");
     });
 
@@ -333,9 +381,15 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
        * live-only in the same breath — it joined at the live point, so the next replay this
        * Connection carries is one it lived through the beginning of and must not miss. One that
        * brought a Cursor is neither: a Connection is about to reopen on its behalf, and it
-       * starts where every subscriber of that Connection starts.
+       * starts where every subscriber of that Connection starts. A Channel this Connection was
+       * refused is neither live nor about to be, and the hook hears that from the next `ready`.
        */
-      if (live && open.has(subscriber.channel) && subscription.cursor === undefined) {
+      if (
+        live &&
+        open.has(subscriber.channel) &&
+        !refused.has(subscriber.channel) &&
+        subscription.cursor === undefined
+      ) {
         subscriber.liveOnly = false;
         setStatus(subscriber, "live");
       }
@@ -353,6 +407,10 @@ interface Envelope {
   channel: string;
   event: string;
   payload: unknown;
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
 }
 
 function sameSet(one: ReadonlySet<string>, other: ReadonlySet<string>): boolean {

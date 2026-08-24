@@ -372,3 +372,31 @@ test("a new Snapshot prop reopens the Connection from the new position", async (
 
   await tree.unmount();
 });
+
+/**
+ * Refusal reaches a component through the same status every other state of the Connection does,
+ * and it is per hook: one room refused says nothing about the other, which is streaming on the
+ * very same Connection (ADR-0003).
+ */
+test("a refused Channel shows as refused on its own hook, and only there", async () => {
+  const tree = await mount(
+    app(
+      <>
+        <Messages roomId="42" />
+        <Messages roomId="secret" />
+      </>,
+    ),
+  );
+  await flush();
+  const statuses = () =>
+    Array.from(tree.container.querySelectorAll("p"), (one) => one.dataset.status);
+
+  await act(() => {
+    only().ready({ cursor: "cursor-0", refused: ["chat:secret"] });
+    only().caughtUp();
+  });
+
+  expect(statuses()).toEqual(["live", "refused"]);
+
+  await tree.unmount();
+});
