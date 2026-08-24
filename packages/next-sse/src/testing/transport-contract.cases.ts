@@ -7,10 +7,11 @@ import {
   type Cursor,
   type Entry,
   type Page,
+  type Retention,
   type StoredEntry,
   type Transport,
 } from "../transport/index.js";
-import type { ContractCase } from "./transport-contract.js";
+import type { ContractCase, ContractContext } from "./transport-contract.js";
 
 /** One Message, as an App publishes it. */
 const message = (text: string): Entry => ({
@@ -123,6 +124,29 @@ const watch = async (transport: Transport): Promise<{ seen: Seen; detach: () => 
 
   return { seen, detach };
 };
+
+/**
+ * A Transport with a peer on its log and a listener already fed one Entry: what an outage case
+ * needs in place before it cuts the Transport off, namely a subscription with a position to lose
+ * and a second Instance that will go on publishing without it.
+ */
+const watchedWithPeer = async (
+  context: ContractContext,
+  retention?: Retention,
+): Promise<{ transport: Transport; peer: Transport; seen: Seen }> => {
+  const transport = await context.transport(retention);
+  const peer = await context.peer(transport);
+  const { seen } = await watch(transport);
+
+  await peer.publish(message("before the outage"));
+  await until(() => seen.entries.length === 1, "the feed delivered the peer's first Entry");
+
+  return { transport, peer, seen };
+};
+
+/** Wait for one Entry, named by the Cursor it was published under, to reach the live feed. */
+const delivered = async (seen: Seen, cursor: Cursor, description: string): Promise<void> =>
+  until(() => seen.entries.some((entry) => entry.cursor === cursor), description, HEAL_TIMEOUT_MS);
 
 /** How many Entries are published in one go while a case pushes a log past its cap. */
 const TRIM_BATCH = 128;
@@ -434,22 +458,13 @@ export const contractCases: readonly ContractCase[] = [
     name: "the subscription heals across an outage and delivers what it missed, reporting no gap",
     needs: ["outage", "peer"],
     run: async (context) => {
-      const transport = await context.transport();
-      const peer = await context.peer(transport);
-      const { seen } = await watch(transport);
-
-      await peer.publish(message("before the outage"));
-      await until(() => seen.entries.length === 1, "the feed delivered the peer's first Entry");
+      const { transport, peer, seen } = await watchedWithPeer(context);
 
       await context.outage.begin(transport);
       const during = await peer.publish(message("during the outage"));
       await context.outage.end(transport);
 
-      await until(
-        () => seen.entries.some((entry) => entry.cursor === during),
-        "the feed delivered what was published while the backend was away",
-        HEAL_TIMEOUT_MS,
-      );
+      await delivered(seen, during, "the feed delivered what was published during the outage");
       expect(seen.gaps).toBe(0);
     },
   },
@@ -457,12 +472,7 @@ export const contractCases: readonly ContractCase[] = [
     name: "the subscription reports one gap when the position it resumes from is gone, then resumes",
     needs: ["outage", "peer"],
     run: async (context) => {
-      const transport = await context.transport({ cap: 2 });
-      const peer = await context.peer(transport);
-      const { seen } = await watch(transport);
-
-      await peer.publish(message("before the outage"));
-      await until(() => seen.entries.length === 1, "the feed delivered the peer's first Entry");
+      const { transport, peer, seen } = await watchedWithPeer(context, { cap: 2 });
 
       await context.outage.begin(transport);
       await publishUntilTrimmed(peer);
@@ -471,11 +481,7 @@ export const contractCases: readonly ContractCase[] = [
       await until(() => seen.gaps === 1, "the subscription reported the gap", HEAL_TIMEOUT_MS);
 
       const after = await transport.publish(message("after the gap"));
-      await until(
-        () => seen.entries.some((entry) => entry.cursor === after),
-        "the feed resumed once the gap had been reported",
-        HEAL_TIMEOUT_MS,
-      );
+      await delivered(seen, after, "the feed resumed once the gap had been reported");
       expect(seen.gaps).toBe(1);
     },
   },
