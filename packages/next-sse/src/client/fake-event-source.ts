@@ -14,8 +14,10 @@ type Listener = (event: MessageEventLike) => void;
  * It exists because no DOM shim ships `EventSource` — neither jsdom nor happy-dom registers
  * one — so a jsdom test is a mocked `EventSource` by construction; the core takes its
  * constructor by injection precisely so that the mock is the seam rather than a global patch.
- * ADR-0009 has it shipping from `./testing` so consumers test their components the same way;
- * it is internal until that ticket, and promoting it is a re-export.
+ *
+ * It ships from `./testing` (ADR-0009) so consumers test their components the same way, which
+ * makes every member of it public API: nothing is added here that a consumer test would not
+ * drive.
  */
 export class FakeEventSource implements EventSourceLike {
   readonly url: string;
@@ -111,10 +113,13 @@ export class FakeEventSource implements EventSourceLike {
 }
 
 /**
- * A constructor to hand the core, and the list of every Connection it opened, in order.
+ * A constructor to put where the browser's `EventSource` would be, and the list of every
+ * Connection opened through it, in order.
  *
  * Counting Connections is what most of these tests are about — one for many hooks, one across
- * a Strict Mode burst — so the recorder is the fixture, not an assertion helper bolted on.
+ * a Strict Mode burst — so the recorder is the fixture, not an assertion helper bolted on. It
+ * is two members and no more: this is public API from `./testing`, and every one of them is a
+ * promise the package then keeps.
  */
 export function fakeEventSources(): {
   EventSource: EventSourceConstructor;
