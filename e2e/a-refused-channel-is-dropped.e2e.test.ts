@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 
 import { openDemoStream, publish } from "./harness/demo.js";
-import { startInstance } from "./harness/example.js";
+import { assertPromptExit, startInstance } from "./harness/example.js";
 
 /**
  * Per-Channel refusal end to end, on the built example app: a reader with no session asks for
@@ -39,7 +39,7 @@ test("a refused Channel is dropped while the others stream", async () => {
     await expectTheAdminChannelAlone(instance.url);
   } finally {
     stream.close();
-    await instance.stop();
+    assertPromptExit(await instance.stop());
   }
 });
 

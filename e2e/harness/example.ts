@@ -23,8 +23,37 @@ const STOP_TIMEOUT_MS = 10_000;
 export interface Instance {
   /** Where it answers, on a port of its own. */
   url: string;
-  /** End it, and do not come back until the process is gone. */
-  stop(): Promise<void>;
+  /**
+   * Signal it, and do not come back until the process is gone. What comes back is how it went:
+   * a scenario is expected to hand that to `assertPromptExit`, so that every one of them is a
+   * witness of the Drain (ADR-0011) rather than only the scenario that is about it.
+   */
+  stop(): Promise<Exit>;
+}
+
+/** How a signalled Instance went. */
+export interface Exit {
+  /** The status it exited with — 143 for the `SIGTERM` Next.js handles — or `null`. */
+  code: number | null;
+  /** The signal that killed it, when nothing in the process handled the shutdown. */
+  signal: NodeJS.Signals | null;
+  /** Whether it had to be `SIGKILL`ed: a process that did not end its own Connections. */
+  forced: boolean;
+}
+
+/**
+ * A shutdown that was the App's own. It is the one claim every scenario makes for free: with
+ * open Connections, a signalled `next start` exits by itself, because the Drain ends the SSE
+ * responses its `server.close()` is waiting on (ADR-0011). Before Drain, every one of these
+ * runs sat out the ten seconds and was killed.
+ */
+export function assertPromptExit(exit: Exit): void {
+  if (!exit.forced) return;
+
+  throw new Error(
+    `the example app did not exit within ${String(STOP_TIMEOUT_MS)}ms of SIGTERM and had to be ` +
+      `SIGKILLed: its Connections were still open`,
+  );
 }
 
 /**
@@ -105,17 +134,26 @@ async function tryFetch(url: string): Promise<Response | undefined> {
   }
 }
 
-async function stop(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
+async function stop(child: ChildProcess): Promise<Exit> {
+  const ended = (forced: boolean): Exit => ({
+    code: child.exitCode,
+    signal: child.signalCode,
+    forced,
+  });
+  if (child.exitCode !== null || child.signalCode !== null) return ended(false);
 
   const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
   child.kill("SIGTERM");
-  const killed = delay(STOP_TIMEOUT_MS).then(() => {
+  let forced = false;
+  const fallback = setTimeout(() => {
+    forced = true;
     child.kill("SIGKILL");
-  });
+  }, STOP_TIMEOUT_MS);
 
-  await Promise.race([exited, killed]);
   await exited;
+  clearTimeout(fallback);
+
+  return ended(forced);
 }
 
 async function assertBuiltLibrary(): Promise<void> {
