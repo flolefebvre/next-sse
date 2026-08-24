@@ -429,10 +429,14 @@ async function promoteInCluster(
 
 /**
  * Promote the replica on a Sentinel topology: tell the sentinel to fail over, and wait until it
- * answers a different address for the master **and** the server at that address says it is one.
+ * answers a different address for the master, the server at that address says it is one, **and**
+ * the server it replaces says it is now a connected replica of it.
  *
- * Both halves matter: the sentinel publishes the switch before the promoted server has finished
- * taking the role, and a client that reconnects in between would be sent to a replica.
+ * All three matter, and the last one is not belt and braces: the sentinel publishes the switch
+ * before it has reconfigured the old master, and until it has, that server still answers writes.
+ * A caller that Published in that window could have it accepted by a node that is about to be
+ * told to replicate from someone else — and to throw away what it holds of its own — which is a
+ * case passing on a Message the canonical log never received.
  */
 async function promoteInSentinel(sentinel: number): Promise<void> {
   await onNodes(async (ask) => {
@@ -454,11 +458,21 @@ async function promoteInSentinel(sentinel: number): Promise<void> {
       const now = await address();
       if (now === before) return `the sentinel still names ${String(before)}`;
 
-      const role = (await ask(now, ["ROLE"])) as unknown[];
+      const promoted = (await ask(now, ["ROLE"])) as unknown[];
+      if (promoted[0] !== "master") {
+        return `${String(now)} is named but reports ${String(promoted[0])}`;
+      }
 
-      return role[0] === "master"
+      /**
+       * `ROLE` on a replica answers its role, the master it follows and the state of that link:
+       * anything but `slave` of the promoted node, connected, still leaves the old master
+       * writable on its own account.
+       */
+      const demoted = (await ask(before, ["ROLE"])) as unknown[];
+
+      return demoted[0] === "slave" && Number(demoted[2]) === now && demoted[3] === "connected"
         ? undefined
-        : `${String(now)} is named but reports ${String(role[0])}`;
+        : `${String(before)} still reports ${JSON.stringify(demoted.slice(0, 4))}`;
     });
   });
 }

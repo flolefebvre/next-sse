@@ -193,9 +193,11 @@ interface Reported {
  * on Cluster and on Sentinel that #57 left asserted by reasoning (#79).
  *
  * The case is the deployment's: subscribe, see a Publish, force the promotion of a replica, and
- * Publish again once every node reports the new master. What is asserted is what ADR-0004 makes
- * acceptable — the next Publish arrives with the gap covered, or a Reset is raised — within a
- * bound stated in one place above; an unbounded hang fails here rather than in production.
+ * Publish again once every node reports the new master. What it asserts is the promise an App
+ * holds the log to — both Entries, in order, inside a bound stated in one place above — so that
+ * an unbounded hang fails here rather than in production. A Reset in between is recorded and
+ * printed rather than failed: ADR-0004 makes it an acceptable way through a failover, and which
+ * way through it goes is the ADR's to describe, not this case's to pin.
  *
  * The write path has to find the new master too, and that is not what this case is about — but
  * it cannot be retried past, either: an `XADD` that failed its deadline may still have been
