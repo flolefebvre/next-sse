@@ -48,12 +48,18 @@ export interface Exit {
  * runs sat out the ten seconds and was killed.
  */
 export function assertPromptExit(exit: Exit): void {
-  if (!exit.forced) return;
-
-  throw new Error(
-    `the example app did not exit within ${String(STOP_TIMEOUT_MS)}ms of SIGTERM and had to be ` +
-      `SIGKILLed: its Connections were still open`,
-  );
+  if (exit.forced) {
+    throw new Error(
+      `the example app did not exit within ${String(STOP_TIMEOUT_MS)}ms of SIGTERM and had to ` +
+        `be SIGKILLed: its Connections were still open`,
+    );
+  }
+  if (exit.signal !== null) {
+    throw new Error(
+      `the example app was killed by ${exit.signal} rather than handling it: a handled ` +
+        `SIGTERM is an exit code, never a signal`,
+    );
+  }
 }
 
 /**

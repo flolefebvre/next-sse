@@ -1,4 +1,4 @@
-import { expect, inject, test } from "vitest";
+import { expect, inject, test, vi } from "vitest";
 
 import { TransportClosedError } from "../packages/next-sse/src/transport/index.js";
 
@@ -70,14 +70,20 @@ test("a Publish made while an Instance drains lands, and the log outlives that I
     /**
      * The Publish is issued in the same tick as the Drain, which is what an in-flight server
      * action is: the log is open until the last Connection has gone, so it lands and is carried
-     * to a client this Instance has not ended yet.
+     * to a client this Instance has not ended yet. The one draw the Drain makes is pinned to
+     * the far end of the window — the spread itself is a unit-tested claim, and a real draw
+     * could land under the round trip this Publish takes and cut the client first.
      */
+    vi.spyOn(Math, "random").mockReturnValue(1);
     const draining = here.drain();
     await here.chat({ roomId: "42" }).message({ text: "in flight when the signal came" });
     expect(await client.message()).toEqual({
       channel: "chat:42",
       text: "in flight when the signal came",
     });
+
+    /** And while it drains, the Instance takes nobody new: the 503 a load balancer reads. */
+    await expect(connect(here)).rejects.toThrow(/503/);
 
     expect((await client.next()).event).toBe("reconnect");
     await draining;
