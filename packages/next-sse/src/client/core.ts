@@ -132,8 +132,12 @@ interface Subscriber extends Subscription {
  * are the same Cursor, since one render's Snapshots share one request-cached one; and a Cursor
  * that is older than another costs a longer replay, which the reducers absorb, and never a gap.
  *
- * The heartbeat watchdog, the max lifetime and the page-lifecycle handling of ADR-0004 belong
- * to the Connection-lifecycle ticket and are not here.
+ * **Everything that ends a Connection ends it through those same two doors.** The heartbeat
+ * watchdog — 3× the interval `ready` advertised, with no block of any kind in between — the
+ * `reconnect` the Instance sends before it lets a Connection go, and a page put away and
+ * brought back all close and reopen through `closeSource` and `openSource`, with the Cursor
+ * this client holds. There is no second path, so nothing can reopen without the Cursor, and a
+ * Connection reopened for any of those reasons resumes exactly like one reopened for any other.
  */
 export function createCore({ url, eventSource, page, onReset }: CoreOptions): Core {
   const Connection = eventSource ?? globalThis.EventSource;
