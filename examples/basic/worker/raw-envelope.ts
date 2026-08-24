@@ -18,8 +18,10 @@ import { createClient } from "redis";
  *   `message` or `control`, and the rest is the Channel, the declared event name and the
  *   payload. A control entry — `{"v":1,"type":"control","control":"kick","key":"user-7"}` — is
  *   how a service outside Next.js revokes somebody's Connections;
- * - `MAXLEN ~ <cap>` rides on the write. The Instances trim regardless, and an external
- *   publisher that omits it lets the log grow between their trims.
+ * - `MAXLEN ~ <cap>` rides on the write, at the cap the App runs under. The Instances trim
+ *   regardless, and an external publisher that omits it lets the log grow between their trims —
+ *   while one that trims at a smaller cap than the App's drops Entries the App still promises to
+ *   replay.
  *
  * Nothing checks the payload against the App's schema on the way in or on the way out: what is
  * written here is what the client's typed hook will hand its component, so a publisher outside
@@ -29,7 +31,22 @@ import { createClient } from "redis";
  * The command goes through `sendCommand` on purpose: what an external publisher owes is the
  * command, not any one client library's spelling of it.
  */
-const RETENTION_CAP = "10000";
+const DEFAULT_RETENTION_CAP = "10000";
+
+/**
+ * The two variables an external publisher owes the App it writes into, read the way the App
+ * reads them: an unset *or empty* variable is unset, and the defaults are ADR-0006's.
+ *
+ * The cap is not a detail. `MAXLEN ~` trims on every write, so a publisher that carried the
+ * default into an App configured for more would drop Entries that App still promises to replay,
+ * and every client that was away long enough to need them Resets instead. Whoever writes the
+ * log honours the retention the log was configured with.
+ */
+function given(variable: string, fallback: string): string {
+  const value = process.env[variable];
+
+  return value === undefined || value === "" ? fallback : value;
+}
 
 async function main(): Promise<void> {
   const url = process.env.REDIS_URL;
@@ -37,7 +54,8 @@ async function main(): Promise<void> {
     throw new Error("This publisher needs REDIS_URL: the log it writes into is the App's.");
   }
 
-  const prefix = process.env.NEXT_SSE_PREFIX ?? "next-sse";
+  const prefix = given("NEXT_SSE_PREFIX", "next-sse");
+  const cap = given("NEXT_SSE_RETENTION_CAP", DEFAULT_RETENTION_CAP);
   const envelope = {
     v: 1,
     type: "message",
@@ -60,7 +78,7 @@ async function main(): Promise<void> {
       `{${prefix}}:log`,
       "MAXLEN",
       "~",
-      RETENTION_CAP,
+      cap,
       "*",
       "entry",
       JSON.stringify(envelope),

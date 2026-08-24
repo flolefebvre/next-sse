@@ -37,7 +37,15 @@ async function main(): Promise<void> {
     throw new Error("This worker needs REDIS_URL: the log it Publishes into is the App's.");
   }
 
-  const publisher = createRedisPublisher({ url, prefix: process.env.NEXT_SSE_PREFIX });
+  /**
+   * The Prefix is deliberately not passed through: the factory reads `NEXT_SSE_PREFIX` itself,
+   * with the rule the App applies — an unset *or empty* variable is no Prefix at all, and the
+   * default stands. Forwarding the variable would hand the factory `""` on a host that
+   * materialises unset variables as empty strings, and an empty Prefix is refused rather than
+   * defaulted, so a worker that read its environment by hand would fail where the App it
+   * Publishes into runs happily.
+   */
+  const publisher = createRedisPublisher({ url });
   const sse = createPublisher<typeof app>(publisher);
   const text = process.argv[2] ?? "the worker was here";
 
