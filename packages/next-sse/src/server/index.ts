@@ -1,9 +1,27 @@
+import type { ChannelRecord, NoReservedKeys } from "../internal/channel.js";
 import type { Transport } from "../transport/index.js";
 
 import { getInstance } from "./instance.js";
-import { channel, createSSE, type ChannelDeclaration, type Registry } from "./registry.js";
+import { channel, createSSE, type Registry } from "./registry.js";
 
-export type { ChannelDeclaration, Handle, Registry } from "./registry.js";
+export type { Handle, Registry, RegistryLike } from "./registry.js";
+export type {
+  ChannelDeclaration,
+  ChannelRecord,
+  EventMap,
+  EventsOf,
+  PatternOf,
+} from "../internal/channel.js";
+export type { JsonValue } from "../internal/json.js";
+export type { ParamNames, ParamsArgs, ParamsOf } from "../internal/pattern.js";
+export { asType, InvalidPayloadError } from "../internal/standard-schema.js";
+export type {
+  InferInput,
+  InferOutput,
+  StandardIssue,
+  StandardResult,
+  StandardSchemaV1,
+} from "../internal/standard-schema.js";
 export { toClientChannels } from "./client-channels.js";
 export { SSEProvider } from "./provider.js";
 export type { SSEProviderProps } from "./provider.js";
@@ -25,7 +43,9 @@ export interface InitOptions {
  */
 export function initSSE(options: InitOptions = {}): {
   channel: typeof channel;
-  createSSE: (channels: Record<string, ChannelDeclaration>) => Registry;
+  createSSE: <Channels extends ChannelRecord>(
+    channels: Channels & NoReservedKeys<Channels>,
+  ) => Registry<Channels>;
 } {
   const instance = getInstance(options);
 

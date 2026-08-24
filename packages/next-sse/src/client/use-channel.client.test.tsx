@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { beforeEach, expect, test, vi } from "vitest";
 
+import type { ChannelDeclaration } from "../internal/channel.js";
+import type { StandardSchemaV1 } from "../internal/standard-schema.js";
+
 import { fakeEventSources, type FakeEventSource } from "./fake-event-source.js";
 import { createClient, SSEClientProvider, type ClientChannels } from "./index.js";
 import { act, flush, mount, type Mounted } from "./react.testkit.js";
@@ -9,7 +12,13 @@ import { act, flush, mount, type Mounted } from "./react.testkit.js";
  * The App of these tests, written the way an App writes it: the Registry is a type, the
  * Channels are Handles, and no Channel name is spelled out in a component.
  */
-const { channels, useChannel } = createClient<{ chat: unknown; presence: unknown }>();
+type Chat = ChannelDeclaration<"chat:{roomId}", { message: StandardSchemaV1<{ text: string }> }>;
+type Presence = ChannelDeclaration<
+  "presence:{roomId}",
+  { joined: StandardSchemaV1<{ who: string }> }
+>;
+
+const { channels, useChannel } = createClient<{ channels: { chat: Chat; presence: Presence } }>();
 
 /** What `<SSEProvider>` would have handed down: the allowlist, and nothing else. */
 const DECLARED: ClientChannels = {
@@ -33,7 +42,7 @@ beforeEach(() => {
 function Messages({ roomId = "42" }: { roomId?: string }) {
   const [texts, setTexts] = useState<string[]>([]);
   const { status, channel } = useChannel(channels.chat({ roomId }), {
-    message: (payload) => setTexts((seen) => [...seen, (payload as { text: string }).text]),
+    message: (payload) => setTexts((seen) => [...seen, payload.text]),
   });
 
   return (
@@ -201,9 +210,9 @@ test("a re-render with fresh handler closures keeps the Connection it has", asyn
 });
 
 test("a Handle for a Channel the provider does not carry is an error that names it", async () => {
-  const unknown = createClient<{ nope: unknown }>();
+  const unknown = createClient<{ channels: { nope: Chat } }>();
   function Nope() {
-    unknown.useChannel(unknown.channels.nope(), {});
+    unknown.useChannel(unknown.channels.nope({ roomId: "42" }), {});
 
     return null;
   }
@@ -213,6 +222,7 @@ test("a Handle for a Channel the provider does not carry is an error that names 
 
 test("a Handle missing a param of its pattern is an error, not a Channel with a brace in it", async () => {
   function Unfilled() {
+    // @ts-expect-error the compiler asks for the param; this is what an untyped caller hits
     useChannel(channels.chat(), {});
 
     return null;

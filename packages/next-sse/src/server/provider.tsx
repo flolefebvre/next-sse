@@ -3,11 +3,11 @@ import type { ReactNode } from "react";
 import { SSEClientProvider } from "../client/index.js";
 
 import { toClientChannels } from "./client-channels.js";
-import type { Registry } from "./registry.js";
+import type { RegistryLike } from "./registry.js";
 
 export interface SSEProviderProps {
   /** The App's Registry, imported here — a Server Component — and nowhere below. */
-  sse: Registry;
+  sse: RegistryLike;
   /** The SSE route this App serves, if it is not `/api/sse`. */
   url?: string;
   children?: ReactNode;

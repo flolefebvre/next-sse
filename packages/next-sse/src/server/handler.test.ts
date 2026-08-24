@@ -6,7 +6,7 @@ import type { Cursor } from "../transport/index.js";
 import { createMemoryTransport } from "../transport/memory.js";
 
 import { framesOf, type Frames } from "./frames.testkit.js";
-import { initSSE } from "./index.js";
+import { asType, initSSE } from "./index.js";
 import { getInstance } from "./instance.js";
 
 beforeEach(() => {
@@ -33,7 +33,10 @@ const appWith = (transport = createMemoryTransport()): ChatApp => {
   const { channel, createSSE } = initSSE({ transport });
 
   return createSSE({
-    chat: channel({ pattern: "chat:{roomId}", events: { message: undefined } }),
+    chat: channel({
+      pattern: "chat:{roomId}",
+      events: { message: asType<{ text: string }>(), typing: asType<{ who: string }>() },
+    }),
   }) as unknown as ChatApp;
 };
 
@@ -175,6 +178,11 @@ test("a cancelled stream leaves no Connection behind either", async () => {
   expect(getInstance().connections.size).toBe(0);
 });
 
+/**
+ * `publish` takes the event name as data, for a call site that only learns it at runtime. It
+ * is still one of the Channel's declared events: an event with no schema has no payload type
+ * and nothing to validate against, so there is nothing honest to put on the wire.
+ */
 test("a Handle publishes on the declared event name, and on a dynamic one", async () => {
   const transport = createMemoryTransport();
   const sse = appWith(transport);
