@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { cookies, headers } from "next/headers";
 
-import { appendMessage, appendNotice, type Message } from "@/lib/messages";
+import { appendMessage, appendNotice, appendNotification, type Message } from "@/lib/messages";
 import { ROLE_COOKIE, sessionFrom, type Role } from "@/lib/session";
 import { sse } from "@/lib/sse";
 
@@ -38,6 +38,22 @@ export async function announce(text: string): Promise<Message> {
   await sse.admin().notice(notice);
 
   return notice;
+}
+
+/**
+ * One Message for one reader, on the Channel only that reader may read.
+ *
+ * The Channel a Publish addresses is built from the session, not from anything the caller sent:
+ * the same rule the Registry's `authorize` states from the reading side, kept from the writing
+ * side. A real App notifies somebody *else* from wherever the event happens — an order shipped,
+ * a mention posted — and the only line that changes is where the user id comes from.
+ */
+export async function notifyMe(text: string): Promise<Message> {
+  const session = sessionFrom((await headers()).get("cookie"));
+  const notification = appendNotification(session.userId, text);
+  await sse.notifications({ userId: session.userId }).arrived(notification);
+
+  return notification;
 }
 
 /**

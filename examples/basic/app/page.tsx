@@ -1,12 +1,13 @@
 import { headers } from "next/headers";
 import { Suspense } from "react";
 
-import { listMessages, listNotices } from "@/lib/messages";
+import { listMessages, listNotices, listNotifications } from "@/lib/messages";
 import { sessionFrom } from "@/lib/session";
 import { ROOM_ID, sse } from "@/lib/sse";
 
 import { Messages } from "./messages";
 import { Notices } from "./notices";
+import { Notifications } from "./notifications";
 import { RoleSwitch } from "./role";
 
 /**
@@ -31,11 +32,13 @@ async function Room() {
   const session = sessionFrom((await headers()).get("cookie"));
   const messages = await sse.snapshot(() => listMessages(ROOM_ID));
   const notices = await sse.snapshot(() => (session.role === "admin" ? listNotices() : []));
+  const notifications = await sse.snapshot(() => listNotifications(session.userId));
 
   return (
     <>
       <RoleSwitch role={session.role} />
       <Messages roomId={ROOM_ID} snapshot={messages} />
+      <Notifications userId={session.userId} snapshot={notifications} />
       <Notices snapshot={notices} />
     </>
   );

@@ -1,10 +1,10 @@
 /**
- * The App's data, such as it is: the Messages of each room, in this Instance's memory.
+ * The App's data, such as it is: one list per thing this App shows, in this Instance's memory.
  *
  * A real App reads and writes a database here, and nothing else about the example would change:
  * what the library cares about is that the read happens inside `sse.snapshot(...)`, so that the
  * Cursor is taken before it. This one is per Instance on purpose — the second Instance of a
- * two-Instance run has a list of its own — which is exactly the kind of staleness the handoff is
+ * two-Instance run has lists of its own — which is exactly the kind of staleness the handoff is
  * built to survive: a Publish reaches every Instance's Connections whatever their server render
  * had, and `upsertBy` merges the two views.
  */
@@ -19,37 +19,55 @@ export interface Message {
  * registry — nor does a module re-evaluated by a hot reload — so a plain module-level `Map`
  * would give the webhook one list and the page another, and the page would render an empty room
  * a moment after a Publish went through.
+ *
+ * One Map holds every list this App keeps, under a name of its own — a room, the admin notices,
+ * one reader's notifications, the broadcast. The Channels are named the same way for the same
+ * reason, and the resemblance stops there: this is the App's data, and what a Connection may
+ * read of it is the Registry's business.
  */
-const SLOT = Symbol.for("next-sse-example/messages");
+const SLOT = Symbol.for("next-sse-example/lists");
 const globals = globalThis as unknown as { [key: symbol]: Map<string, Message[]> | undefined };
-const rooms = (globals[SLOT] ??= new Map<string, Message[]>());
+const lists = (globals[SLOT] ??= new Map<string, Message[]>());
 
-/** The notices only an admin may read, in this Instance's memory, exactly like the rooms. */
-const NOTICES = Symbol.for("next-sse-example/notices");
-const notices = ((globals as unknown as { [key: symbol]: Message[] | undefined })[NOTICES] ??= []);
-
-/** Everything this room has, oldest first. */
-export function listMessages(roomId: string): Message[] {
-  return rooms.get(roomId) ?? [];
+/** Everything that list holds, oldest first, and an empty one for a list nothing wrote yet. */
+function listOf(name: string): Message[] {
+  return lists.get(name) ?? [];
 }
 
-/** Add one Message to the room and hand it back, id and all, for the Publish that follows. */
-export function appendMessage(roomId: string, text: string): Message {
+/** Add one Message to a list and hand it back, id and all, for the Publish that follows. */
+function appendTo(name: string, text: string): Message {
   const message: Message = { id: crypto.randomUUID(), text };
-  rooms.set(roomId, [...listMessages(roomId), message]);
+  lists.set(name, [...listOf(name), message]);
 
   return message;
 }
 
-/** Everything the admin Channel has, oldest first: the read the admin Snapshot is taken of. */
-export function listNotices(): Message[] {
-  return notices;
+/** Everything this room has, oldest first. */
+export function listMessages(roomId: string): Message[] {
+  return listOf(`room:${roomId}`);
 }
 
-/** Add one notice and hand it back, id and all, for the Publish that follows. */
-export function appendNotice(text: string): Message {
-  const notice: Message = { id: crypto.randomUUID(), text };
-  notices.push(notice);
+/** One Message into the room, ready to be Published. */
+export function appendMessage(roomId: string, text: string): Message {
+  return appendTo(`room:${roomId}`, text);
+}
 
-  return notice;
+/** Everything the admin Channel has, oldest first: the read the admin Snapshot is taken of. */
+export function listNotices(): Message[] {
+  return listOf("notices");
+}
+
+/** One notice, ready to be Published on the admin Channel. */
+export function appendNotice(text: string): Message {
+  return appendTo("notices", text);
+}
+
+/** What this reader alone has been sent, oldest first: the read their Snapshot is taken of. */
+export function listNotifications(userId: string): Message[] {
+  return listOf(`notifications:${userId}`);
+}
+
+/** One notification for one reader, ready to be Published on the Channel only they may read. */
+export function appendNotification(userId: string, text: string): Message {
+  return appendTo(`notifications:${userId}`, text);
 }

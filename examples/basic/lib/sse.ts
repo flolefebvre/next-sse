@@ -46,6 +46,25 @@ export const sse = createSSE({
     },
     authorize: (_params, session) => session.role === "admin",
   }),
+  /**
+   * Per-user notifications: one Channel per reader, and the param is what decides it.
+   *
+   * `authorize` is handed the params of the very Channel being asked for, so the rule is the
+   * one line below — this reader may read their own notifications and nobody else's. Nothing
+   * enumerates the Channels: `notifications:{userId}` is a family, and the Connection carries
+   * the one member its holder asked for.
+   *
+   * The name is checked against the session rather than trusted from the query, which is the
+   * whole of the lesson: a client may ask for any Channel name it likes, and an App that reads
+   * the user id off the Handle instead of off its own session has no authorization at all.
+   */
+  notifications: channel({
+    pattern: "notifications:{userId}",
+    events: {
+      arrived: z.object({ id: z.string(), text: z.string().trim().min(1) }),
+    },
+    authorize: (params, session) => params.userId === session.userId,
+  }),
 });
 
 /** The one room this example talks in. A real App takes it from the URL or the session. */
