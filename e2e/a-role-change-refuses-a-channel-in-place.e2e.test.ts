@@ -83,7 +83,8 @@ test("a reader who loses the role sees that Channel refused while the room strea
       "after the role changed",
     ]);
   } finally {
+    const exit = await instance.stop();
     await browser.close();
-    assertPromptExit(await instance.stop());
+    assertPromptExit(exit);
   }
 });

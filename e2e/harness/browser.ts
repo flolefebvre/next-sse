@@ -26,13 +26,23 @@ export const RECONNECT_WAIT_MS = 30_000;
  * once for the run because the e2e project forks a process per file (ADR-0009): there is no place
  * a shared browser could live.
  *
- * That `close()` comes *before* the Instance is signalled, in every scenario here, and on
- * purpose. A signalled Instance with a browser still pointed straight at it does not exit within
- * the ten seconds `stop()` allows: the Drain ends its Connections and refuses new ones, but
- * Chromium keeps pooled sockets to that address and goes on retrying its stream over them, so
- * `server.close()` never sees an idle connection. It is a real shape and it has an issue of its
- * own; what it is not is this suite's claim, and a scenario that left the browser open would fail
- * `assertPromptExit` for a reason that has nothing to do with it.
+ * That `close()` comes *after* the Instances are signalled, in every scenario here, and on
+ * purpose: it is what makes the browser half of the Drain ambient. A reader is still on the page
+ * with their Connection live when the signal lands, so every browser scenario is a witness that
+ * a signalled Instance exits by itself with a real client on it — the claim the headless drain
+ * scenario makes on the wire, made again with a browser's own reconnect behaviour behind it.
+ *
+ * It used to be the other way round, and the reason it had to be is the reason the order is worth
+ * a paragraph: a client with nothing in front of it reconnects over the pooled keep-alive socket
+ * its ended Connection was on, and a refusal handed back to that pool leaves a socket the HTTP
+ * server never sees idle — so `server.close()` sat out the ten seconds `stop()` allows and the
+ * process was `SIGKILL`ed (#74). The draining refusal carries `Connection: close` now, which ends
+ * that socket with the answer, and these scenarios are where a regression would show up first.
+ *
+ * Which is why how the shutdown went is read *last*, after the browser and everything else is
+ * closed, and never between two teardown steps: the day that assertion fails is the day it would
+ * otherwise throw mid-teardown and leave a Chromium and a `next start` behind for the rest of the
+ * run to trip over.
  */
 export async function openBrowser(): Promise<Browser> {
   try {

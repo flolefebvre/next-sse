@@ -81,6 +81,12 @@ export function assertPromptExit(exit: Exit): void {
  * the `exports` map — so `dist/` has to be there. It is the gate's `build` step that puts it
  * there, before `test:e2e`; a run started without one fails here rather than inside a
  * scenario, where a missing module would read as a broken app.
+ *
+ * The build is per run and not a cache to skip, because `.next` has the library *inside* it: the
+ * app's server bundle is built from `dist/`, so a `next start` on a stale `.next` serves the
+ * library as it was, whatever `dist/` holds now. Anything hand-driven against the example — a
+ * probe, a manual `next start` — has to re-run `next build` here after every library change, or
+ * it is measuring the old code.
  */
 export async function buildExample(): Promise<void> {
   await assertBuiltLibrary();

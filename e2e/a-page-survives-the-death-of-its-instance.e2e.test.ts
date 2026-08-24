@@ -70,9 +70,12 @@ test(
         "and the deploy is over",
       ]);
     } finally {
-      await browser.close();
-      await proxy.close();
-      await app.stop();
+      try {
+        await app.stop();
+      } finally {
+        await proxy.close();
+        await browser.close();
+      }
     }
   },
 );
@@ -130,9 +133,20 @@ test(
         "and it is back",
       ]);
     } finally {
+      /**
+       * The reader is still on the page and their browser is still holding its Connection to
+       * this Instance, with nothing in between — the shape a signalled Instance used to sit out
+       * its whole grace window on, because the client reconnected over the pooled keep-alive
+       * socket faster than the server could reap it (#74). The refusal closes that socket now,
+       * and `assertPromptExit` is where this scenario says so.
+       *
+       * How it went is read after everything is closed, and never between two of them: the day
+       * that assertion fails is the day a Chromium and a `next start` would be left behind by
+       * throwing in the middle of a teardown.
+       */
+      const exits = [await instance.stop(), await publisher.stop()];
       await browser.close();
-      assertPromptExit(await instance.stop());
-      assertPromptExit(await publisher.stop());
+      for (const exit of exits) assertPromptExit(exit);
     }
   },
 );

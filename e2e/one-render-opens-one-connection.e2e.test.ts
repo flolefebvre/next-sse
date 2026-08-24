@@ -52,7 +52,8 @@ test("a page of several Snapshots opens one Connection carrying every Channel", 
     expect(connection?.searchParams.getAll("channel")).toEqual(DEMO_CHANNELS);
     expect(connection?.searchParams.getAll("cursor")).toEqual([expect.any(String)]);
   } finally {
+    const exit = await instance.stop();
     await browser.close();
-    assertPromptExit(await instance.stop());
+    assertPromptExit(exit);
   }
 });
