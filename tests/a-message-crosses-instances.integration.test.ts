@@ -2,7 +2,7 @@ import { expect, inject, test } from "vitest";
 
 import { messageOf } from "../packages/next-sse/src/server/frames.testkit.js";
 
-import { connect, twoInstances, type Client } from "./two-instances.js";
+import { connect, twoInstances, type Client, type TwoInstances } from "./two-instances.js";
 
 /**
  * The claim the whole library rests on, on a real log: a Message Published on one Instance
@@ -34,15 +34,31 @@ async function read(client: Client, count: number): Promise<Read[]> {
   return messages;
 }
 
-test("a Message Published on one Instance reaches the Connections the other one holds", async () => {
-  const { here, there, close } = await twoInstances(inject("redisUrl"));
+/**
+ * Two Instances of the App holding one Connection each, both caught up on the room they share:
+ * the smallest deployment in which "which Instance Published it" is a question at all.
+ */
+async function oneOnEach(): Promise<TwoInstances & { hers: Client; his: Client }> {
+  const instances = await twoInstances(inject("redisUrl"));
 
   try {
-    const hers = await connect(here);
-    const his = await connect(there);
+    const hers = await connect(instances.here);
+    const his = await connect(instances.there);
     expect((await hers.next()).event).toBe("caught-up");
     expect((await his.next()).event).toBe("caught-up");
 
+    return { ...instances, hers, his };
+  } catch (failure) {
+    await instances.close();
+
+    throw failure;
+  }
+}
+
+test("a Message Published on one Instance reaches the Connections the other one holds", async () => {
+  const { here, there, hers, his, close } = await oneOnEach();
+
+  try {
     /** Published on the Instance that holds one of the two Connections, and read by both. */
     await here.chat({ roomId: "42" }).message({ text: "from the Instance she is on" });
     expect(await hers.message()).toEqual({
@@ -81,14 +97,9 @@ test("a Message Published on one Instance reaches the Connections the other one 
  * it, that nothing between the log and the wire reorders, drops or repeats an Entry.
  */
 test("both Instances carry the one log to their Connections, in its order and once each", async () => {
-  const { here, there, close } = await twoInstances(inject("redisUrl"));
+  const { here, there, hers, his, close } = await oneOnEach();
 
   try {
-    const hers = await connect(here);
-    const his = await connect(there);
-    expect((await hers.next()).event).toBe("caught-up");
-    expect((await his.next()).event).toBe("caught-up");
-
     const texts = ["one", "two", "three", "four", "five", "six"];
     const cursors = await Promise.all(
       texts.map((text, i) => (i % 2 === 0 ? here : there).chat({ roomId: "42" }).message({ text })),

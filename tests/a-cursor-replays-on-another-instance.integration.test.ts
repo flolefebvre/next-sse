@@ -59,9 +59,8 @@ test("a Cursor from one Instance replays on the other, gap-free and once each", 
     ]);
 
     /** And the cut from replay to live is exact: what comes next is the next Publish, once. */
-    await here.chat({ roomId: "42" }).message({ text: "and on it goes" });
-    expect(await again.message()).toEqual({ channel: "chat:42", text: "and on it goes" });
-
+    await here.chat({ roomId: "7" }).message({ text: "live, past the replay" });
+    expect(await again.message()).toEqual({ channel: "chat:7", text: "live, past the replay" });
     again.leave();
   } finally {
     await close();
