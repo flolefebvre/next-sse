@@ -44,6 +44,32 @@ async function freePorts(count: number): Promise<number[]> {
 }
 
 /**
+ * The three nodes of a cluster: the port a client reaches each one on, and the port it gossips
+ * on. Six ports, taken free in one batch so that no two of them are the same number.
+ *
+ * The gossip port is stated rather than left to default, and that is not a detail: a node's bus
+ * port defaults to its client port plus ten thousand, and a node whose client port is above
+ * 55535 refuses to start at all — while `listen(0)` picks from an ephemeral range that on a
+ * Linux CI runner (32768–60999) runs well past that. Left to the default, roughly one node in
+ * three would be handed a port the server rejects. Only the client ports are published to the
+ * host: the bus is spoken inside the container, between nodes that share one network namespace.
+ */
+async function clusterNodes(): Promise<{ client: number; bus: number }[]> {
+  const nodes: { client: number; bus: number }[] = [];
+  let client: number | undefined;
+
+  for (const port of await freePorts(6)) {
+    if (client === undefined) client = port;
+    else {
+      nodes.push({ client, bus: port });
+      client = undefined;
+    }
+  }
+
+  return nodes;
+}
+
+/**
  * One container running every server of a topology, each on a port published to the host under
  * **the same number it uses inside the container**.
  *
@@ -84,16 +110,21 @@ async function startTopology(ports: number[], script: string): Promise<RunningTo
  * which is the thing a Cluster client is there to do.
  */
 export async function startClusterTopology(): Promise<RunningTopology> {
-  const ports = await freePorts(3);
+  const nodes = await clusterNodes();
+  const ports = nodes.map((node) => node.client);
   const addresses = ports.map((port) => `127.0.0.1:${String(port)}`).join(" ");
+  const servers = nodes
+    .map(
+      ({ client, bus }) =>
+        `redis-server --port ${String(client)} --cluster-port ${String(bus)} --cluster-enabled yes --cluster-config-file "/tmp/node-${String(client)}.conf" --cluster-node-timeout 5000 --appendonly no --save '' --dir /tmp &`,
+    )
+    .join("\n    ");
 
   return startTopology(
     ports,
     `
     set -e
-    for port in ${ports.join(" ")}; do
-      redis-server --port "$port" --cluster-enabled yes --cluster-config-file "/tmp/node-$port.conf" --cluster-node-timeout 5000 --appendonly no --save '' --dir /tmp &
-    done
+    ${servers}
     for port in ${ports.join(" ")}; do
       until redis-cli -p "$port" ping 2>/dev/null | grep -q PONG; do sleep 0.1; done
     done
