@@ -8,7 +8,12 @@ import { createRedisTransport } from "../packages/next-sse/src/transport/redis.j
 
 const run = promisify(execFile);
 
-const WORKER = new URL("./worker-consumer/worker.ts", import.meta.url).pathname;
+/**
+ * The fixture stays under `tests/` beside `dist-consumer`: the two are the same kind of thing —
+ * a package that resolves `@flefebvre/next-sse` the way an installed consumer does — and both
+ * are wired into `typecheck:dist`. What runs here is the scenario, not the fixture.
+ */
+const WORKER = new URL("../tests/worker-consumer/worker.ts", import.meta.url).pathname;
 
 /** What the worker prints about the run it just made, as one line of JSON. */
 interface WorkerReport {
@@ -21,6 +26,12 @@ interface WorkerReport {
  * The Publisher half of ADR-0005, from the process it exists for: a package with no Next.js
  * anywhere in its dependencies, resolving `@flefebvre/next-sse` through the real exports map
  * against the built `dist`.
+ *
+ * It is an e2e scenario because its subject is the built package. That is what this project is
+ * for — the example app is its main tenant, not its definition — and it is the only phase that
+ * runs after `build`, which a scenario resolving `dist` requires. A run started without one
+ * never reaches here: the project's own setup asserts the built output first, so the failure
+ * names the missing build rather than surfacing as an unresolved module inside a scenario.
  *
  * It runs in a child of its own because the claim is about a whole process. This worker has
  * already imported half the library — and, being a test worker, React as well — so only a fresh
@@ -72,7 +83,7 @@ test("a worker with no Next.js installed Publishes typed into the App's log", as
   } finally {
     await transport.close();
   }
-}, 120_000);
+});
 
 /**
  * The other half of the boundary: `./transport` and below never import Next.js or React
@@ -85,4 +96,4 @@ test("that worker loads no Next.js and no React, and has no Next.js to load", as
 
   expect(report.loaded).toEqual([]);
   expect(report.nextResolvable).toBe(false);
-}, 120_000);
+});
