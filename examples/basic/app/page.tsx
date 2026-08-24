@@ -11,8 +11,8 @@ import { Messages } from "./messages";
  *
  * `sse.snapshot(read)` takes the Cursor before running the read and returns both as one opaque
  * value, so a Message published between the read and the stream going live is replayed to this
- * page rather than lost — and the word "cursor" appears nowhere here. The Snapshot crosses to
- * the Client Component as an ordinary prop.
+ * page rather than lost. No line of this App ever names a Cursor or holds one: the pair travels
+ * as a single opaque value, and it crosses to the Client Component as an ordinary prop.
  *
  * `connection()` is what keeps the read at request time: with Cache Components on, a component
  * that is not marked `use cache` and does not touch request data would otherwise be prerendered
