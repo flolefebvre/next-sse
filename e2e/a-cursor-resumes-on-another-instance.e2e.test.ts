@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { openDemoStream, publish } from "./harness/demo.js";
+import { nextMessage, openDemoStream, publish } from "./harness/demo.js";
 import { twoInstances } from "./harness/example.js";
 import type { Stream } from "./harness/stream.js";
 
@@ -34,13 +34,13 @@ test("a Cursor read from `ready` on one Instance replays on the other", async ()
     const again = JSON.parse((await resumed.next("ready")).data) as { cursor: string };
     expect(again.cursor).toBe(cursor);
 
-    expect(await textOf(resumed)).toBe("while it was away");
-    expect(await textOf(resumed)).toBe("and from the other Instance");
+    expect(await nextMessage(resumed)).toEqual(inTheRoom("while it was away"));
+    expect(await nextMessage(resumed)).toEqual(inTheRoom("and from the other Instance"));
 
     /** The replay is over, and it ended where the log did: nothing of it comes round again. */
     await resumed.next("caught-up");
     await publish(app.here.url, "and on it goes");
-    expect(await textOf(resumed)).toBe("and on it goes");
+    expect(await nextMessage(resumed)).toEqual(inTheRoom("and on it goes"));
   } finally {
     first.close();
     resumed?.close();
@@ -48,13 +48,8 @@ test("a Cursor read from `ready` on one Instance replays on the other", async ()
   }
 });
 
-/** The text of the next Message on the wire, whichever Instance published it. */
-async function textOf(stream: Stream): Promise<string> {
-  const { channel, payload } = JSON.parse((await stream.next("message")).data) as {
-    channel: string;
-    payload: { text: string };
-  };
-  expect(channel).toBe("chat:42");
-
-  return payload.text;
-}
+/** What a Message read off this reader's Connection is expected to be: the room, and a text. */
+const inTheRoom = (text: string): { channel: string; text: string } => ({
+  channel: "chat:42",
+  text,
+});

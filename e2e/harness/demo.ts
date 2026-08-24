@@ -43,6 +43,23 @@ export async function publish(url: string, text: string): Promise<void> {
 }
 
 /**
+ * The next Message off a Connection, read the way the demo's page reads one: its Channel, and
+ * the text a reader would see. Anything else the envelope carries is the Publish scenario's
+ * business, and a scenario that reads it here would be a second opinion on the wire.
+ */
+export async function nextMessage(
+  stream: Stream,
+  timeoutMs?: number,
+): Promise<{ channel: string; text: string }> {
+  const { channel, payload } = JSON.parse((await stream.next("message", timeoutMs)).data) as {
+    channel: string;
+    payload: { text: string };
+  };
+
+  return { channel, text: payload.text };
+}
+
+/**
  * One call of the demo's admin Kick route, as an admin unless the cookie says otherwise. What
  * comes back is the answer itself: who the route refuses is as much of the demo as who it
  * Kicks, and different scenarios read different halves of that.
