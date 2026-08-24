@@ -46,6 +46,43 @@ export const sse = createSSE({
     },
     authorize: (_params, session) => session.role === "admin",
   }),
+  /**
+   * The broadcast: one Channel, no params, everybody on it.
+   *
+   * It is the plainest Channel an App can declare, and the one thing worth saying about it is
+   * that `authorize` is still written out. A Channel every Connection may read says so; the
+   * decision is never absent, and a reader of this Registry can tell public from forgotten.
+   *
+   * Nothing inside the App Publishes here: the announcements of this demo come from the worker
+   * in `worker/`, which is where a broadcast usually comes from — a deploy, a cron, an incident
+   * bot, none of which is a request.
+   */
+  announcements: channel({
+    pattern: "announcements",
+    events: {
+      posted: z.object({ id: z.string(), text: z.string().trim().min(1) }),
+    },
+    authorize: () => true,
+  }),
+  /**
+   * Per-user notifications: one Channel per reader, and the param is what decides it.
+   *
+   * `authorize` is handed the params of the very Channel being asked for, so the rule is the
+   * one line below — this reader may read their own notifications and nobody else's. Nothing
+   * enumerates the Channels: `notifications:{userId}` is a family, and the Connection carries
+   * the one member its holder asked for.
+   *
+   * The name is checked against the session rather than trusted from the query, which is the
+   * whole of the lesson: a client may ask for any Channel name it likes, and an App that reads
+   * the user id off the Handle instead of off its own session has no authorization at all.
+   */
+  notifications: channel({
+    pattern: "notifications:{userId}",
+    events: {
+      arrived: z.object({ id: z.string(), text: z.string().trim().min(1) }),
+    },
+    authorize: (params, session) => params.userId === session.userId,
+  }),
 });
 
 /** The one room this example talks in. A real App takes it from the URL or the session. */

@@ -11,7 +11,11 @@ import { openStream, type Stream } from "./stream.js";
 /** The room the demo page shows, and the one the webhook Publishes into unless told otherwise. */
 export const DEMO_ROOM = "42";
 
-/** The Channels the demo page subscribes to: the room, and the admin Channel most readers lose. */
+/**
+ * The Channels of the demo page these scenarios drive: the room, and the admin Channel most
+ * readers lose. The page subscribes to more than these — the broadcast, and the reader's own
+ * notifications — and a scenario about one of those asks for it by itself.
+ */
 const DEMO_CHANNELS = [`chat:${DEMO_ROOM}`, "admin"];
 
 /**
@@ -39,6 +43,14 @@ export function openRoomsStream(url: string, rooms: string[], cursor?: string): 
     rooms.map((room) => `chat:${room}`),
     cursor,
   );
+}
+
+/**
+ * One reader of the demo's broadcast, and nothing else: the Channel every reader of the App is
+ * on, which is the one a publisher outside Next.js writes to in this demo.
+ */
+export function openBroadcastStream(url: string): Stream {
+  return openChannels(url, ["announcements"]);
 }
 
 /** The demo's SSE route, asked for these Channels, resuming when the caller has a position. */

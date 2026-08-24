@@ -46,6 +46,7 @@ import {
 import {
   FakeEventSource,
   fakeEventSources,
+  snapshotOf,
   transportContract,
   type TransportBackend,
   type TransportContractOptions,
@@ -91,6 +92,7 @@ export const values = [
   transportContract,
   FakeEventSource,
   fakeEventSources,
+  snapshotOf,
 ];
 
 /**

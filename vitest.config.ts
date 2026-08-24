@@ -8,6 +8,14 @@ const INTEGRATION_TESTS = [
 const E2E_TESTS = ["e2e/**/*.e2e.test.ts"];
 
 /**
+ * The example app's own tests: the two patterns whose subject is a test — testing your App, and
+ * a Transport of your own held to the contract. They are consumer code, so they resolve
+ * `@flefebvre/next-sse` through the exports map against the built `dist`, which puts them in
+ * the post-build phase with `e2e` and nowhere else (ADR-0009).
+ */
+const EXAMPLE_TESTS = ["examples/*/**/*.test.ts", "examples/*/**/*.test.tsx"];
+
+/**
  * The condition every server module of the package is written under, so that a test loading
  * one resolves the same files Next.js does in a Server Component. The `client` project is
  * the deliberate exception (ADR-0009): it must resolve as a browser bundle does.
@@ -57,6 +65,26 @@ export default defineConfig({
       },
       {
         extends: true,
+        /**
+         * The App's own path alias, which its `tsconfig.json` declares and Next.js honours.
+         * Vitest reads no `tsconfig` paths, so the one the example uses is restated here — the
+         * alternative would be an example whose imports are written for the test runner rather
+         * than for the App.
+         */
+        resolve: {
+          alias: { "@/": new URL("./examples/basic/", import.meta.url).pathname },
+        },
+        test: {
+          name: "example",
+          environment: "jsdom",
+          include: EXAMPLE_TESTS,
+          clearMocks: true,
+          restoreMocks: true,
+          sequence: { groupOrder: 2 },
+        },
+      },
+      {
+        extends: true,
         resolve: REACT_SERVER,
         test: {
           name: "e2e",
@@ -68,7 +96,11 @@ export default defineConfig({
           fileParallelism: false,
           testTimeout: 60_000,
           hookTimeout: 300_000,
-          sequence: { groupOrder: 2 },
+          /**
+           * Last of all, and in a group of its own: two projects sharing a group must agree on
+           * their worker count, and this one runs one file at a time where `example` does not.
+           */
+          sequence: { groupOrder: 3 },
         },
       },
     ],

@@ -1,0 +1,32 @@
+# The load balancer of the manual two-Instance run, and the proxy configuration an SSE app
+# needs from any proxy: nothing may buffer the response, and the connection must be allowed to
+# stay open.
+#
+# Caddy is used because it streams by default — it flushes a `text/event-stream` response as it
+# arrives, with none of the flags nginx needs (`proxy_buffering off`, `proxy_cache off`,
+# `proxy_read_timeout`) — so what is written here is the little that is worth saying rather than
+# a list of workarounds.
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	reverse_proxy app-a:3000 app-b:3000 {
+		# Round robin is the point of the run: successive Connections land on different
+		# Instances, and a Message published on either reaches both, because the log is shared.
+		# There are no sticky sessions here and the library needs none — a Connection carries
+		# its Cursor, so any Instance can serve its reconnect (ADR-0001).
+		lb_policy round_robin
+
+		# Flush every write straight through instead of collecting it. Caddy already does this
+		# for `text/event-stream`; it is stated because a proxy that does not is the single most
+		# common reason an SSE app appears to hang.
+		flush_interval -1
+
+		# Take a container that is down out of the rotation for a while: what a redeploy looks
+		# like from here, and what makes the clients of a drained Instance land on its sibling.
+		lb_try_duration 5s
+		fail_duration 10s
+	}
+}
