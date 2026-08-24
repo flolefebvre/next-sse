@@ -2,15 +2,21 @@
 
 import type { ChannelRecord, EventsOf } from "../internal/channel.js";
 
+import type { Snapshot } from "../internal/snapshot.js";
+
 import type {
   ChannelOptions,
   Channels,
   ChannelsOf,
+  ChannelState,
   ChannelSubscription,
   Handle,
   Handlers,
+  Reducers,
+  ResetOption,
 } from "./handle.js";
 import { useChannel } from "./use-channel.js";
+import { useChannelState } from "./use-channel-state.js";
 
 export interface SSEClient<Registry> {
   /** `channels.chat({ roomId })`: a Handle, built from nothing but its key and its params. */
@@ -21,6 +27,16 @@ export interface SSEClient<Registry> {
     handlers: Handlers<EventsOf<ChannelsOf<Registry>[Key]>>,
     options?: ChannelOptions,
   ): ChannelSubscription;
+  /**
+   * Own the state of a Channel: seeded from a server component's Snapshot, advanced by one
+   * reducer per event, restarted whenever a new Snapshot arrives.
+   */
+  useChannelState<Key extends keyof ChannelsOf<Registry> & string, Data>(
+    handle: Handle<Key>,
+    snapshot: Snapshot<Data>,
+    reducers: Reducers<EventsOf<ChannelsOf<Registry>[Key]>, Data>,
+    options?: ResetOption,
+  ): ChannelState<EventsOf<ChannelsOf<Registry>[Key]>, Data>;
 }
 
 /**
@@ -43,5 +59,5 @@ export function createClient<Registry extends { channels: ChannelRecord }>(): SS
         : undefined,
   });
 
-  return { channels, useChannel };
+  return { channels, useChannel, useChannelState } as SSEClient<Registry>;
 }

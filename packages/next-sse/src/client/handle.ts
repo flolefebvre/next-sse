@@ -29,8 +29,18 @@ export type Handlers<Events extends EventMap = EventMap> = {
   [Name in keyof Events & string]?: (payload: InferOutput<Events[Name]>) => void;
 };
 
-/** What every hook takes beyond its Channel: where to resume, and what a Reset means here. */
-export interface ChannelOptions {
+/** What a hook does about a Reset, which is the one option every hook shares. */
+export interface ResetOption {
+  /**
+   * What this hook does when the Instance says its Cursor is unusable. Omitted, the provider's
+   * handler covers it — `router.refresh()` unless the App said otherwise — which is why an
+   * ordinary page needs no code for Reset at all.
+   */
+  onReset?: () => void;
+}
+
+/** What `useChannel` takes beyond its Channel: where to resume, and what a Reset means here. */
+export interface ChannelOptions extends ResetOption {
   /**
    * The Snapshot a server component handed down. Subscribing with one makes the shared
    * Connection reopen from the position that render read its data at, so nothing published in
@@ -39,12 +49,53 @@ export interface ChannelOptions {
    * Message from one it already has.
    */
   snapshot?: Snapshot;
+}
+
+/**
+ * One reducer per event: how a Message advances the state the hook owns. An event with no
+ * reducer leaves the state alone, and a payload is the schema's Output, exactly as a handler's
+ * is (ADR-0006).
+ */
+export type Reducers<Events extends EventMap = EventMap, Data = unknown> = {
+  [Name in keyof Events & string]?: (state: Data, payload: InferOutput<Events[Name]>) => Data;
+};
+
+/**
+ * The optimistic payloads still in flight, grouped by the event they were sent as. They have
+ * the event's own wire shape (ADR-0007), which is what lets a component render them next to
+ * the state without a second type for "not landed yet".
+ */
+export type Pending<Events extends EventMap = EventMap> = {
+  [Name in keyof Events & string]: InferOutput<Events[Name]>[];
+};
+
+/** What `useChannelState` gives back: the state it owns, and the ways to move it. */
+export interface ChannelState<
+  Events extends EventMap = EventMap,
+  Data = unknown,
+> extends ChannelSubscription {
+  /** The list — or whatever the read produced — as the Snapshot and the reducers have it. */
+  readonly state: Data;
   /**
-   * What this hook does when the Instance says its Cursor is unusable. Omitted, the provider's
-   * handler covers it — `router.refresh()` unless the App said otherwise — which is why an
-   * ordinary page needs no code for Reset at all.
+   * Run an event's reducer here and now, on a payload that did not come off the wire: the
+   * result of a server action, most often, so what was just sent shows before its own echo
+   * arrives. The echo is then absorbed by the same reducer, which is what `upsertBy` is for.
    */
-  onReset?: () => void;
+  apply<Name extends keyof Events & string>(event: Name, payload: InferOutput<Events[Name]>): void;
+  /**
+   * The whole optimistic round in one call: show `optimistic` while `action` runs, then apply
+   * what it returned. `null` for the optimistic payload sends without one. The payload has the
+   * event's wire shape, so a pending row and a landed one are the same type.
+   */
+  act<Name extends keyof Events & string>(
+    event: Name,
+    optimistic: InferOutput<Events[Name]> | null,
+    action: () => Promise<InferOutput<Events[Name]>>,
+  ): void;
+  /** The optimistic payloads of every event, by name, empty lists included. */
+  readonly pending: Pending<Events>;
+  /** Whether an `act` is still running. */
+  readonly inFlight: boolean;
 }
 
 /** What `useChannel` gives back: where the Connection stands, and the Channel it resolved to. */

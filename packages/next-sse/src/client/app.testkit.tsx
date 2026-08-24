@@ -22,7 +22,7 @@ export type Presence = ChannelDeclaration<
   { joined: StandardSchemaV1<{ who: string }> }
 >;
 
-export const { channels, useChannel } = createClient<{
+export const { channels, useChannel, useChannelState } = createClient<{
   channels: { chat: Chat; presence: Presence };
 }>();
 
