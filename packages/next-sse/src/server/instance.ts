@@ -339,6 +339,12 @@ async function replay(
 
   const replayed = new Set<Cursor>();
   let last = cursor;
+  /**
+   * The Cursor of the last Message this replay actually handed the Connection, which is where the
+   * client's own position now stands: a Message carries an `id:` and nothing else on the wire
+   * does. Entries on Channels it did not ask for moved `last` and moved nothing of the client's.
+   */
+  let delivered: Cursor | undefined;
   let page = first;
   while (page !== undefined) {
     if ("gone" in page) {
@@ -356,6 +362,7 @@ async function replay(
       replayed.add(entry.cursor);
       if (entry.type === "message" && held.connection.channels.has(entry.channel)) {
         held.connection.deliver(entry);
+        delivered = entry.cursor;
       }
     }
 
@@ -372,10 +379,19 @@ async function replay(
   held.buffer = undefined;
   held.replayed = replayed;
 
+  /**
+   * The `reset` the live feed owed this Connection while it was still opening, delivered where a
+   * `reset` belongs. It names where the client stands, and a replay that carried Messages has
+   * already put it past the gap: naming the gap's own position there would send it back over
+   * ground it has just been given, which the reset is not for and which nothing here can even
+   * detect — the Instance never orders two Cursors (ADR-0005). So the position of the last
+   * Message it was handed wins whenever there was one, and the gap's own is for the replay that
+   * handed it nothing to stand on.
+   */
   if (held.gap !== undefined) {
     const from = held.gap;
     held.gap = undefined;
-    held.connection.reset(from);
+    held.connection.reset(delivered ?? from);
   }
   held.connection.caughtUp();
   for (const entry of buffered) feed(held, entry);

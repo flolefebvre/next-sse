@@ -637,13 +637,15 @@ test.each([
   expect(() => anInstance(options)).toThrow(/milliseconds/);
 });
 
+/** The oldest position a gapped feed can still serve, which is what it reports the gap with. */
+const RESUMED_AT = "resumed-at";
+
 /**
  * A Transport whose live feed can be made to lose its place, the way a reader resuming after an
  * outage does when the log has moved past where it was. It reports the gap the way a Transport
- * does: with the position it resumed at, which every Entry it goes on to deliver comes after.
+ * does: with a position the log still serves, which everything it goes on to deliver comes at or
+ * after.
  */
-const RESUMED_AT = "resumed-at";
-
 const withGap = (): { transport: Transport; gap: (resumeFrom?: Cursor) => void } => {
   const memory = createMemoryTransport();
   let lostPlace: ((resumeFrom: Cursor) => void) | undefined;
@@ -686,12 +688,17 @@ test("a gap on the live feed tells every live Connection to refetch, and closes 
  * A Connection that is still opening cannot be told anything: its `ready` has not been written
  * and its replay is still walking the log. The `reset` waits for the place a `reset` belongs —
  * the end of the replay, before `caught-up`.
+ *
+ * And by then this Connection has been handed Messages, so it stands past the gap on its own: the
+ * `reset` names where the replay left it, not where the feed resumed. Naming the older position
+ * would send it back over ground it has just been given — and nothing here could tell, since the
+ * Instance never orders two Cursors (ADR-0005).
  */
 test("a gap while a Connection is still opening reaches it with its replay, never before", async () => {
   const { transport, gap } = withGap();
   const instance = anInstance({ transport });
   const from = await transport.tail();
-  await transport.publish(message("chat:42", { text: "missed" }));
+  const missed = await transport.publish(message("chat:42", { text: "missed" }));
   const { connection, trace } = tracing("chat:42");
 
   const opening = await instance.open(connection, { after: from });
@@ -700,7 +707,26 @@ test("a gap while a Connection is still opening reaches it with its replay, neve
 
   await opening.start();
 
-  expect(trace).toEqual(["chat:42 missed", `reset ${RESUMED_AT}`, "caught-up"]);
+  expect(trace).toEqual(["chat:42 missed", `reset ${missed}`, "caught-up"]);
+});
+
+/**
+ * The same gap, on a replay that handed this Connection nothing — a live-only connect, or one
+ * whose Channels were quiet. There is no position of its own to stand on, so the one the feed
+ * resumed at is the answer, and it is the whole reason the feed reports one.
+ */
+test("a gap reaching a Connection its replay left empty carries where the feed resumed", async () => {
+  const { transport, gap } = withGap();
+  const instance = anInstance({ transport });
+  await transport.publish(message("chat:other", { text: "not for this Connection" }));
+  const { connection, trace } = tracing("chat:42");
+
+  const opening = await instance.open(connection);
+  gap();
+
+  await opening.start();
+
+  expect(trace).toEqual([`reset ${RESUMED_AT}`, "caught-up"]);
 });
 
 /**
