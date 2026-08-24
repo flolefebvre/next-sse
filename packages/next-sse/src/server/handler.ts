@@ -2,6 +2,7 @@ import type { ChannelRecord, DeclaredAuthorize } from "../internal/channel.js";
 import { matchPattern } from "../internal/pattern.js";
 import { TransportError } from "../transport/index.js";
 
+import { DrainingError } from "./drain.js";
 import type { Connection, Instance, Opening } from "./instance.js";
 import { encodeControl, encodeMessage, encodeRetry, type Ready } from "./wire.js";
 
@@ -16,6 +17,25 @@ const RETRY_MS = 3000;
  * headers.
  */
 const RETRY_AFTER_SECONDS = 5;
+
+/**
+ * The two reasons this Instance answers a connect with "not now", as one response.
+ *
+ * They are one function rather than two `new Response`s so that they cannot drift: whatever is
+ * in front of this App — a load balancer taking the Instance out of rotation, a proxy backing
+ * off — reads the same status and the same header whether the log is unreachable or the process
+ * is on its way out, which is the whole point of answering a status rather than breaking a
+ * stream after its headers (ADR-0004, ADR-0011).
+ */
+function notNow(reason: string): Response {
+  return new Response(reason, {
+    status: 503,
+    headers: { "Retry-After": String(RETRY_AFTER_SECONDS) },
+  });
+}
+
+const TRANSPORT_AWAY = "This Instance cannot reach its Transport right now. Try again.";
+const DRAINING = "This Instance is shutting down and is not taking new Connections. Try again.";
 
 /**
  * How many bytes of this Connection may sit written but unread before the Instance ends it.
@@ -75,6 +95,14 @@ export function createGetHandler(instance: Instance): (request: Request) => Prom
     }
 
     /**
+     * A draining Instance answers here, before the App's own code is asked anything: this
+     * process is going away, and opening a Connection it is about to end would strand the client
+     * for a second cut inside the orchestrator's grace window (ADR-0011). Sending it away with
+     * the status a load balancer already reads is what moves it to a surviving Instance.
+     */
+    if (instance.draining) return notNow(DRAINING);
+
+    /**
      * Authorize runs here: after the one failure that has nothing to name, and before the
      * Instance is asked for anything. Nothing has been written yet, so a decision still has
      * both answers open — a `200` carrying the refusals in band, or a `500` when the App's own
@@ -119,12 +147,15 @@ export function createGetHandler(instance: Instance): (request: Request) => Prom
         headers: HEADERS,
       });
     } catch (error) {
+      /**
+       * The Drain started while this request was inside the Instance, waiting on the log: the
+       * Connection was refused where it would have been registered, and this is the same answer
+       * the check above would have given it a moment earlier.
+       */
+      if (error instanceof DrainingError) return notNow(DRAINING);
       if (!(error instanceof TransportError)) throw error;
 
-      return new Response("This Instance cannot reach its Transport right now. Try again.", {
-        status: 503,
-        headers: { "Retry-After": String(RETRY_AFTER_SECONDS) },
-      });
+      return notNow(TRANSPORT_AWAY);
     }
   };
 }

@@ -43,6 +43,7 @@ const guardedApp = (
   } = {},
 ): ChatApp => {
   const { channel, createSSE } = initSSE({
+    drain: false,
     transport: options.transport ?? createMemoryTransport(),
     context: options.context ?? ((request) => ({ role: request.headers.get("x-role") ?? "guest" })),
     key: options.key,
@@ -424,7 +425,7 @@ test("a Connection refused every Channel is told so, and the stream ends", async
 test("an unknown Channel is refused like a denied one, and warned about server-side", async () => {
   const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   /** Both Apps share the process-wide Instance, so the denied one connects before the other. */
-  const declaring = initSSE({ transport: createMemoryTransport() });
+  const declaring = initSSE({ drain: false, transport: createMemoryTransport() });
   const denies = declaring.createSSE({
     presence: declaring.channel({
       pattern: "presence:{roomId}",
@@ -704,6 +705,29 @@ test("a connect while the Transport is away is a 503 saying when to come back", 
   expect(response.status).toBe(503);
   expect(response.headers.get("Retry-After")).toBe("5");
   expect(getInstance().connections.size).toBe(0);
+});
+
+/**
+ * The other "not now" this handler answers, and the one a rolling deploy turns on: this Instance
+ * is draining, so it sends the client to a surviving one rather than opening a Connection it is
+ * about to end (ADR-0011). It is the same status and the same header as the Transport being
+ * away, because whatever is in front of this App reads the two the same way.
+ *
+ * It is answered before the App is asked anything at all: no context is built and no Authorize
+ * runs, because there is no decision to take about a Connection that is not being opened.
+ */
+test("a connect while this Instance is draining is a 503, taken before Authorize", async () => {
+  const context = vi.fn(() => ({ role: "admin" }));
+  const authorize = vi.fn(() => true);
+  const sse = guardedApp(authorize, { context });
+  await sse.drain();
+
+  const response = await connect(sse, "?channel=chat:42");
+
+  expect(response.status).toBe(503);
+  expect(response.headers.get("Retry-After")).toBe("5");
+  expect(context).not.toHaveBeenCalled();
+  expect(authorize).not.toHaveBeenCalled();
 });
 
 /**
