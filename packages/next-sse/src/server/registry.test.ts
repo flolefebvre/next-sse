@@ -320,3 +320,27 @@ test("an App that builds no context declares Authorize on undefined", () => {
     },
   });
 });
+
+/**
+ * The overlap an App writes by accident: a literal Channel that another Channel's pattern also
+ * matches. Left alone, whichever was declared first would authorize both — so the App hears
+ * about it where it declared them, not through a Connection guarded by the wrong rule.
+ */
+test("a Channel another Channel's pattern would match is refused", () => {
+  const { channel, createSSE } = initSSE({ transport: createMemoryTransport() });
+  const events = { message: messageSchema };
+
+  expect(() =>
+    createSSE({
+      chat: channel({ pattern: "chat:{roomId}", events, authorize: () => true }),
+      admin: channel({ pattern: "chat:admin", events, authorize: () => false }),
+    }),
+  ).toThrow(/"admin".*"chat:admin".*"chat".*"chat:\{roomId\}"/s);
+
+  expect(() =>
+    createSSE({
+      chat: channel({ pattern: "chat:{roomId}", events, authorize: () => true }),
+      admin: channel({ pattern: "admin", events, authorize: () => false }),
+    }),
+  ).not.toThrow();
+});

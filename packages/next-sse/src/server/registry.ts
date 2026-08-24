@@ -10,7 +10,13 @@ import type {
   NoReservedKeys,
   PatternOf,
 } from "../internal/channel.js";
-import { assertFillablePattern, fillPattern, type ParamsArgs } from "../internal/pattern.js";
+import {
+  assertFillablePattern,
+  fillPattern,
+  isLiteralPattern,
+  matchPattern,
+  type ParamsArgs,
+} from "../internal/pattern.js";
 import {
   RESERVED_EVENT_NAMES,
   RESERVED_REGISTRY_KEYS,
@@ -157,6 +163,7 @@ export function createSSE<Channels extends ChannelRecord>(
     }
   }
 
+  assertNoOverlap(declarations);
   instance.registry = declarations;
 
   const registry: Record<string, unknown> = {};
@@ -172,6 +179,37 @@ export function createSSE<Channels extends ChannelRecord>(
   registry.snapshot = handoff.snapshot;
 
   return registry as unknown as Registry<Channels>;
+}
+
+/**
+ * Refuse a Registry where one Channel's name is also what another Channel's pattern matches.
+ *
+ * A name on the query of a Connection is resolved against the patterns in the order they were
+ * declared, and the first match wins. That is harmless between two patterns that overlap only
+ * on names an App would have to go out of its way to write, and dangerous for the overlap an App
+ * writes by accident: `chat:{roomId}` beside a literal `chat:admin` means the admin Channel is
+ * authorized by the chat rule — silently, and only for the Channel that was declared second.
+ *
+ * So the check is exactly that case: a Channel whose pattern has no params is a Channel name,
+ * and no other pattern may match it. Two patterns that both have params are not compared —
+ * whether `user:{id}` and `{kind}:7` can collide depends on values neither the Registry nor this
+ * function has — and the ordering rule is what settles those.
+ */
+function assertNoOverlap(declarations: ChannelRecord): void {
+  for (const [key, declaration] of Object.entries(declarations)) {
+    if (!isLiteralPattern(declaration.pattern)) continue;
+    for (const [other, candidate] of Object.entries(declarations)) {
+      if (other === key || matchPattern(candidate.pattern, declaration.pattern) === undefined) {
+        continue;
+      }
+      throw new Error(
+        `next-sse: the Channel "${key}" is named "${declaration.pattern}", and the Channel ` +
+          `"${other}" declares the pattern "${candidate.pattern}", which matches that name: a ` +
+          `Connection asking for it would be authorized by whichever of the two was declared ` +
+          `first. Name one of them something the other cannot make.`,
+      );
+    }
+  }
 }
 
 /**

@@ -57,6 +57,57 @@ export function fillPattern(pattern: string, params: Record<string, string>): st
 }
 
 /**
+ * The params a Channel name was made of, or `undefined` when this pattern did not make it.
+ *
+ * It is the exact inverse of the filler, and it is written to stay that way: the name is taken
+ * apart with the same placeholders and the same separator rule, and the params it produces are
+ * then filled back in and compared to the name it started from. Anything the filler could not
+ * have produced — an empty param, a value carrying a `:`, a repeated param name that would have
+ * had to be two different values — fails that round trip and is no match at all. Where a name is
+ * genuinely ambiguous, which takes two placeholders with nothing between them, the answer is
+ * whichever split fills back in: being the filler's inverse is the whole contract.
+ *
+ * This is what turns the Channel names on the query of a Connection into the declarations that
+ * guard them. A name no pattern matches is unknown, and unknown is refused exactly like denied
+ * (ADR-0003): the client must not be able to tell a Channel it may not have from one that does
+ * not exist.
+ */
+export function matchPattern(pattern: string, name: string): Record<string, string> | undefined {
+  const names: string[] = [];
+  let source = "";
+  let end = 0;
+  for (const match of pattern.matchAll(PLACEHOLDER)) {
+    source += `${escapeLiteral(pattern.slice(end, match.index))}([^${SEPARATOR}]+)`;
+    names.push(match[1] ?? "");
+    end = match.index + match[0].length;
+  }
+  source += escapeLiteral(pattern.slice(end));
+
+  const found = new RegExp(`^${source}$`).exec(name);
+  if (found === null) return undefined;
+
+  const params: Record<string, string> = {};
+  for (const [index, param] of names.entries()) {
+    params[param] = found[index + 1] ?? "";
+  }
+
+  return fillPattern(pattern, params) === name ? params : undefined;
+}
+
+/** Everything a pattern holds outside its placeholders is literal text, `.` and `{` included. */
+function escapeLiteral(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Whether this pattern is already a Channel name: no placeholder to fill, so it names exactly
+ * one Channel.
+ */
+export function isLiteralPattern(pattern: string): boolean {
+  return !new RegExp(PLACEHOLDER.source).test(pattern);
+}
+
+/**
  * Refuse a pattern whose placeholders the filler would not fill.
  *
  * `{room-id}` reads like a param and the type level infers one from it, but the filler only
