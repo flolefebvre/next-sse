@@ -705,3 +705,36 @@ test("a connect while the Transport is away is a 503 saying when to come back", 
   expect(response.headers.get("Retry-After")).toBe("5");
   expect(getInstance().connections.size).toBe(0);
 });
+
+/**
+ * The bound on a Connection nobody is reading. A slow client accumulates on the Instance for as
+ * long as its Connection lasts, and neither the heartbeat nor the max lifetime bounds that: what
+ * does is ending the Connection the one way a Connection is ended. Nothing is dropped — the
+ * client comes back with its Cursor and is replayed what it had not read — so the cost of being
+ * slow is a round trip per megabyte rather than an Instance's memory.
+ */
+test("a Connection whose client is not reading is ended with reconnect, not left to grow", async () => {
+  const sse = appWith(createMemoryTransport(), { heartbeat: 0, maxLifetime: 0 });
+  const response = await connect(sse, "?channel=chat:42");
+  const text = "x".repeat(100_000);
+
+  for (let n = 0; n < 12; n += 1) {
+    await sse.chat({ roomId: "42" }).message({ text });
+  }
+
+  expect(getInstance().connections.size).toBe(0);
+
+  const frames = framesOf(response);
+  const seen: string[] = [];
+  for (;;) {
+    const frame = await frames.next();
+    if (frame.event === "reconnect") break;
+    seen.push(frame.event ?? (frame.id === undefined ? "retry" : "message"));
+  }
+
+  expect(seen.slice(0, 3)).toEqual(["ready", "retry", "caught-up"]);
+  const delivered = seen.filter((event) => event === "message").length;
+  expect(delivered).toBeGreaterThan(0);
+  expect(delivered).toBeLessThan(12);
+  await expect(frames.next()).rejects.toThrow("the stream ended");
+});

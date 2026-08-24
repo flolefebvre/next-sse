@@ -17,6 +17,23 @@ const RETRY_MS = 3000;
  */
 const RETRY_AFTER_SECONDS = 5;
 
+/**
+ * How many bytes of this Connection may sit written but unread before the Instance ends it.
+ *
+ * A client that reads slower than its Channels are published to — a phone on a bad link, a
+ * background tab a proxy is dribbling to — otherwise accumulates on the Instance for as long as
+ * the Connection lasts, and the max lifetime bounds that window but never the buffer. Past the
+ * mark, the Connection is ended the one way a Connection is ended: `reconnect`, and the client
+ * comes back with its Cursor. Nothing is dropped and nothing is lost — the Messages it had not
+ * read are replayed to it — so what this costs a slow client is a round trip per megabyte, and
+ * what it buys the Instance is a bound.
+ *
+ * The caveat, which is the honest one: this bounds what is left unread **in this stream**. If
+ * whatever consumes the response buffers ahead of the socket, those bytes are not ours to see —
+ * and no bound is observable from here at all.
+ */
+const MAX_UNREAD_BYTES = 1024 * 1024;
+
 /** Exactly the headers ADR-0004 names, and nothing else. */
 const HEADERS = {
   "Content-Type": "text/event-stream",
@@ -240,6 +257,7 @@ async function streamFor(
   let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
   let heartbeats: ReturnType<typeof setInterval> | undefined;
   let lifetime: ReturnType<typeof setTimeout> | undefined;
+  let overflowed = false;
   const waiting: Uint8Array[] = [];
 
   const connection: Connection = {
@@ -264,8 +282,23 @@ async function streamFor(
    */
   function write(bytes: Uint8Array): void {
     if (closed) return;
-    if (controller === undefined) waiting.push(bytes);
-    else controller.enqueue(bytes);
+    if (controller === undefined) {
+      waiting.push(bytes);
+
+      return;
+    }
+
+    controller.enqueue(bytes);
+
+    /**
+     * With a byte-length queuing strategy on this stream, `desiredSize` is what is left of the
+     * mark, so a value at or below zero is a client that is behind by more than the Instance is
+     * willing to hold. The flag is what keeps the `reconnect` this triggers — a write of its own,
+     * onto the same full queue — from triggering it again.
+     */
+    if (overflowed || (controller.desiredSize ?? 1) > 0) return;
+    overflowed = true;
+    connection.reconnect();
   }
 
   /**
@@ -298,65 +331,70 @@ async function streamFor(
   if (request.signal.aborted) dispose(true);
   else request.signal.addEventListener("abort", abort);
 
-  return new ReadableStream<Uint8Array>({
-    async start(streamController) {
-      if (closed) {
-        streamController.close();
+  return new ReadableStream<Uint8Array>(
+    {
+      async start(streamController) {
+        if (closed) {
+          streamController.close();
 
-        return;
-      }
-      controller = streamController;
+          return;
+        }
+        controller = streamController;
+
+        /**
+         * The opening sequence, in the order ADR-0004 fixes it: `ready` as the first chunk of the
+         * stream whatever the log is doing — carrying the Channels Authorize refused, so a page
+         * hears about a refusal in the same breath as the Connection opening — then the retry,
+         * then anything this Connection was told while it was opening, then whatever `start`
+         * produces: a `reset`, the replay, `caught-up`.
+         */
+        const heartbeat = instance.heartbeat;
+        write(
+          encodeControl("ready", { cursor: opening.cursor, refused, heartbeat } satisfies Ready),
+        );
+        write(encodeRetry(RETRY_MS));
+        for (const bytes of waiting.splice(0)) write(bytes);
+
+        /**
+         * The heartbeat starts with the Connection rather than with its live feed: a replay long
+         * enough to matter is exactly when a proxy would otherwise see an idle pipe, and a
+         * `heartbeat` carries no `id:`, so it can fall anywhere among the Messages without moving
+         * anybody's Cursor. It is unref'd, so a process with nothing else to do can still exit.
+         */
+        if (heartbeat > 0) {
+          heartbeats = setInterval(() => {
+            write(encodeControl("heartbeat"));
+          }, heartbeat);
+          heartbeats.unref?.();
+        }
+
+        /**
+         * The Connection's own end, armed at the same moment: when it comes, it comes through the
+         * one primitive that ends a Connection at all, so the max lifetime, a Kick and a Drain are
+         * the same three bytes on the wire and the same teardown behind them.
+         */
+        const maxLifetime = instance.maxLifetime;
+        if (maxLifetime > 0) {
+          lifetime = setTimeout(() => {
+            connection.reconnect();
+          }, spread(maxLifetime));
+          lifetime.unref?.();
+        }
+
+        await opening.start();
+      },
 
       /**
-       * The opening sequence, in the order ADR-0004 fixes it: `ready` as the first chunk of the
-       * stream whatever the log is doing — carrying the Channels Authorize refused, so a page
-       * hears about a refusal in the same breath as the Connection opening — then the retry,
-       * then anything this Connection was told while it was opening, then whatever `start`
-       * produces: a `reset`, the replay, `caught-up`.
+       * The client went away: Next aborts the pipe on the response's `close`, which cancels this
+       * stream, and aborts `request.signal` for good measure. Either path leads here, and the
+       * Connection leaves the table exactly once.
        */
-      const heartbeat = instance.heartbeat;
-      write(encodeControl("ready", { cursor: opening.cursor, refused, heartbeat } satisfies Ready));
-      write(encodeRetry(RETRY_MS));
-      for (const bytes of waiting.splice(0)) write(bytes);
-
-      /**
-       * The heartbeat starts with the Connection rather than with its live feed: a replay long
-       * enough to matter is exactly when a proxy would otherwise see an idle pipe, and a
-       * `heartbeat` carries no `id:`, so it can fall anywhere among the Messages without moving
-       * anybody's Cursor. It is unref'd, so a process with nothing else to do can still exit.
-       */
-      if (heartbeat > 0) {
-        heartbeats = setInterval(() => {
-          write(encodeControl("heartbeat"));
-        }, heartbeat);
-        heartbeats.unref?.();
-      }
-
-      /**
-       * The Connection's own end, armed at the same moment: when it comes, it comes through the
-       * one primitive that ends a Connection at all, so the max lifetime, a Kick and a Drain are
-       * the same three bytes on the wire and the same teardown behind them.
-       */
-      const maxLifetime = instance.maxLifetime;
-      if (maxLifetime > 0) {
-        lifetime = setTimeout(() => {
-          connection.reconnect();
-        }, spread(maxLifetime));
-        lifetime.unref?.();
-      }
-
-      await opening.start();
+      cancel() {
+        dispose(false);
+      },
     },
-
-    /**
-     * The client went away: Next aborts the pipe on the response's `close`, which cancels this
-     * stream, and aborts `request.signal` for good measure. Either path leads here, and the
-     * Connection leaves the table exactly once.
-     */
-    cancel() {
-      dispose(false);
-    },
-  });
+    new ByteLengthQueuingStrategy({ highWaterMark: MAX_UNREAD_BYTES }),
+  );
 }
 
 /**
