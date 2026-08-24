@@ -78,24 +78,24 @@ export interface Transport extends Publisher {
  * it the one thing the taxonomy is for — knowing which kind of failure it was (#86).
  */
 export class TransportError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message?: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "TransportError";
   }
 }
 
 /** The backend is unreachable, or did not answer within the operation timeout. */
 export class TransportUnavailableError extends TransportError {
-  constructor(message: string) {
-    super(message);
+  constructor(message?: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "TransportUnavailableError";
   }
 }
 
 /** The Transport has been closed, and answers nothing further. */
 export class TransportClosedError extends TransportError {
-  constructor(message: string) {
-    super(message);
+  constructor(message?: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "TransportClosedError";
   }
 }

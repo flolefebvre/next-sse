@@ -16,8 +16,8 @@ const SIGNALS = ["SIGTERM", "SIGINT"] as const;
  * registered is what keeps "every Connection is ended" a claim about a table nothing enters.
  */
 export class DrainingError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message?: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "DrainingError";
   }
 }
