@@ -92,18 +92,43 @@ test.for(DELIVERIES)(
  * What the reader sees before any of this: the server's own markup. React adopting it without
  * complaint is the claim — a Snapshot that did not survive the boundary, or a hook that seeded
  * itself from something else, would show up here as a hydration mismatch and nowhere else.
+ *
+ * The other half of the claim is that rendering opens nothing: no Connection exists until
+ * hydration has completed, and the one that follows resumes from the Snapshot's Cursor.
+ *
+ * **The count of Connections is read at the commit, not after `hydrate` resolves** (#84), and
+ * the difference is the whole reason this test used to be flaky. Nothing opens a Connection
+ * during a render — the core coalesces Channel-set changes onto a macrotask tick (ADR-0004),
+ * so the subscription an effect makes at this commit becomes a Connection a tick later — while
+ * React's own `act` yields to the macrotask queue as it drains. Whether that tick lands inside
+ * `await hydrate(...)` or after it is the runner's business, so a count taken there asserts
+ * nothing and fails about one run in five. A ref callback runs synchronously in the commit
+ * itself, which is the moment "before hydration completes" actually names: a Connection opened
+ * by a render or by the commit shows up here, and no scheduling can hide or manufacture one.
  */
 test("the list is server-rendered markup, adopted by hydration without a mismatch", async () => {
   const complaints = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  let atCommit: number | undefined;
 
-  const tree = await hydrate(app(<Room snapshot={snapshotOf("cursor-3", [BEFORE])} />));
+  const tree = await hydrate(
+    app(
+      <div
+        ref={() => {
+          atCommit = opened.length;
+        }}
+      >
+        <Room snapshot={snapshotOf("cursor-3", [BEFORE])} />
+      </div>,
+    ),
+  );
 
   expect(texts(tree.container)).toEqual([BEFORE.text]);
   expect(complaints).not.toHaveBeenCalled();
-  expect(opened).toHaveLength(0);
+  expect(atCommit).toBe(0);
 
   await flush();
 
+  expect(opened).toHaveLength(1);
   expect(opened[0]?.cursor).toBe("cursor-3");
 
   await tree.unmount();
