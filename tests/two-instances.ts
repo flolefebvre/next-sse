@@ -14,7 +14,7 @@ import { createRedisTransport } from "../packages/next-sse/src/transport/redis.j
 export interface TwoInstances {
   /** The Instance a client is connected to. */
   here: ChatApp;
-  /** Another Instance of the same App, on the same log, holding no Connection of its own. */
+  /** Another Instance of the same App, on the same log, which may hold Connections of its own. */
   there: ChatApp;
   /** Release both Transports. Every scenario owes this to the server it opened them on. */
   close(): Promise<void>;
