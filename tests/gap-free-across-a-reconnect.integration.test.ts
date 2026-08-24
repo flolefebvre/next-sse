@@ -37,7 +37,11 @@ const anApp = (): ChatApp => {
   const { channel, createSSE } = initSSE({ transport: createMemoryTransport() });
 
   return createSSE({
-    chat: channel({ pattern: "chat:{roomId}", events: { message: asType<{ text: string }>() } }),
+    chat: channel({
+      pattern: "chat:{roomId}",
+      events: { message: asType<{ text: string }>() },
+      authorize: () => true,
+    }),
   }) as unknown as ChatApp;
 };
 
@@ -186,7 +190,11 @@ test("a Connection whose Cursor the log has dropped is reset in band, and goes o
     transport: createMemoryTransport({ retention: { cap: 4 } }),
   });
   const sse = createSSE({
-    chat: channel({ pattern: "chat:{roomId}", events: { message: asType<{ text: string }>() } }),
+    chat: channel({
+      pattern: "chat:{roomId}",
+      events: { message: asType<{ text: string }>() },
+      authorize: () => true,
+    }),
   }) as unknown as ChatApp;
 
   const first = await connect(sse);

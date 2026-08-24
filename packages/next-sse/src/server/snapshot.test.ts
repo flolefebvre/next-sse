@@ -28,6 +28,7 @@ const anApp = () => {
       chat: channel({
         pattern: "chat:{roomId}",
         events: { message: z.object({ text: z.string() }) },
+        authorize: () => true,
       }),
     }),
   };

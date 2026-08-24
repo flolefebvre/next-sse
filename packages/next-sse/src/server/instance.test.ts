@@ -1,5 +1,6 @@
 import { beforeEach, expect, test, vi } from "vitest";
 
+import type { ChannelRecord } from "../internal/channel.js";
 import { createMemoryTransport } from "../transport/memory.js";
 import type { Entry, Transport } from "../transport/index.js";
 
@@ -120,15 +121,41 @@ test("the Instance keeps its Transport across evaluations, whatever a later one 
 
 test("the Instance keeps its Connections across evaluations, and swaps the Registry", async () => {
   const instance = getInstance({ transport: createMemoryTransport() });
-  instance.registry = "the first Registry";
+  instance.registry = registryOf("chat:{roomId}");
   const connection = connectionOn("chat:42");
   await live(instance, connection);
 
   const reevaluated = getInstance({ transport: createMemoryTransport() });
-  reevaluated.registry = "the second Registry";
+  reevaluated.registry = registryOf("presence:{roomId}");
 
   expect(reevaluated.connections.has(connection)).toBe(true);
-  expect(instance.registry).toBe("the second Registry");
+  expect(instance.registry?.chat?.pattern).toBe("presence:{roomId}");
+});
+
+/**
+ * `context` and `key` are App code holding no live state, so a re-evaluated module swaps them
+ * the way it swaps the Registry — unlike the Transport, which the open Connections are on.
+ * Without this an edit to `context` in development would do nothing until the process restarts,
+ * while the Authorize beside it, which lives in the Registry, would already have changed.
+ */
+test("the Instance swaps the context and the Key builder across evaluations", () => {
+  const context = () => ({ role: "admin" });
+  const key = () => "ada";
+  const instance = getInstance({ transport: createMemoryTransport(), context, key });
+
+  expect(instance.context).toBe(context);
+  expect(instance.key).toBe(key);
+
+  const second = () => ({ role: "guest" });
+  getInstance({ transport: createMemoryTransport(), context: second });
+
+  expect(instance.context).toBe(second);
+  expect(instance.key).toBeUndefined();
+});
+
+/** One Registry, as data: the handler reads patterns and Authorize off exactly this shape. */
+const registryOf = (pattern: string): ChannelRecord => ({
+  chat: { pattern, events: {}, authorize: () => true },
 });
 
 test("a Message reaches the Connections subscribed to its Channel, and no others", async () => {

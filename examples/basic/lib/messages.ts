@@ -24,6 +24,10 @@ const SLOT = Symbol.for("next-sse-example/messages");
 const globals = globalThis as unknown as { [key: symbol]: Map<string, Message[]> | undefined };
 const rooms = (globals[SLOT] ??= new Map<string, Message[]>());
 
+/** The notices only an admin may read, in this Instance's memory, exactly like the rooms. */
+const NOTICES = Symbol.for("next-sse-example/notices");
+const notices = ((globals as unknown as { [key: symbol]: Message[] | undefined })[NOTICES] ??= []);
+
 /** Everything this room has, oldest first. */
 export function listMessages(roomId: string): Message[] {
   return rooms.get(roomId) ?? [];
@@ -35,4 +39,17 @@ export function appendMessage(roomId: string, text: string): Message {
   rooms.set(roomId, [...listMessages(roomId), message]);
 
   return message;
+}
+
+/** Everything the admin Channel has, oldest first: the read the admin Snapshot is taken of. */
+export function listNotices(): Message[] {
+  return notices;
+}
+
+/** Add one notice and hand it back, id and all, for the Publish that follows. */
+export function appendNotice(text: string): Message {
+  const notice: Message = { id: crypto.randomUUID(), text };
+  notices.push(notice);
+
+  return notice;
 }

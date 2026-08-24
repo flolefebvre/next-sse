@@ -1,6 +1,8 @@
 import type {
+  Authorize,
   ChannelDeclaration,
   ChannelRecord,
+  DeclaredAuthorize,
   EventMap,
   EventsOf,
   JsonOutputs,
@@ -8,7 +10,13 @@ import type {
   NoReservedKeys,
   PatternOf,
 } from "../internal/channel.js";
-import { assertFillablePattern, fillPattern, type ParamsArgs } from "../internal/pattern.js";
+import {
+  assertFillablePattern,
+  fillPattern,
+  isLiteralPattern,
+  matchPattern,
+  type ParamsArgs,
+} from "../internal/pattern.js";
 import {
   RESERVED_EVENT_NAMES,
   RESERVED_REGISTRY_KEYS,
@@ -74,7 +82,24 @@ export interface RegistryLike {
 }
 
 /**
- * Declare one Channel: the name pattern its Handles fill in, and the events it carries.
+ * Declare one Channel, as the App's own `initSSE` hands it back: the name pattern its Handles
+ * fill in, the events it carries, and the Authorize that guards it.
+ *
+ * The factory is bound to the App's Ctx, which is the reason `initSSE` returns it rather than
+ * the package exporting one: whatever the App's `context` builds is what its Authorize is
+ * handed, and an App that configures no `context` gets `undefined` (ADR-0008).
+ */
+export interface ChannelFactory<Ctx> {
+  <const Pattern extends string, Events extends EventMap>(declaration: {
+    pattern: Pattern;
+    events: Events & JsonOutputs<Events> & NoReservedEvents<Events>;
+    authorize: Authorize<Pattern, Ctx>;
+  }): ChannelDeclaration<Pattern, Events>;
+}
+
+/**
+ * Declare one Channel: the name pattern its Handles fill in, the events it carries, and the
+ * decision that guards it.
  *
  * Every event is a Standard Schema, so a zod 4, valibot or arktype schema is taken as it is
  * and no schema library is a dependency of this one (ADR-0008); `asType<T>()` covers an event
@@ -82,11 +107,23 @@ export interface RegistryLike {
  * carry is a compile error here, at the declaration, rather than a lie the client discovers
  * (ADR-0006) — and so is an event named after something a Handle already has.
  *
- * Authorize joins this declaration with its own ticket, next to the events it guards.
+ * `authorize` is required, and it sits here rather than in a table of its own so that a Channel
+ * and the rule that guards it are read together and cannot drift apart (ADR-0002). A public
+ * Channel writes `() => true`, which is a decision an App takes on purpose rather than one it
+ * forgets to take. This module is server-only, so Authorize may import session or database code
+ * freely: what crosses to the client is the allowlist of `toClientChannels`, and Authorize is
+ * not on it.
+ *
+ * The Ctx is `never` here and the App's own where it matters: `initSSE` hands back this same
+ * function typed as its `ChannelFactory<Ctx>`, which is where an App's Authorize gets its
+ * context type.
  */
-export function channel<const Pattern extends string, Events extends EventMap>(declaration: {
+export const channel: ChannelFactory<never> = declareChannel;
+
+function declareChannel<const Pattern extends string, Events extends EventMap>(declaration: {
   pattern: Pattern;
   events: Events & JsonOutputs<Events> & NoReservedEvents<Events>;
+  authorize: DeclaredAuthorize;
 }): ChannelDeclaration<Pattern, Events> {
   assertFillablePattern(declaration.pattern);
 
@@ -101,7 +138,7 @@ export function channel<const Pattern extends string, Events extends EventMap>(d
     }
   }
 
-  return { pattern: declaration.pattern, events };
+  return { pattern: declaration.pattern, events, authorize: declaration.authorize };
 }
 
 /**
@@ -126,6 +163,7 @@ export function createSSE<Channels extends ChannelRecord>(
     }
   }
 
+  assertNoOverlap(declarations);
   instance.registry = declarations;
 
   const registry: Record<string, unknown> = {};
@@ -141,6 +179,37 @@ export function createSSE<Channels extends ChannelRecord>(
   registry.snapshot = handoff.snapshot;
 
   return registry as unknown as Registry<Channels>;
+}
+
+/**
+ * Refuse a Registry where one Channel's name is also what another Channel's pattern matches.
+ *
+ * A name on the query of a Connection is resolved against the patterns in the order they were
+ * declared, and the first match wins. That is harmless between two patterns that overlap only
+ * on names an App would have to go out of its way to write, and dangerous for the overlap an App
+ * writes by accident: `chat:{roomId}` beside a literal `chat:admin` means the admin Channel is
+ * authorized by the chat rule — silently, and only for the Channel that was declared second.
+ *
+ * So the check is exactly that case: a Channel whose pattern has no params is a Channel name,
+ * and no other pattern may match it. Two patterns that both have params are not compared —
+ * whether `user:{id}` and `{kind}:7` can collide depends on values neither the Registry nor this
+ * function has — and the ordering rule is what settles those.
+ */
+function assertNoOverlap(declarations: ChannelRecord): void {
+  for (const [key, declaration] of Object.entries(declarations)) {
+    if (!isLiteralPattern(declaration.pattern)) continue;
+    for (const [other, candidate] of Object.entries(declarations)) {
+      if (other === key || matchPattern(candidate.pattern, declaration.pattern) === undefined) {
+        continue;
+      }
+      throw new Error(
+        `next-sse: the Channel "${key}" is named "${declaration.pattern}", and the Channel ` +
+          `"${other}" declares the pattern "${candidate.pattern}", which matches that name: a ` +
+          `Connection asking for it would be authorized by whichever of the two was declared ` +
+          `first. Name one of them something the other cannot make.`,
+      );
+    }
+  }
 }
 
 /**

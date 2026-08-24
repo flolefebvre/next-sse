@@ -1,3 +1,4 @@
+import type { ChannelRecord } from "../internal/channel.js";
 import type { Cursor, StoredEntry, Transport, Unsubscribe } from "../transport/index.js";
 
 import { selectTransport } from "./select-transport.js";
@@ -21,8 +22,14 @@ const REPLAY_PAGE_SIZE = 500;
 
 /** One open SSE Connection, as the Instance sees it: what it listens to, and how to feed it. */
 export interface Connection {
-  /** The Channels this Connection subscribed to. */
+  /** The Channels this Connection subscribed to: the ones Authorize let through. */
   readonly channels: ReadonlySet<string>;
+  /**
+   * The opaque identity this App gave the Connection, when it configured a `key` (ADR-0003).
+   * Nothing reads it yet: it is what a Kick will address Connections by, and the Connection
+   * table is where it has to be for that to be possible at all.
+   */
+  readonly key?: string;
   /** Hand it one Message it is subscribed to. Must not throw. */
   deliver(entry: StoredMessage): void;
   /** Its Cursor is unusable: the App must refetch its state before going on. Must not throw. */
@@ -46,14 +53,35 @@ export interface Opening {
   close(): void;
 }
 
+/**
+ * How an App builds the context its Authorize and its Key are handed, as the Instance holds it:
+ * the Ctx is the App's own, and the library only ever awaits what it produces (ADR-0008).
+ */
+export type ContextBuilder = (request: Request) => unknown;
+
+/**
+ * How an App derives the Key of a Connection from that context. `never` is the Ctx here for the
+ * same reason it is on a declared Authorize: the Instance holds the function without knowing
+ * what the App builds, and the handler makes the one cast where it does.
+ */
+export type KeyBuilder = (ctx: never) => string | undefined;
+
 /** Everything one running Instance of an App owns. */
 export interface Instance {
   /** The one log this Instance reads and Publishes into. */
   readonly transport: Transport;
+  /** What this App builds from the request for its Authorize and its Key, if it builds one. */
+  context: ContextBuilder | undefined;
+  /** How this App names the holder of a Connection, if it names one (ADR-0003). */
+  key: KeyBuilder | undefined;
   /** The Connections this Instance is holding open right now. */
   readonly connections: ReadonlySet<Connection>;
-  /** The App's current Registry, as data: a re-evaluated `createSSE` swaps it. */
-  registry: unknown;
+  /**
+   * The App's current Registry, as data: a re-evaluated `createSSE` swaps it. It is what the
+   * handler resolves the Channel names on a Connection's query against, and so where Authorize
+   * is read from.
+   */
+  registry: ChannelRecord | undefined;
   /**
    * Register a Connection and start feeding it, resuming after `after` when it brought a
    * Cursor. Registering comes first, before the log is read at all: the live feed is buffered
@@ -84,17 +112,31 @@ const globals = globalThis as unknown as { [key: symbol]: InstanceState | undefi
 /**
  * The Instance of this process, created on first use.
  *
- * A `transport` given on a later call is deliberately ignored: the whole point of the slot is
- * that a second evaluation of the App's Registry module — which builds a second Transport as it
- * goes — keeps Publishing into the log the open Connections are reading. An App that configures
- * none gets the Transport `REDIS_URL` chooses (ADR-0008).
+ * Two rules, and they are opposites on purpose. A `transport` given on a later call is
+ * deliberately **ignored**: the whole point of the slot is that a second evaluation of the App's
+ * Registry module — which builds a second Transport as it goes — keeps Publishing into the log
+ * the open Connections are reading. An App that configures none gets the Transport `REDIS_URL`
+ * chooses (ADR-0008). But `context` and `key` are **refreshed** on every call, exactly as
+ * `createSSE` swaps the Registry (ADR-0004): they are App code holding no live state, and
+ * pinning them to the first evaluation would leave an edit to `context` with no effect until
+ * the process restarts, while the Authorize beside it — which lives in the Registry — did
+ * change.
  */
-export function getInstance(options: { transport?: Transport } = {}): Instance {
+export function getInstance(
+  options: { transport?: Transport; context?: ContextBuilder; key?: KeyBuilder } = {},
+): Instance {
   const existing = globals[SLOT];
-  if (existing) return existing;
+  if (existing) {
+    existing.context = options.context;
+    existing.key = options.key;
+
+    return existing;
+  }
 
   const state: InstanceState = {
     transport: options.transport ?? selectTransport(),
+    context: options.context,
+    key: options.key,
     held: new Map(),
     get connections(): ReadonlySet<Connection> {
       return new Set(state.held.keys());
