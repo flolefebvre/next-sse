@@ -579,3 +579,15 @@ test("a subscription that could not be opened is not remembered", async () => {
   expect(opening.cursor).toBe(await transport.tail());
   expect(instance.connections.size).toBe(1);
 });
+
+/**
+ * Past the 32-bit delay a timer takes, `setTimeout` fires almost at once: a 30-day `maxLifetime`
+ * would be every Connection ending on the spot rather than in a month. The value is refused
+ * rather than quietly turned into its opposite.
+ */
+test("a duration longer than a timer can hold is refused, not silently inverted", () => {
+  expect(() => getInstance({ maxLifetime: 30 * 24 * 60 * 60_000 })).toThrow(/about 24 days/);
+  expect(getInstance({ maxLifetime: 2_147_483_647 })).toMatchObject({
+    maxLifetime: 2_147_483_647,
+  });
+});

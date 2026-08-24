@@ -55,7 +55,7 @@ const setup = (onReset?: () => void, page?: PageLike) => {
  * A page a test drives by hand: the three transitions the core listens for, fired one at a
  * time. The DOM events they are made of are `browserPage`'s business, and tested there.
  */
-function fakePage(): PageLike & { fire: (signal: PageSignal) => void } {
+function fakePage(): PageLike & { fire: (signal: PageSignal) => void; listening: () => number } {
   const listeners = new Map<PageSignal, Set<() => void>>();
 
   return {
@@ -69,6 +69,7 @@ function fakePage(): PageLike & { fire: (signal: PageSignal) => void } {
     fire(signal) {
       for (const listener of listeners.get(signal) ?? []) listener();
     },
+    listening: () => [...listeners.values()].reduce((count, set) => count + set.size, 0),
   };
 }
 
@@ -1026,4 +1027,47 @@ test("coming back to the tab stops the backoff waiting", async () => {
   await vi.advanceTimersByTimeAsync(60_000);
 
   expect(opened).toHaveLength(2);
+});
+
+/**
+ * `window` and `document` outlive every core built against them, so a core must leave nothing
+ * of itself on the page. React Strict Mode discards one core per provider before anything
+ * subscribes, and that one never opened a Connection: it never listened for anything either.
+ */
+test("a core that opened no Connection is not listening to the page", async () => {
+  const page = fakePage();
+  setup(undefined, page);
+
+  await tick();
+
+  expect(page.listening()).toBe(0);
+});
+
+test("the last hook out takes the core off the page", async () => {
+  const page = fakePage();
+  const { core } = setup(undefined, page);
+  const leave = core.subscribe(recorder("chat:42"));
+  await tick();
+
+  expect(page.listening()).toBeGreaterThan(0);
+
+  leave();
+  await tick();
+
+  expect(page.listening()).toBe(0);
+});
+
+test("a core that comes back subscribes to the page once, not twice", async () => {
+  const page = fakePage();
+  const { core } = setup(undefined, page);
+  core.subscribe(recorder("chat:42"))();
+  await tick();
+  core.subscribe(recorder("chat:42"));
+  await tick();
+  const listening = page.listening();
+
+  core.subscribe(recorder("chat:7"));
+  await tick();
+
+  expect(page.listening()).toBe(listening);
 });

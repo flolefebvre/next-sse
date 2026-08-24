@@ -164,6 +164,8 @@ export function createCore({ url, eventSource, page, onReset }: CoreOptions): Co
    */
   let heartbeat = 0;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
+  /** What detaches this core from the page, for as long as it is listening to one. */
+  let detachers: (() => void)[] = [];
   /**
    * The last event id this client saw, and the only thing it stores about position. It travels
    * back untouched: a Connection carries it in the URL, and the Instance decides what it means.
@@ -257,6 +259,7 @@ export function createCore({ url, eventSource, page, onReset }: CoreOptions): Co
   }
 
   function openSource(channels: ReadonlySet<string>, as?: Status): void {
+    watchPage();
     open = channels;
     live = false;
     refused = new Set();
@@ -459,6 +462,7 @@ export function createCore({ url, eventSource, page, onReset }: CoreOptions): Co
     closeSource();
     if (channels.size === 0) {
       open = new Set();
+      unwatchPage();
 
       return;
     }
@@ -478,6 +482,11 @@ export function createCore({ url, eventSource, page, onReset }: CoreOptions): Co
   /**
    * The page transitions of ADR-0004, and the whole of what they do.
    *
+   * They are listened for while this core has a Connection to lose, and let go of when it has
+   * none: `window` and `document` outlive every core built against them, so a core that opened
+   * nothing — React Strict Mode discards one per provider — or one whose last hook has left must
+   * leave nothing of itself behind on the page.
+   *
    * A page put away — `pagehide`, or a freeze — has its Connection let go of: a frozen page
    * cannot read a stream, and holding one open costs the Instance a Connection for a client that
    * is not there. Coming back opens one again, and only if there is none: a bfcache restore
@@ -490,19 +499,26 @@ export function createCore({ url, eventSource, page, onReset }: CoreOptions): Co
    * it does do is stop waiting: a client sitting out a 30-second backoff in a tab the user has
    * just come back to should be trying now.
    */
-  lifecycle.on("hide", () => {
-    closeSource();
-  });
+  function watchPage(): void {
+    if (detachers.length > 0) return;
+    detachers = [
+      lifecycle.on("hide", () => {
+        closeSource();
+      }),
+      lifecycle.on("show", () => {
+        if (source !== undefined) return;
+        reopen();
+      }),
+      lifecycle.on("visible", () => {
+        if (retry === undefined) return;
+        reopen();
+      }),
+    ];
+  }
 
-  lifecycle.on("show", () => {
-    if (source !== undefined) return;
-    reopen();
-  });
-
-  lifecycle.on("visible", () => {
-    if (retry === undefined) return;
-    reopen();
-  });
+  function unwatchPage(): void {
+    for (const detach of detachers.splice(0)) detach();
+  }
 
   return {
     subscribe(subscription) {

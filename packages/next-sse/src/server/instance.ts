@@ -386,6 +386,13 @@ function deliver(connection: Connection, entry: StoredEntry): void {
 }
 
 /**
+ * The longest delay a timer takes. Past it, `setTimeout` and `setInterval` overflow their 32-bit
+ * delay and fire almost at once — a 30-day `maxLifetime` would be every Connection ending on the
+ * spot, forever — so the value is refused rather than quietly turned into its opposite.
+ */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/**
  * One duration off the App's configuration: the value it gave, or the default when it gave
  * none. `0` is a value like any other and means the feature is off — never "use the default",
  * which is what makes `heartbeat: 0` a Connection with no heartbeat rather than one with the
@@ -397,10 +404,11 @@ function deliver(connection: Connection, entry: StoredEntry): void {
  */
 function milliseconds(value: number | undefined, fallback: number, option: string): number {
   if (value === undefined) return fallback;
-  if (!Number.isFinite(value) || value < 0) {
+  if (!Number.isFinite(value) || value < 0 || value > MAX_TIMER_MS) {
     throw new Error(
-      `next-sse: initSSE({ ${option} }) takes a number of milliseconds that is zero or more, ` +
-        `and was given ${String(value)}. Pass 0 to turn it off.`,
+      `next-sse: initSSE({ ${option} }) takes a number of milliseconds between 0 and ` +
+        `${String(MAX_TIMER_MS)} (about 24 days), and was given ${String(value)}. Pass 0 to ` +
+        `turn it off.`,
     );
   }
 
