@@ -11,6 +11,11 @@ import { ROOM_ID, sse } from "@/lib/sse";
  * of them with its params filled in — the same call, addressed differently. Nothing else in the
  * demo changes with the room: the store keys by it, and `authorize` says the same thing about
  * every one of them.
+ *
+ * A room whose name holds a `:` is refused here, before the write: the separator is the one
+ * character a param cannot carry, so the Handle would throw on it — after `appendMessage` had
+ * already stored a Message nobody will ever be told about. Whatever an App lets a caller name a
+ * Channel with, it validates before it writes.
  */
 export async function POST(request: Request): Promise<Response> {
   const { text, roomId = ROOM_ID } = (await request.json()) as {
@@ -20,8 +25,8 @@ export async function POST(request: Request): Promise<Response> {
   if (typeof text !== "string" || text === "") {
     return Response.json({ error: "text is required" }, { status: 400 });
   }
-  if (typeof roomId !== "string" || roomId === "") {
-    return Response.json({ error: "roomId must be a room" }, { status: 400 });
+  if (typeof roomId !== "string" || roomId === "" || roomId.includes(":")) {
+    return Response.json({ error: 'roomId must be a room name without ":"' }, { status: 400 });
   }
 
   await sse.chat({ roomId }).message(appendMessage(roomId, text));

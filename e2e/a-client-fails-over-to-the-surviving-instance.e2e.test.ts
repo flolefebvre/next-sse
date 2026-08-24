@@ -35,13 +35,18 @@ test("a reader whose Instance is taken out comes back on the survivor with no ga
     proxy.sendTo(app.there.url);
     const stopping = app.here.stop();
     expect((await reader.next("reconnect")).data).toBe("{}");
-    assertPromptExit(await stopping);
 
     /**
      * Published on the survivor while the reader is between two Connections: the window the
      * Cursor exists for, and the one a client on a dead socket would have lost silently.
+     *
+     * It goes out the moment the stream ends and before the Instance's exit is awaited, because
+     * the window is the client's `retry:` — three seconds — and not however long a process takes
+     * to go. Waiting for the exit first would risk a reader already back on the survivor, and
+     * this Message reaching it live: the scenario would pass without a replay in it.
      */
     await publish(app.there.url, "while it was away");
+    assertPromptExit(await stopping);
 
     /**
      * It comes back by itself, through the same address, carrying in `Last-Event-ID` the
