@@ -121,7 +121,7 @@ export function createRedisPublisher(options: RedisTransportOptions = {}): Publi
 /** One listener on the live feed, with the gap report that belongs to it. */
 interface Feed {
   listener: (entry: StoredEntry) => void;
-  onGap: () => void;
+  onGap: (resumeFrom: Cursor) => void;
 }
 
 function createRedisLog(options: RedisTransportOptions): Transport {
@@ -355,13 +355,17 @@ function createRedisLog(options: RedisTransportOptions): Transport {
     if (!lost(info, position)) return position;
 
     narrate(`the log dropped ${position}, which the reader was resuming from`);
-    for (const { onGap } of feeds) onGap();
 
     /**
      * The loop resumes just below the oldest Entry the log still holds, so that Entry is
-     * delivered and the same gap can never be reported twice.
+     * delivered and the same gap can never be reported twice. It is also what the gap is
+     * reported *with*: every Entry this feed goes on to deliver comes after it, so a reader
+     * told to start there is told exactly where this feed now stands.
      */
-    return justBefore(info.oldestKeptId);
+    const from = justBefore(info.oldestKeptId);
+    for (const { onGap } of feeds) onGap(from);
+
+    return from;
   };
 
   return {
@@ -424,7 +428,7 @@ function createRedisLog(options: RedisTransportOptions): Transport {
 
     async subscribe(
       listener: (entry: StoredEntry) => void,
-      options: { onGap: () => void },
+      options: { onGap: (resumeFrom: Cursor) => void },
     ): Promise<Unsubscribe> {
       assertOpen();
 

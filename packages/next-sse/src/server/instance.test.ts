@@ -3,7 +3,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import type { ChannelRecord } from "../internal/channel.js";
 import { createMemoryTransport } from "../transport/memory.js";
 import { TransportUnavailableError } from "../transport/index.js";
-import type { Entry, Transport } from "../transport/index.js";
+import type { Cursor, Entry, Transport } from "../transport/index.js";
 
 import { getInstance, type Connection, type Instance, type InstanceOptions } from "./instance.js";
 import type { StoredMessage } from "./wire.js";
@@ -38,7 +38,7 @@ const message = (channel: string, payload: unknown): Entry => ({
 const connectionOn = (...channels: string[]): Connection => ({
   channels: new Set(channels),
   deliver: vi.fn<(entry: StoredMessage) => void>(),
-  reset: vi.fn<() => void>(),
+  reset: vi.fn<(from: Cursor) => void>(),
   caughtUp: vi.fn<() => void>(),
   reconnect: vi.fn<() => void>(),
 });
@@ -59,8 +59,10 @@ const kick = (target: { key?: string; channel?: string }): Entry => ({
 
 /**
  * A Connection that records everything the Instance tells it, in one list and in order: a
- * Message as `<channel> <text>`, and the two Control moments by name. Order is what most of
- * the replay cases are about — where `caught-up` falls, and what a Message is next to.
+ * Message as `<channel> <text>`, and the two Control moments by name — a `reset` with the
+ * position it carries, because where a reset Connection now stands is half of what a reset says
+ * (ADR-0004). Order is what most of the replay cases are about — where `caught-up` falls, and
+ * what a Message is next to.
  */
 const tracing = (...channels: string[]): { connection: Connection; trace: string[] } => {
   const trace: string[] = [];
@@ -69,7 +71,7 @@ const tracing = (...channels: string[]): { connection: Connection; trace: string
     connection: {
       channels: new Set(channels),
       deliver: (entry) => trace.push(`${entry.channel} ${(entry.payload as Text).text}`),
-      reset: () => trace.push("reset"),
+      reset: (from) => trace.push(`reset ${from}`),
       caughtUp: () => trace.push("caught-up"),
       reconnect: () => trace.push("reconnect"),
     },
@@ -80,6 +82,19 @@ const tracing = (...channels: string[]): { connection: Connection; trace: string
 interface Text {
   text: string;
 }
+
+/**
+ * The position the one `reset` in a trace carried, so that a case can hand it straight back to
+ * the Instance — which is exactly what the client core does with it.
+ */
+const position = (trace: readonly string[]): Cursor => {
+  const resets = trace.filter((line) => line.startsWith("reset "));
+  if (resets.length !== 1) {
+    throw new Error(`That Connection was told to reset ${String(resets.length)} times, not once.`);
+  }
+
+  return resets[0]?.slice("reset ".length) ?? "";
+};
 
 /**
  * The state both handoff-window cases start from: a log holding one Message this Connection
@@ -375,7 +390,93 @@ test("a Cursor the log has dropped opens on the tail, with a reset and no replay
   await opening.start();
   await transport.publish(message("chat:42", { text: "live" }));
 
-  expect(trace).toEqual(["reset", "caught-up", "chat:42 live"]);
+  expect(trace).toEqual([`reset ${opening.cursor}`, "caught-up", "chat:42 live"]);
+});
+
+/**
+ * The other half of the same signal, and the reason it carries anything at all: the Cursor this
+ * Connection brought is gone, so it is the one position the client must *not* be left holding.
+ * The `reset` names the tail the Instance adopted — the very value `ready` has just carried —
+ * and a reconnect from it is an ordinary live-only resume rather than a second gone Cursor.
+ */
+test("the reset of a dropped Cursor carries the tail, and a reconnect from it is not reset again", async () => {
+  const transport = createMemoryTransport({ retention: { cap: 1 } });
+  const instance = anInstance({ transport });
+  const stale = await transport.publish(message("chat:42", { text: "one" }));
+  await transport.publish(message("chat:42", { text: "two" }));
+  await transport.publish(message("chat:42", { text: "three" }));
+  const first = tracing("chat:42");
+
+  const opening = await instance.open(first.connection, { after: stale });
+  await opening.start();
+  opening.close();
+
+  const carried = position(first.trace);
+  const second = tracing("chat:42");
+  await (await instance.open(second.connection, { after: carried })).start();
+
+  expect(second.trace).toEqual(["caught-up"]);
+});
+
+/**
+ * A Transport whose replay walks into a log that moved under it: the first page is served and
+ * every page after it is `gone`, which is what a trimmed log does to a reader it has overtaken.
+ */
+const goneAfterOnePage = (transport: Transport): Transport => {
+  let pages = 0;
+
+  return {
+    ...transport,
+    read: async (after, limit) => {
+      if (pages > 0) return { gone: true };
+      pages += 1;
+      const page = await transport.read(after, limit);
+
+      return "gone" in page ? page : { ...page, done: false };
+    },
+  };
+};
+
+/**
+ * The Cursor this Connection opened with was served, and then went away mid-replay. It is the
+ * one position it must not be sent back to, and it is also the only one `ready` ever gave it —
+ * so the `reset` reads a fresh tail and names that instead.
+ */
+test("a log that moves under a running replay resets from a fresh tail, not the Cursor that went away", async () => {
+  const memory = createMemoryTransport();
+  const instance = anInstance({ transport: goneAfterOnePage(memory) });
+  const from = await memory.tail();
+  await memory.publish(message("chat:42", { text: "missed" }));
+  const { connection, trace } = tracing("chat:42");
+
+  await (await instance.open(connection, { after: from })).start();
+
+  expect(trace).toEqual(["chat:42 missed", `reset ${await memory.tail()}`, "caught-up"]);
+  expect(position(trace)).not.toBe(from);
+});
+
+/**
+ * That fresh tail is a read, and a read can fail — this `reset` is going out on a log that has
+ * just moved or a backend that has just wobbled. Letting it throw would take a signal the client
+ * can act on and turn it into a stream that breaks after its headers, so the Connection is named
+ * the position it opened with: a stale position costs one refetch, a broken stream costs the
+ * Connection.
+ */
+test("a tail the log cannot answer leaves the reset carrying where the Connection opened", async () => {
+  const memory = createMemoryTransport();
+  const instance = anInstance({
+    transport: {
+      ...goneAfterOnePage(memory),
+      tail: () => Promise.reject(new TransportUnavailableError("the backend is away")),
+    },
+  });
+  const from = await memory.tail();
+  await memory.publish(message("chat:42", { text: "missed" }));
+  const { connection, trace } = tracing("chat:42");
+
+  await (await instance.open(connection, { after: from })).start();
+
+  expect(trace).toEqual(["chat:42 missed", `reset ${from}`, "caught-up"]);
 });
 
 /**
@@ -535,11 +636,14 @@ test.each([
 
 /**
  * A Transport whose live feed can be made to lose its place, the way a reader resuming after an
- * outage does when the log has moved past where it was.
+ * outage does when the log has moved past where it was. It reports the gap the way a Transport
+ * does: with the position it resumed at, which every Entry it goes on to deliver comes after.
  */
-const withGap = (): { transport: Transport; gap: () => void } => {
+const RESUMED_AT = "resumed-at";
+
+const withGap = (): { transport: Transport; gap: (resumeFrom?: Cursor) => void } => {
   const memory = createMemoryTransport();
-  let lostPlace: (() => void) | undefined;
+  let lostPlace: ((resumeFrom: Cursor) => void) | undefined;
 
   return {
     transport: {
@@ -550,7 +654,7 @@ const withGap = (): { transport: Transport; gap: () => void } => {
         return memory.subscribe(listener, options);
       },
     },
-    gap: () => lostPlace?.(),
+    gap: (resumeFrom = RESUMED_AT) => lostPlace?.(resumeFrom),
   };
 };
 
@@ -570,8 +674,8 @@ test("a gap on the live feed tells every live Connection to refetch, and closes 
 
   gap();
 
-  expect(one.trace).toEqual(["caught-up", "reset"]);
-  expect(other.trace).toEqual(["caught-up", "reset"]);
+  expect(one.trace).toEqual(["caught-up", `reset ${RESUMED_AT}`]);
+  expect(other.trace).toEqual(["caught-up", `reset ${RESUMED_AT}`]);
   expect(instance.connections.size).toBe(2);
 });
 
@@ -593,7 +697,7 @@ test("a gap while a Connection is still opening reaches it with its replay, neve
 
   await opening.start();
 
-  expect(trace).toEqual(["chat:42 missed", "reset", "caught-up"]);
+  expect(trace).toEqual(["chat:42 missed", `reset ${RESUMED_AT}`, "caught-up"]);
 });
 
 /**

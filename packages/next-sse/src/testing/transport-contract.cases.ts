@@ -102,22 +102,27 @@ const promptly = async <T>(operation: Promise<T>, what: string): Promise<T> => {
 const readAll = async (transport: Transport, after?: Cursor): Promise<StoredEntry[]> =>
   entriesOf(await transport.read(after, 10_000));
 
-/** What a subscription saw: the Entries it was fed, and the gaps it reported. */
+/**
+ * What a subscription saw: the Entries it was fed, the gaps it reported, and the position each
+ * gap said the feed had resumed at.
+ */
 interface Seen {
   entries: StoredEntry[];
   gaps: number;
+  resumed: Cursor[];
 }
 
 /** Attach to the live feed, recording what it delivers. */
 const watch = async (transport: Transport): Promise<{ seen: Seen; detach: () => void }> => {
-  const seen: Seen = { entries: [], gaps: 0 };
+  const seen: Seen = { entries: [], gaps: 0, resumed: [] };
   const detach = await transport.subscribe(
     (entry) => {
       seen.entries.push(entry);
     },
     {
-      onGap: () => {
+      onGap: (resumeFrom) => {
         seen.gaps += 1;
+        seen.resumed.push(resumeFrom);
       },
     },
   );
@@ -495,6 +500,15 @@ export const contractCases: readonly ContractCase[] = [
       const after = await transport.publish(message("after the gap"));
       await delivered(seen, after, "the feed resumed once the gap had been reported");
       expect(seen.gaps).toBe(1);
+
+      /**
+       * The gap named where the feed resumed, and that position has to be one the log can still
+       * serve: it is what the Instance hands its Connections in place of the Cursor that just
+       * went away (ADR-0004), so a log answering `gone` for it would send every one of them
+       * straight back into the gap they were being told about.
+       */
+      const from = cursorAt(seen.resumed, 0);
+      expect(cursorsOf(await readAll(transport, from))).toContain(after);
     },
   },
   {

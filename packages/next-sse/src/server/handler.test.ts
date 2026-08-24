@@ -362,12 +362,47 @@ test.each([
     data: JSON.stringify({ cursor: await transport.tail(), refused: [], heartbeat: 15_000 }),
   });
   expect(await frames.next()).toEqual({ retry: "3000" });
-  expect(await frames.next()).toEqual({ event: "reset", data: "{}" });
+  expect(await frames.next()).toEqual({
+    event: "reset",
+    data: JSON.stringify({ cursor: await transport.tail() }),
+  });
   expect(await frames.next()).toEqual({ event: "caught-up", data: "{}" });
 
   const live = await chat.message({ text: "after the reset" });
   expect((await frames.next()).id).toBe(live);
   await frames.cancel();
+});
+
+/**
+ * The whole point of `reset` naming a position, on the real stream: a page with no Snapshot to
+ * supersede its Cursor — every live-only hook — otherwise keeps holding the very Cursor that was
+ * just refused, and meets the same refusal on its next reconnect. One `reset`, one refetch, and
+ * from then on this client is where the Instance put it.
+ */
+test("a reconnect from the position a reset carried is not reset a second time", async () => {
+  const transport = createMemoryTransport({ retention: { cap: 1 } });
+  const sse = appWith(transport);
+  const chat = sse.chat({ roomId: "42" });
+  const stale = await chat.message({ text: "one" });
+  await chat.message({ text: "two" });
+  await chat.message({ text: "three" });
+
+  const first = framesOf(await connect(sse, `?channel=chat:42&cursor=${stale}`));
+  await first.next();
+  await first.next();
+  const reset = await first.next();
+  expect(reset.event).toBe("reset");
+  const carried = (JSON.parse(reset.data ?? "") as { cursor: string }).cursor;
+  await first.cancel();
+
+  const again = framesOf(
+    await connect(sse, "?channel=chat:42", { headers: { "Last-Event-ID": carried } }),
+  );
+  await again.next();
+  await again.next();
+
+  expect(await again.next()).toEqual({ event: "caught-up", data: "{}" });
+  await again.cancel();
 });
 
 /**

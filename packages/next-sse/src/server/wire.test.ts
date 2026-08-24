@@ -1,6 +1,12 @@
 import { expect, test } from "vitest";
 
-import { encodeControl, encodeMessage, encodeRetry, type StoredMessage } from "./wire.js";
+import {
+  encodeControl,
+  encodeMessage,
+  encodeRetry,
+  type Reset,
+  type StoredMessage,
+} from "./wire.js";
 
 const decoder = new TextDecoder();
 const text = (bytes: Uint8Array): string => decoder.decode(bytes);
@@ -61,6 +67,19 @@ test("a Control event carries an event name and data, and never an id", () => {
 
   expect(ready).toBe('event: ready\ndata: {"cursor":"abcd1234-0","refused":[]}\n\n');
   expect(ready).not.toContain("id:");
+});
+
+/**
+ * `reset` names a position too, and it names it the one way a Control event can: in the data.
+ * An `id:` would move the client's Cursor by being received, which is exactly what ADR-0004
+ * keeps off every Control event — the position here is one the core is *told*, not one the wire
+ * moves under it.
+ */
+test("a reset names its position in the data, never as an id", () => {
+  const reset = text(encodeControl("reset", { cursor: "abcd1234-9" } satisfies Reset));
+
+  expect(reset).toBe('event: reset\ndata: {"cursor":"abcd1234-9"}\n\n');
+  expect(reset).not.toContain("id:");
 });
 
 test("a Control event with nothing to say still carries a data line, or no event is dispatched", () => {

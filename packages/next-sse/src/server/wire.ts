@@ -5,7 +5,9 @@ export type StoredMessage = Extract<Entry, { type: "message" }> & { readonly cur
 
 /**
  * The in-band signals the library sends the client core on a Connection. They belong to no
- * Channel, carry no Cursor and are never replayed.
+ * Channel, are never a position in the log — no `id:`, so none of them moves the client's Cursor
+ * by being received — and are never replayed. `ready` and `reset` do *name* a position, in their
+ * data, which is a value the core is told rather than one the wire moves under it.
  */
 export type ControlEvent = "ready" | "heartbeat" | "reconnect" | "caught-up" | "reset";
 
@@ -30,6 +32,20 @@ export interface Ready {
    * nothing to watch.
    */
   heartbeat?: number;
+}
+
+/**
+ * What `reset` carries: the position the Connection continues from, once the Cursor it brought
+ * turned out to be unusable (ADR-0004).
+ *
+ * It is the tail the Instance adopted, or the position the live feed resumed from — the same
+ * kind of value `ready` carries, and it is here for the same reason: without it a client whose
+ * Cursor was refused keeps holding that Cursor, and a page with no Snapshot to supersede it meets
+ * the very same refusal on its next reconnect. The value stays opaque and is never compared
+ * (ADR-0001), and it travels in the `data` because a Control event carries no `id:`.
+ */
+export interface Reset {
+  cursor: Cursor;
 }
 
 const encoder = new TextEncoder();

@@ -45,8 +45,15 @@ export interface Connection {
   readonly key?: string;
   /** Hand it one Message it is subscribed to. Must not throw. */
   deliver(entry: StoredMessage): void;
-  /** Its Cursor is unusable: the App must refetch its state before going on. Must not throw. */
-  reset(): void;
+  /**
+   * Its Cursor is unusable: the App must refetch its state before going on. Must not throw.
+   *
+   * `from` is where this Connection carries on — the tail the Instance adopted, or the position
+   * the live feed resumed from — and it is on the signal rather than left implicit because the
+   * client holds no other position at that moment: the Cursor it brought is the one just refused
+   * (ADR-0004).
+   */
+  reset(from: Cursor): void;
   /** The replay is over and everything from here on is live. Must not throw. */
   caughtUp(): void;
   /**
@@ -151,10 +158,11 @@ interface Held {
   /**
    * The live feed lost its place while this Connection was still opening, so it is owed a
    * `reset` it cannot be given yet: nothing may reach a Connection before the `ready` the
-   * handler has not written, and its replay is still walking a log that moved under it. It is
-   * delivered where a `reset` belongs, just before `caught-up`.
+   * handler has not written, and its replay is still walking a log that moved under it. What is
+   * held is the position the feed resumed from, because that is what the `reset` will carry, and
+   * it is delivered where a `reset` belongs, just before `caught-up`.
    */
-  gap: boolean;
+  gap: Cursor | undefined;
 }
 
 /**
@@ -265,7 +273,7 @@ async function open(
     throw new DrainingError("This Instance is draining and is not opening Connections.");
   }
 
-  const held: Held = { connection, buffer: [], replayed: undefined, gap: false };
+  const held: Held = { connection, buffer: [], replayed: undefined, gap: undefined };
   state.held.set(connection, held);
 
   const close = (): void => {
@@ -313,6 +321,12 @@ async function open(
  * is over-delivery, not duplication: this client has seen nothing yet, its position follows
  * what it actually receives, and withholding those Entries would take ordering the Instance
  * does not have — under a lagging reader it could not be done reliably at all.
+ *
+ * Both `reset`s below name the position the Connection continues from, and the two know it
+ * differently. The one for a Cursor that was already gone at connect names the tail `open`
+ * adopted — the very value `ready` has just carried. The one for a log that moved mid-replay has
+ * no such value: the Cursor this Connection opened with is precisely what went away, so a fresh
+ * tail is read for it.
  */
 async function replay(
   state: InstanceState,
@@ -321,7 +335,7 @@ async function replay(
   first: Awaited<ReturnType<Transport["read"]>> | undefined,
   gone: boolean,
 ): Promise<void> {
-  if (gone) held.connection.reset();
+  if (gone) held.connection.reset(cursor);
 
   const replayed = new Set<Cursor>();
   let last = cursor;
@@ -330,9 +344,10 @@ async function replay(
     if ("gone" in page) {
       /**
        * The log dropped what this replay was walking through while it walked. There is no
-       * Cursor left to resume from, so the Connection is told to refetch and carries on live.
+       * Cursor left to resume from, so the Connection is told to refetch — from the log's tail,
+       * read afresh — and carries on live.
        */
-      held.connection.reset();
+      held.connection.reset(await tailOr(state, cursor));
       break;
     }
 
@@ -357,12 +372,30 @@ async function replay(
   held.buffer = undefined;
   held.replayed = replayed;
 
-  if (held.gap) {
-    held.gap = false;
-    held.connection.reset();
+  if (held.gap !== undefined) {
+    const from = held.gap;
+    held.gap = undefined;
+    held.connection.reset(from);
   }
   held.connection.caughtUp();
   for (const entry of buffered) feed(held, entry);
+}
+
+/**
+ * The log's tail, or the Cursor this Connection opened with when the log cannot be asked for it.
+ *
+ * The fallback is the point. This read happens on a `reset` that is already going out, on a log
+ * that has just moved or a backend that has just wobbled, and letting it throw would take a
+ * signal the Connection can act on and turn it into a stream that breaks after its headers.
+ * A stale position costs the client the one extra refetch this whole path exists to save it;
+ * a broken stream costs it the Connection.
+ */
+async function tailOr(state: InstanceState, fallback: Cursor): Promise<Cursor> {
+  try {
+    return await state.transport.tail();
+  } catch {
+    return fallback;
+  }
 }
 
 /**
@@ -381,8 +414,8 @@ async function ensureFeed(state: InstanceState): Promise<void> {
       route(state, entry);
     },
     {
-      onGap: () => {
-        gap(state);
+      onGap: (resumeFrom) => {
+        gap(state, resumeFrom);
       },
     },
   ));
@@ -402,12 +435,15 @@ async function ensureFeed(state: InstanceState): Promise<void> {
  * would turn a backend blip into a herd against Instances that were equally cut off.
  *
  * The Transport reports it once per resume, and only when the position it resumed from is below
- * what the log still serves; an outage that lost nothing costs the Connections nothing.
+ * what the log still serves; an outage that lost nothing costs the Connections nothing. It also
+ * reports *where* it resumed, and that is what each `reset` carries: every Entry this feed will
+ * go on to deliver comes after that position, so a Connection resuming from it loses nothing —
+ * where the Cursor it was holding is exactly the one the log no longer serves.
  */
-function gap(state: InstanceState): void {
+function gap(state: InstanceState, resumeFrom: Cursor): void {
   for (const held of state.held.values()) {
-    if (held.buffer === undefined) held.connection.reset();
-    else held.gap = true;
+    if (held.buffer === undefined) held.connection.reset(resumeFrom);
+    else held.gap = resumeFrom;
   }
 }
 
