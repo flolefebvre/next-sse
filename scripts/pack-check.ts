@@ -18,13 +18,20 @@ const EXPORTS = [
 ];
 
 /**
- * What the tarball must carry. `docs/` is deliberately not here yet: the shipped manual is
- * ADR-0010's, and it joins this list — and `files` — with the ticket that writes it (#47).
+ * What the tarball must carry: the built output, and the manual.
+ *
+ * The docs are in the package because that is what version-locks them to the code an agent reads
+ * them beside (ADR-0010), and a manual that quietly stopped shipping would leave every consumer's
+ * `node_modules` pointing at nothing. So the router, one page a `files` mistake would take with
+ * it, and one pattern page — enough that dropping the folder, or flattening it, fails here.
  */
 const REQUIRED = [
   "package.json",
   "README.md",
   "LICENSE",
+  "docs/index.md",
+  "docs/setup.md",
+  "docs/patterns/index.md",
   "dist/server/index.js",
   "dist/server/index.d.ts",
   "dist/server/outside-react-server.js",
@@ -41,8 +48,12 @@ const REQUIRED = [
   "dist/testing/index.d.ts",
 ];
 
-/** What may be in it at all: the built output and the three files npm ships of its own accord. */
-const ALLOWED = /^(dist\/|README\.md$|LICENSE$|package\.json$)/;
+/**
+ * What may be in it at all: the built output, the shipped manual, and the three files npm ships
+ * of its own accord. The manual is Markdown and nothing else — a stray asset or a script under
+ * `docs/` is a file a consumer installs and never asked for.
+ */
+const ALLOWED = /^(dist\/|docs\/[\w./-]+\.md$|README\.md$|LICENSE$|package\.json$)/;
 
 /** The subpath prefix of everything a process outside Next.js holds (ADR-0008). */
 const TRANSPORT_SUBPATH = "./transport";
