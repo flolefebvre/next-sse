@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, beforeEach, expect, inject, test } from "vitest";
 
+import { chatApp, type ChatApp } from "../packages/next-sse/src/server/chat-app.testkit.js";
 import { framesOf, type Frames } from "../packages/next-sse/src/server/frames.testkit.js";
-import { asType, initSSE } from "../packages/next-sse/src/server/index.js";
 import type { Cursor, Transport } from "../packages/next-sse/src/transport/index.js";
 import { createRedisTransport } from "../packages/next-sse/src/transport/redis.js";
 
@@ -20,15 +20,6 @@ import { startTcpProxy, type TcpProxy } from "./tcp-proxy.js";
  * resumes from is gone — is the Transport's `onGap`, exercised on a trimmed log by the contract
  * suite and wired to the Connection table in the Instance's own tests.
  */
-
-interface ChatHandle {
-  message(payload: unknown): Promise<Cursor>;
-}
-
-interface ChatApp {
-  handlers: { GET: (request: Request) => Promise<Response> };
-  chat(params?: Record<string, string>): ChatHandle;
-}
 
 const opened: Transport[] = [];
 const proxies: TcpProxy[] = [];
@@ -58,16 +49,7 @@ const anApp = async (): Promise<{ sse: ChatApp; proxy: TcpProxy }> => {
   });
   opened.push(transport);
 
-  const { channel, createSSE } = initSSE({ transport, heartbeat: 100, maxLifetime: 0 });
-  const sse = createSSE({
-    chat: channel({
-      pattern: "chat:{roomId}",
-      events: { message: asType<{ text: string }>() },
-      authorize: () => true,
-    }),
-  }) as unknown as ChatApp;
-
-  return { sse, proxy };
+  return { sse: chatApp({ transport, heartbeat: 100, maxLifetime: 0 }), proxy };
 };
 
 const connect = async (sse: ChatApp): Promise<Response> =>

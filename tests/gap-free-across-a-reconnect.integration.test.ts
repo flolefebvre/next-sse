@@ -1,7 +1,7 @@
 import { beforeEach, expect, test } from "vitest";
 
+import { chatApp, type ChatApp } from "../packages/next-sse/src/server/chat-app.testkit.js";
 import { framesOf, type Frames } from "../packages/next-sse/src/server/frames.testkit.js";
-import { asType, initSSE } from "../packages/next-sse/src/server/index.js";
 import type { Cursor } from "../packages/next-sse/src/transport/index.js";
 import { createMemoryTransport } from "../packages/next-sse/src/transport/memory.js";
 
@@ -16,15 +16,6 @@ import { createMemoryTransport } from "../packages/next-sse/src/transport/memory
  * the e2e suite adds on top.
  */
 
-interface ChatHandle {
-  message(payload: unknown): Promise<Cursor>;
-}
-
-interface ChatApp {
-  handlers: { GET: (request: Request) => Promise<Response> };
-  chat(params?: Record<string, string>): ChatHandle;
-}
-
 /** The two Channels of this App, which is what makes "per Channel" mean anything. */
 const ROOMS = ["42", "7"];
 
@@ -33,17 +24,7 @@ beforeEach(() => {
   delete globals[Symbol.for("@flefebvre/next-sse")];
 });
 
-const anApp = (lifecycle: { maxLifetime?: number } = {}): ChatApp => {
-  const { channel, createSSE } = initSSE({ transport: createMemoryTransport(), ...lifecycle });
-
-  return createSSE({
-    chat: channel({
-      pattern: "chat:{roomId}",
-      events: { message: asType<{ text: string }>() },
-      authorize: () => true,
-    }),
-  }) as unknown as ChatApp;
-};
+const anApp = (lifecycle: { maxLifetime?: number } = {}): ChatApp => chatApp(lifecycle);
 
 /** One open Connection: the frames it is being written, and the way its client goes away. */
 interface Client {
@@ -131,6 +112,37 @@ async function publish(sse: ChatApp, count: number, label: string): Promise<void
 const alternating = (label: string, at: number): string[] =>
   Array.from({ length: 10 }, (_, n) => `${label}-${String(n * 2 + at)}`);
 
+/**
+ * What both cuts end on, whichever cut it was: twenty Messages Published while the client was
+ * away, a Connection resumed from the Cursor of the last one it saw, and every one of the twenty
+ * replayed exactly once per Channel before the live feed takes over.
+ */
+async function resumingFrom(sse: ChatApp, cursor: Cursor | undefined): Promise<Client> {
+  await publish(sse, 20, "away");
+  const second = await connect(sse, cursor, false);
+  const replayed = await receive(second, 20);
+  expect((await second.frames.next()).event).toBe("caught-up");
+
+  expect(on(replayed, "42")).toEqual(alternating("away", 0));
+  expect(on(replayed, "7")).toEqual(alternating("away", 1));
+  expect(new Set(replayed.map((one) => one.cursor)).size).toBe(20);
+  expect(replayed.map((one) => one.text)).not.toContain("before-3");
+
+  return second;
+}
+
+/**
+ * What a resumed Connection does once its replay is over: the next Message on each Channel
+ * reaches it live, and nothing of the replay comes round again.
+ */
+async function goesOnLive(sse: ChatApp, client: Client): Promise<void> {
+  await publish(sse, 2, "after");
+  const afterwards = await receive(client, 2);
+
+  expect(on(afterwards, "42")).toEqual(["after-0"]);
+  expect(on(afterwards, "7")).toEqual(["after-1"]);
+}
+
 test("a Connection that drops and resumes from its Cursor misses nothing and repeats nothing", async () => {
   const sse = anApp();
   const first = await connect(sse);
@@ -139,21 +151,8 @@ test("a Connection that drops and resumes from its Cursor misses nothing and rep
   const live = await receive(first, 4);
   first.leave();
 
-  await publish(sse, 20, "away");
-
-  const second = await connect(sse, live[3]?.cursor, false);
-  const replayed = await receive(second, 20);
-  expect((await second.frames.next()).event).toBe("caught-up");
-
-  await publish(sse, 2, "after");
-  const afterwards = await receive(second, 2);
-
-  expect(on(replayed, "42")).toEqual(alternating("away", 0));
-  expect(on(replayed, "7")).toEqual(alternating("away", 1));
-  expect(on(afterwards, "42")).toEqual(["after-0"]);
-  expect(on(afterwards, "7")).toEqual(["after-1"]);
-  expect(new Set(replayed.map((one) => one.cursor)).size).toBe(20);
-  expect(replayed.map((one) => one.text)).not.toContain("before-3");
+  const second = await resumingFrom(sse, live[3]?.cursor);
+  await goesOnLive(sse, second);
 
   second.leave();
 });
@@ -186,16 +185,7 @@ test("a Connection that never received a Message still resumes from the tail it 
  * with the same URL forever (ADR-0006).
  */
 test("a Connection whose Cursor the log has dropped is reset in band, and goes on live", async () => {
-  const { channel, createSSE } = initSSE({
-    transport: createMemoryTransport({ retention: { cap: 4 } }),
-  });
-  const sse = createSSE({
-    chat: channel({
-      pattern: "chat:{roomId}",
-      events: { message: asType<{ text: string }>() },
-      authorize: () => true,
-    }),
-  }) as unknown as ChatApp;
+  const sse = chatApp({ transport: createMemoryTransport({ retention: { cap: 4 } }) });
 
   const first = await connect(sse);
   await publish(sse, 2, "before");
@@ -209,11 +199,7 @@ test("a Connection whose Cursor the log has dropped is reset in band, and goes o
   expect((await second.frames.next()).event).toBe("caught-up");
   expect(second.cursor).not.toBe(seen[0]?.cursor);
 
-  await publish(sse, 2, "after");
-  const afterwards = await receive(second, 2);
-
-  expect(on(afterwards, "42")).toEqual(["after-0"]);
-  expect(on(afterwards, "7")).toEqual(["after-1"]);
+  await goesOnLive(sse, second);
 
   second.leave();
 });
@@ -235,14 +221,7 @@ test("a Connection ended at its max lifetime resumes from its Cursor with no gap
   expect((await first.frames.next()).event).toBe("reconnect");
   await expect(first.frames.next()).rejects.toThrow("the stream ended");
 
-  await publish(sse, 20, "away");
-  const second = await connect(sse, live[3]?.cursor, false);
-  const replayed = await receive(second, 20);
-  expect((await second.frames.next()).event).toBe("caught-up");
-
-  expect(on(replayed, "42")).toEqual(alternating("away", 0));
-  expect(on(replayed, "7")).toEqual(alternating("away", 1));
-  expect(replayed.map((one) => one.text)).not.toContain("before-3");
+  const second = await resumingFrom(sse, live[3]?.cursor);
 
   second.leave();
 });

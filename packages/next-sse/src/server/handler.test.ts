@@ -3,9 +3,10 @@ import { getEventListeners } from "node:events";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { TransportUnavailableError } from "../transport/index.js";
-import type { Cursor, Transport } from "../transport/index.js";
+import type { Transport } from "../transport/index.js";
 import { createMemoryTransport } from "../transport/memory.js";
 
+import { chatApp, type ChatApp } from "./chat-app.testkit.js";
 import { framesOf, type Frames } from "./frames.testkit.js";
 import { asType, initSSE } from "./index.js";
 import { getInstance } from "./instance.js";
@@ -23,35 +24,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * The App of these tests: one Channel with one declared event. The Registry is loosely typed
- * until the typing ticket infers it, so the tests name the shape they expect of it — which is
- * the runtime shape the final types will describe.
- */
-interface ChatHandle {
-  publish(event: string, payload: unknown): Promise<Cursor>;
-  message(payload: unknown): Promise<Cursor>;
-}
-
-interface ChatApp {
-  handlers: { GET: (request: Request) => Promise<Response> };
-  chat(params?: Record<string, string>): ChatHandle;
-}
-
+/** The App of these tests, as every suite about Connections builds it. */
 const appWith = (
   transport = createMemoryTransport(),
   lifecycle: { heartbeat?: number; maxLifetime?: number } = {},
-): ChatApp => {
-  const { channel, createSSE } = initSSE({ transport, ...lifecycle });
-
-  return createSSE({
-    chat: channel({
-      pattern: "chat:{roomId}",
-      events: { message: asType<{ text: string }>(), typing: asType<{ who: string }>() },
-      authorize: () => true,
-    }),
-  }) as unknown as ChatApp;
-};
+): ChatApp => chatApp({ transport, ...lifecycle });
 
 /**
  * An App whose Channel is guarded by the decision the test hands it, with a context built from
