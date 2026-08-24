@@ -11,9 +11,20 @@ import { openStream, type Stream } from "./stream.js";
 /** The Channels the demo page subscribes to: the room, and the admin Channel most readers lose. */
 const DEMO_CHANNELS = "channel=chat:42&channel=admin";
 
-/** One reader of the demo page, holding the Connection that page holds. */
-export function openDemoStream(url: string): Stream {
-  return openStream(`${url}/api/sse?${DEMO_CHANNELS}`);
+/**
+ * One reader of the demo page, holding the Connection that page holds — resuming from a Cursor
+ * when it has one.
+ *
+ * The Cursor travels on the query rather than in `Last-Event-ID` because an `EventSource` sends
+ * no headers of its own devising; the header is what the browser echoes back on *its* reconnect,
+ * and it wins over the query when both are there (ADR-0004). What a scenario must never do is
+ * take that Cursor from anywhere but the protocol: it is opaque (ADR-0007), and the page's
+ * Snapshot is not a place to read one from (ADR-0009).
+ */
+export function openDemoStream(url: string, cursor?: string): Stream {
+  const resuming = cursor === undefined ? "" : `&cursor=${encodeURIComponent(cursor)}`;
+
+  return openStream(`${url}/api/sse?${DEMO_CHANNELS}${resuming}`);
 }
 
 /** One Message into the room, through the demo's own webhook. */
