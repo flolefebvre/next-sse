@@ -1,3 +1,5 @@
+import { browserPage, type PageLike } from "./page.js";
+
 /**
  * Where a Connection stands, as the hooks report it (ADR-0007).
  *
@@ -57,6 +59,8 @@ export interface CoreOptions {
   url: string;
   /** Defaults to the browser's `EventSource`. */
   eventSource?: EventSourceConstructor;
+  /** The page this core lives in. Defaults to the browser's, and to nothing off it. */
+  page?: PageLike;
   /** What a Reset means for subscribers that brought no handler of their own. */
   onReset?: () => void;
 }
@@ -131,8 +135,9 @@ interface Subscriber extends Subscription {
  * The heartbeat watchdog, the max lifetime and the page-lifecycle handling of ADR-0004 belong
  * to the Connection-lifecycle ticket and are not here.
  */
-export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
+export function createCore({ url, eventSource, page, onReset }: CoreOptions): Core {
   const Connection = eventSource ?? globalThis.EventSource;
+  const lifecycle = page ?? browserPage();
   const subscribers = new Set<Subscriber>();
 
   let source: EventSourceLike | undefined;
@@ -465,6 +470,35 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
       reconcile();
     }, 0);
   }
+
+  /**
+   * The page transitions of ADR-0004, and the whole of what they do.
+   *
+   * A page put away — `pagehide`, or a freeze — has its Connection let go of: a frozen page
+   * cannot read a stream, and holding one open costs the Instance a Connection for a client that
+   * is not there. Coming back opens one again, and only if there is none: a bfcache restore
+   * fires `resume` and `pageshow`, and both mean the same thing, so the second must find nothing
+   * left to do.
+   *
+   * Becoming visible again is not one of those. A tab switch touches no Connection — closing on
+   * `visibilitychange` would cost a reconnect and a replay every time the user looks elsewhere,
+   * and the watchdog already covers a pipe that died while the tab was in the background. What
+   * it does do is stop waiting: a client sitting out a 30-second backoff in a tab the user has
+   * just come back to should be trying now.
+   */
+  lifecycle.on("hide", () => {
+    closeSource();
+  });
+
+  lifecycle.on("show", () => {
+    if (source !== undefined) return;
+    reopen();
+  });
+
+  lifecycle.on("visible", () => {
+    if (retry === undefined) return;
+    reopen();
+  });
 
   return {
     subscribe(subscription) {

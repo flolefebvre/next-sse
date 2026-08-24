@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { createCore, type Core, type Status, type Subscription } from "./core.js";
+import type { PageLike, PageSignal } from "./page.js";
 import { fakeEventSources, type FakeEventSource } from "./fake-event-source.js";
 
 beforeEach(() => {
@@ -41,14 +42,35 @@ function recorder(
   };
 }
 
-const setup = (onReset?: () => void) => {
+const setup = (onReset?: () => void, page?: PageLike) => {
   const { EventSource, opened } = fakeEventSources();
 
   return {
-    core: createCore({ url: "/api/sse", eventSource: EventSource, onReset }),
+    core: createCore({ url: "/api/sse", eventSource: EventSource, onReset, page }),
     opened,
   };
 };
+
+/**
+ * A page a test drives by hand: the three transitions the core listens for, fired one at a
+ * time. The DOM events they are made of are `browserPage`'s business, and tested there.
+ */
+function fakePage(): PageLike & { fire: (signal: PageSignal) => void } {
+  const listeners = new Map<PageSignal, Set<() => void>>();
+
+  return {
+    on(signal, listener) {
+      const forSignal = listeners.get(signal) ?? new Set<() => void>();
+      forSignal.add(listener);
+      listeners.set(signal, forSignal);
+
+      return () => forSignal.delete(listener);
+    },
+    fire(signal) {
+      for (const listener of listeners.get(signal) ?? []) listener();
+    },
+  };
+}
 
 /**
  * One subscriber on its Connection, with the tick the core coalesces on already past: where
@@ -916,4 +938,92 @@ test("a native retry on a Connection that received nothing is no replay", async 
   only(opened).caughtUp();
 
   expect(subscriber.statuses).toEqual(["live", "reconnecting", "live"]);
+});
+
+/**
+ * The page lifecycle of ADR-0004. A page that is going away or being frozen cannot read a
+ * stream, so the Connection is let go of; a page brought back needs one again. A tab switch is
+ * neither, and touches nothing.
+ */
+test("a page put away closes the Connection, and one brought back opens it with the Cursor", async () => {
+  const page = fakePage();
+  const { core, opened } = setup(undefined, page);
+  const subscriber = recorder("chat:42");
+  core.subscribe(subscriber);
+  await tick();
+  only(opened).ready({ cursor: "cursor-3", refused: [] });
+  only(opened).caughtUp();
+
+  page.fire("hide");
+
+  expect(opened).toHaveLength(1);
+  expect(opened[0]?.readyState).toBe(2);
+
+  page.fire("show");
+
+  expect(opened).toHaveLength(2);
+  expect(opened[1]?.cursor).toBe("cursor-3");
+  expect(subscriber.statuses).toEqual(["live", "reconnecting"]);
+});
+
+/** A bfcache restore fires `resume` and then `pageshow`: both mean one Connection, not two. */
+test("a page brought back twice opens one Connection", async () => {
+  const page = fakePage();
+  const { core, opened } = setup(undefined, page);
+  core.subscribe(recorder("chat:42"));
+  await tick();
+  page.fire("hide");
+
+  page.fire("show");
+  page.fire("show");
+
+  expect(opened).toHaveLength(2);
+});
+
+test("a page brought back with nobody subscribed opens nothing", async () => {
+  const page = fakePage();
+  const { core, opened } = setup(undefined, page);
+  core.subscribe(recorder("chat:42"))();
+  await tick();
+
+  page.fire("hide");
+  page.fire("show");
+
+  expect(opened).toHaveLength(0);
+});
+
+test("a tab switch reopens nothing: the Connection it has is fine", async () => {
+  const page = fakePage();
+  const { core, opened } = setup(undefined, page);
+  const subscriber = recorder("chat:42");
+  core.subscribe(subscriber);
+  await tick();
+  only(opened).ready();
+  only(opened).caughtUp();
+
+  page.fire("visible");
+
+  expect(opened).toHaveLength(1);
+  expect(subscriber.statuses).toEqual(["live"]);
+});
+
+/**
+ * The one thing a visibility change does do: a client sitting out a backoff in a tab the user
+ * has just come back to should be trying now, not in twenty seconds.
+ */
+test("coming back to the tab stops the backoff waiting", async () => {
+  vi.spyOn(Math, "random").mockReturnValue(1);
+  const page = fakePage();
+  const { core, opened } = setup(undefined, page);
+  core.subscribe(recorder("chat:42"));
+  await tick();
+  only(opened).fail();
+
+  page.fire("visible");
+
+  expect(opened).toHaveLength(2);
+
+  await vi.advanceTimersByTimeAsync(60_000);
+
+  expect(opened).toHaveLength(2);
 });
