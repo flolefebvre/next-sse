@@ -77,7 +77,10 @@ jobs:
           NEXT_SSE_TEST_IMAGE: ${{ matrix.image }}
 
   # The end-to-end scenarios exercise the App protocol rather than Redis semantics, so they run
-  # on Valkey alone (ADR-0009). They need the built package and the built example app, which is
+  # on Valkey alone (ADR-0009) — one container for the whole run, started by the harness through
+  # testcontainers, with every Instance of every scenario on a Prefix of its own. The image is
+  # named here anyway, rather than left to the harness default, so that reading this file tells
+  # you what the job ran against. They need the built package and the built example app, which is
   # why `build` runs here too.
   e2e:
     name: e2e
@@ -100,6 +103,8 @@ jobs:
 
       - name: Run the e2e project
         run: pnpm exec tsx scripts/gate.ts build,test:e2e
+        env:
+          NEXT_SSE_TEST_IMAGE: valkey/valkey:8
 
   # The verdict of the whole gate, and the one required status check of
   # .github/rulesets/main.json — which is why this job keeps its name whatever the split above
