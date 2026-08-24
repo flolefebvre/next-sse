@@ -269,7 +269,17 @@ function createRedisLog(options: RedisTransportOptions): Transport {
 
     const last = raw[raw.length - 1];
 
-    return { raw, info, done: raw.length < count || last?.id === info.lastGeneratedId };
+    /**
+     * A page with nothing in it is caught up, whatever was asked for: a caller that asked for no
+     * Entries at all has trivially caught up with what it asked for, and a page short of the
+     * count, or ending on the log's last position, has nothing after it either. It is also what
+     * makes the walk below terminate: an empty page carries no position to walk to.
+     */
+    return {
+      raw,
+      info,
+      done: raw.length === 0 || raw.length < count || last?.id === info.lastGeneratedId,
+    };
   };
 
   /**
@@ -395,10 +405,12 @@ function createRedisLog(options: RedisTransportOptions): Transport {
        * position it walks to is the log's own.
        */
       let entries = entriesOf(page.raw, "read");
-      while (entries.length === 0 && !page.done) {
-        from = (page.raw[page.raw.length - 1] as RawEntry).id;
+      let last = page.raw[page.raw.length - 1];
+      while (entries.length === 0 && !page.done && last !== undefined) {
+        from = last.id;
         page = await pageFrom(from, count);
         entries = entriesOf(page.raw, "read");
+        last = page.raw[page.raw.length - 1];
       }
 
       return { entries, done: page.done };

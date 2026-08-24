@@ -210,6 +210,21 @@ test("a page of nothing but unreadable Entries is walked past, not answered", as
   ]);
 });
 
+/**
+ * A caller that asked for no Entries has trivially caught up with what it asked for, and is
+ * told so rather than handed a page with nothing in it and no position to page on from — which
+ * is also what makes the walk past unreadable Entries terminate.
+ */
+test("a read that asked for no Entries answers none, caught up, and asks the log nothing more", async () => {
+  const server = fakeServer();
+  server.pageOf = () => [];
+  server.info = { lastGeneratedId: "7-0", firstEntryId: "3-0", length: 4, entriesAdded: 4 };
+
+  expect(await transportOf(server).read(undefined, 0)).toEqual({ entries: [], done: true });
+  expect(await transportOf(server).read("3-0", 0)).toEqual({ entries: [], done: true });
+  expect(server.commands.filter((args) => args[0] === "XRANGE")).toHaveLength(2);
+});
+
 test("a closed Transport answers nothing further, and closing twice is not an error", async () => {
   const transport = createRedisTransport({ client: fakeServer().client });
 
