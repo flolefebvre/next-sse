@@ -24,6 +24,7 @@ export interface ChatApp {
   handlers: { GET: (request: Request) => Promise<Response> };
   chat(params?: Record<string, string>): ChatHandle;
   kick: Kick;
+  drain: () => Promise<void>;
 }
 
 export interface ChatAppOptions {
@@ -32,6 +33,12 @@ export interface ChatAppOptions {
   /** The lifecycle durations of ADR-0004, shortened through the App's own configuration. */
   heartbeat?: number;
   maxLifetime?: number;
+  /**
+   * The drain window of ADR-0011, and `false` — the default here — for the Apps that are not
+   * about Drain: a fixture that took the library's own default would install signal listeners
+   * on the process running the suite, and every test file builds several of these.
+   */
+  drain?: number | false;
   /**
    * What this App builds from a request, for the two decisions that read one. The Ctx is
    * `unknown` here for the same reason the Registry's own is: the testkit holds the App's
@@ -52,12 +59,14 @@ export function chatApp({
   context,
   key,
   authorize,
+  drain = false,
   ...lifecycle
 }: ChatAppOptions = {}): ChatApp {
   const { channel, createSSE } = initSSE<unknown>({
     transport: transport ?? createMemoryTransport(),
     context,
     key: key as ((ctx: unknown) => string | undefined) | undefined,
+    drain,
     ...lifecycle,
   });
 

@@ -9,7 +9,7 @@ import { asType, initSSE, SSEProvider } from "./index.js";
 import type { RegistryLike } from "./registry.js";
 
 const appWith = (channels: ChannelRecord): RegistryLike => {
-  const { createSSE } = initSSE({ transport: createMemoryTransport() });
+  const { createSSE } = initSSE({ drain: false, transport: createMemoryTransport() });
 
   return createSSE(channels);
 };

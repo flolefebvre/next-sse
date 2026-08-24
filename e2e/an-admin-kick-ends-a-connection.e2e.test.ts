@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 
 import { openDemoStream, publish } from "./harness/demo.js";
-import { startInstance } from "./harness/example.js";
+import { assertPromptExit, startInstance } from "./harness/example.js";
 
 /**
  * Revocation end to end, on the built example app: a reader is holding a Connection, an admin
@@ -40,7 +40,7 @@ test("an admin Kick ends a Connection, which comes back on its own", async () =>
     expect(payload.text).toBe("the room survived the kick");
   } finally {
     stream.close();
-    await instance.stop();
+    assertPromptExit(await instance.stop());
   }
 });
 
@@ -56,7 +56,7 @@ test("a reader who is not an admin cannot Kick", async () => {
     await expectKick(instance.url, { userId: "anonymous" }, 403, "");
     await expectKick(instance.url, {}, 400);
   } finally {
-    await instance.stop();
+    assertPromptExit(await instance.stop());
   }
 });
 

@@ -20,7 +20,7 @@ beforeEach(() => {
 /** One App on a log the test can read for itself, which is how the ordering claim is checked. */
 const anApp = () => {
   const transport = createMemoryTransport();
-  const { channel, createSSE } = initSSE({ transport });
+  const { channel, createSSE } = initSSE({ drain: false, transport });
 
   return {
     transport,
@@ -101,7 +101,7 @@ test("the read may be synchronous, and the data alone types the Snapshot", async
 });
 
 test("a Channel called cursor is refused, the way every Registry key is", () => {
-  const { channel, createSSE } = initSSE({ transport: createMemoryTransport() });
+  const { channel, createSSE } = initSSE({ drain: false, transport: createMemoryTransport() });
   const declaring = () =>
     createSSE({
       // @ts-expect-error the Registry needs `cursor` for the handoff of ADR-0007

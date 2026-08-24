@@ -71,6 +71,20 @@ export interface InitOptions<Ctx = undefined> {
    * dropped silently (ADR-0004).
    */
   maxLifetime?: number;
+  /**
+   * How long this Instance spreads its shutdown over, in milliseconds: on `SIGTERM`/`SIGINT` it
+   * refuses new connects with a `503`, ends every open Connection with the `reconnect` Control
+   * event on a draw of its own inside that window, and closes the Transport last. Default
+   * 3000, and `0` is a window like any other — every Connection at once.
+   *
+   * `false` is what turns it off, and the asymmetry with `maxLifetime: 0` is deliberate: `0` is
+   * a legitimate window here, so disabling the signal handlers needed a value of its own. An App
+   * that passes it sequences its own shutdown on `sse.drain()`, which stays available whatever
+   * this says. Nothing here exits the process: Next.js's own handlers stay in place beside these
+   * ones, and the Drain ending the SSE responses is what lets its `server.close()` resolve
+   * (ADR-0011), so `NEXT_MANUAL_SIG_HANDLE` is never needed.
+   */
+  drain?: number | false;
 }
 
 /**

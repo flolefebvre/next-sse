@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { startInstance } from "./harness/example.js";
+import { assertPromptExit, startInstance } from "./harness/example.js";
 
 /**
  * The one failure the route answers before anything is opened: a Connection that names no
@@ -15,6 +15,6 @@ test("a Connection with no Channel is refused", async () => {
     expect(response.status).toBe(400);
     expect(response.headers.get("content-type")).not.toContain("text/event-stream");
   } finally {
-    await instance.stop();
+    assertPromptExit(await instance.stop());
   }
 });

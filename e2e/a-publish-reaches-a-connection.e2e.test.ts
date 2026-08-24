@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { startInstance } from "./harness/example.js";
+import { assertPromptExit, startInstance } from "./harness/example.js";
 import { openStream } from "./harness/stream.js";
 
 /**
@@ -43,7 +43,7 @@ test("a Publish reaches a Connection", async () => {
     expect(message.lastEventId).not.toBe("");
   } finally {
     stream.close();
-    await instance.stop();
+    assertPromptExit(await instance.stop());
   }
 });
 

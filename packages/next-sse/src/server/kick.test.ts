@@ -16,7 +16,7 @@ beforeEach(() => {
  * becomes a method on the Handle, and a Kick must still read that Handle as a Channel.
  */
 const anApp = (transport: Transport, key: ((ctx: never) => string | undefined) | undefined) => {
-  const { channel, createSSE } = initSSE({ transport, key });
+  const { channel, createSSE } = initSSE({ drain: false, transport, key });
 
   return createSSE({
     chat: channel({

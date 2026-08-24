@@ -1,6 +1,13 @@
 import type { ChannelRecord } from "../internal/channel.js";
 import type { Cursor, StoredEntry, Transport, Unsubscribe } from "../transport/index.js";
 
+import {
+  connectionLeft,
+  DEFAULT_DRAIN_MS,
+  drain,
+  DrainingError,
+  installSignalHandlers,
+} from "./drain.js";
 import { selectTransport } from "./select-transport.js";
 
 import type { StoredMessage } from "./wire.js";
@@ -99,6 +106,12 @@ export interface Instance {
    */
   heartbeat: number;
   maxLifetime: number;
+  /**
+   * Whether this Instance is shutting down. It is what the handler answers a new connect with a
+   * `503` on, before Authorize: accepting one here would strand that client for a second cut
+   * inside the orchestrator's grace window (ADR-0011).
+   */
+  draining: boolean;
   /** The Connections this Instance is holding open right now. */
   readonly connections: ReadonlySet<Connection>;
   /**
@@ -113,6 +126,12 @@ export interface Instance {
    * from that moment, which is what makes the replay→live cut exact (ADR-0005).
    */
   open(connection: Connection, options?: { after?: Cursor }): Promise<Opening>;
+  /**
+   * Shut this Instance down and resolve when it is done: every Connection ended with
+   * `reconnect`, then the Transport closed (ADR-0011). Idempotent — every call after the first
+   * one gets the Drain already in flight.
+   */
+  drain(): Promise<void>;
 }
 
 /**
@@ -138,9 +157,19 @@ interface Held {
   gap: boolean;
 }
 
-interface InstanceState extends Instance {
+/**
+ * The Instance as the modules that make it work see it, which is more than the handler needs:
+ * the Connection table itself, the one subscription, and what a Drain in flight is made of.
+ */
+export interface InstanceState extends Instance {
   held: Map<Connection, Held>;
   feed: Promise<Unsubscribe> | undefined;
+  /** How long a Drain spreads its Connections over, in milliseconds (ADR-0011). */
+  drainWindow: number;
+  /** The Drain in flight, which is what every later call to `drain()` is handed. */
+  drainPromise: Promise<void> | undefined;
+  /** What a Drain is waiting on the last Connection to leave the table for. */
+  emptied: (() => void) | undefined;
 }
 
 const globals = globalThis as unknown as { [key: symbol]: InstanceState | undefined };
@@ -152,6 +181,7 @@ export interface InstanceOptions {
   key?: KeyBuilder;
   heartbeat?: number;
   maxLifetime?: number;
+  drain?: number | false;
 }
 
 /**
@@ -166,17 +196,24 @@ export interface InstanceOptions {
  * pinning them to the first evaluation would leave an edit to `context` with no effect until
  * the process restarts, while the Authorize beside it — which lives in the Registry — did
  * change. `heartbeat` and `maxLifetime` are refreshed for the same reason; the Connections
- * already open keep the timers they were armed with, and the next ones get the new values.
+ * already open keep the timers they were armed with, and the next ones get the new values. The
+ * drain window is refreshed with them.
+ *
+ * The signal handlers are the one thing that is neither: they are installed here, once, with
+ * the Instance — a later evaluation must not add a second pair to the process — and only when
+ * that first call did not ask for `false` (ADR-0011).
  */
 export function getInstance(options: InstanceOptions = {}): Instance {
   const heartbeat = milliseconds(options.heartbeat, DEFAULT_HEARTBEAT_MS, "heartbeat");
   const maxLifetime = milliseconds(options.maxLifetime, DEFAULT_MAX_LIFETIME_MS, "maxLifetime");
+  const drainWindow = drainMilliseconds(options.drain);
   const existing = globals[SLOT];
   if (existing) {
     existing.context = options.context;
     existing.key = options.key;
     existing.heartbeat = heartbeat;
     existing.maxLifetime = maxLifetime;
+    existing.drainWindow = drainWindow;
 
     return existing;
   }
@@ -187,6 +224,10 @@ export function getInstance(options: InstanceOptions = {}): Instance {
     key: options.key,
     heartbeat,
     maxLifetime,
+    draining: false,
+    drainWindow,
+    drainPromise: undefined,
+    emptied: undefined,
     held: new Map(),
     get connections(): ReadonlySet<Connection> {
       return new Set(state.held.keys());
@@ -194,8 +235,10 @@ export function getInstance(options: InstanceOptions = {}): Instance {
     registry: undefined,
     feed: undefined,
     open: (connection, openOptions) => open(state, connection, openOptions),
+    drain: () => drain(state),
   };
   globals[SLOT] = state;
+  if (options.drain !== false) installSignalHandlers(state);
 
   return state;
 }
@@ -212,11 +255,22 @@ async function open(
 ): Promise<Opening> {
   await ensureFeed(state);
 
+  /**
+   * The last gate of the Drain, and the reason it can promise anything: the handler refuses a
+   * connect before Authorize, but a request that got past that check and waited here on the log
+   * would register into a table the Drain has already walked. Nothing enters it after the flag,
+   * so "every Connection is ended" stays true (ADR-0011).
+   */
+  if (state.draining) {
+    throw new DrainingError("This Instance is draining and is not opening Connections.");
+  }
+
   const held: Held = { connection, buffer: [], replayed: undefined, gap: false };
   state.held.set(connection, held);
 
   const close = (): void => {
     state.held.delete(connection);
+    connectionLeft(state);
   };
 
   try {
@@ -445,15 +499,38 @@ const MAX_TIMER_MS = 2_147_483_647;
  * negative number fires at once and `NaN` fires at once too: a mistyped option would otherwise
  * become a Connection ended the instant it opened.
  */
-function milliseconds(value: number | undefined, fallback: number, option: string): number {
+function milliseconds(
+  value: number | undefined,
+  fallback: number,
+  option: string,
+  off = "Pass 0 to turn it off.",
+): number {
   if (value === undefined) return fallback;
   if (!Number.isFinite(value) || value < 0 || value > MAX_TIMER_MS) {
     throw new Error(
       `next-sse: initSSE({ ${option} }) takes a number of milliseconds between 0 and ` +
-        `${String(MAX_TIMER_MS)} (about 24 days), and was given ${String(value)}. Pass 0 to ` +
-        `turn it off.`,
+        `${String(MAX_TIMER_MS)} (about 24 days), and was given ${String(value)}. ${off}`,
     );
   }
 
   return value;
+}
+
+/**
+ * The drain window, off the same guard as the other two durations and with one value more.
+ *
+ * `false` is not a window: it says this Instance installs no signal handlers (ADR-0011), and
+ * the App that then calls `sse.drain()` itself gets the default window. The asymmetry with
+ * `maxLifetime: 0` is deliberate — `0` is a legitimate window here, meaning every Connection
+ * ends at once — which is why turning the feature off needed a value of its own.
+ */
+function drainMilliseconds(value: number | false | undefined): number {
+  if (value === false) return DEFAULT_DRAIN_MS;
+
+  return milliseconds(
+    value,
+    DEFAULT_DRAIN_MS,
+    "drain",
+    "Pass false to install no signal handlers.",
+  );
 }
