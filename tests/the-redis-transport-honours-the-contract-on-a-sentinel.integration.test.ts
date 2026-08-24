@@ -29,10 +29,10 @@ const injected = injectedClientOn(startSentinelTopology, (topology) =>
   }),
 );
 
-transportContract(injectedClientContract(injected));
+transportContract(injectedClientContract(() => injected().client));
 
 test(
   "a reader duplicated from a Sentinel client outlives that client's command timeout",
-  async () => readerSurvivesAQuietLog(injected()),
+  async () => readerSurvivesAQuietLog(injected().client),
   QUIET_LOG_TIMEOUT_MS,
 );

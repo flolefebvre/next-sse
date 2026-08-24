@@ -4,6 +4,7 @@ import { afterAll, beforeAll, expect, vi } from "vitest";
 
 import type { TransportContractOptions } from "../packages/next-sse/src/testing/index.js";
 import type {
+  Entry,
   Retention,
   StoredEntry,
   Transport,
@@ -13,8 +14,9 @@ import type {
   RedisOperation,
 } from "../packages/next-sse/src/transport/redis-client.js";
 import { createRedisTransport } from "../packages/next-sse/src/transport/redis.js";
+import { logKeyOf } from "../packages/next-sse/src/transport/redis-reply.js";
 
-import type { RunningTopology } from "./redis-topologies.js";
+import type { FailoverTopology, RunningTopology } from "./redis-topologies.js";
 
 /** How long a topology has to come up, image pull included, before the file gives up. */
 const TOPOLOGY_TIMEOUT_MS = 180_000;
@@ -34,13 +36,15 @@ type OwnedClient = RedisClientLike & {
  * could not be opened, so that a red run leaves no container behind.
  *
  * It is called at module scope, beside the suite it feeds: what it answers is a getter, because
- * the contract suite is built before any hook has run and must not hold the client itself.
+ * the contract suite is built before any hook has run and must not hold the client itself. The
+ * getter answers the topology beside the client, which is what a case that has to act on the
+ * servers themselves — force a failover (#79) — needs and the contract suite ignores.
  */
-export function injectedClientOn<Client extends OwnedClient>(
-  start: () => Promise<RunningTopology>,
-  open: (topology: RunningTopology) => Client,
-): () => Client {
-  let topology: RunningTopology | undefined;
+export function injectedClientOn<Topology extends RunningTopology, Client extends OwnedClient>(
+  start: () => Promise<Topology>,
+  open: (topology: Topology) => Client,
+): () => { client: Client; topology: Topology } {
+  let topology: Topology | undefined;
   let client: Client | undefined;
 
   beforeAll(async () => {
@@ -65,9 +69,11 @@ export function injectedClientOn<Client extends OwnedClient>(
   });
 
   return () => {
-    if (client === undefined) throw new Error("the topology this file needs did not come up");
+    if (client === undefined || topology === undefined) {
+      throw new Error("the topology this file needs did not come up");
+    }
 
-    return client;
+    return { client, topology };
   };
 }
 
@@ -156,4 +162,112 @@ export async function readerSurvivesAQuietLog(client: RedisClientLike): Promise<
   } finally {
     await transport.close();
   }
+}
+
+/**
+ * How long the reader is given to deliver the Publish that follows a promotion, and the bound
+ * the docs state.
+ *
+ * It is derived, not picked: the reader sits in an `XREAD BLOCK` on a socket the promotion may
+ * leave nothing coming down, and node-redis 6.2.x cannot abort a command it has already
+ * written (ADR-0006) — so the longest that read can sit is the client's `socketTimeout`, 15 s
+ * (`redis-client.ts`), after which the socket is torn down, the loop reports the failure and
+ * resumes. This is that, plus the loop's reissue pause and a round trip, rounded up.
+ */
+export const FAILOVER_DELIVERY_BOUND_MS = 20_000;
+
+/** How long the Publish after a promotion is retried while the client re-resolves the master. */
+const FAILOVER_PUBLISH_BOUND_MS = 20_000;
+
+/** How long the whole failover case is given: the promotion, then both bounds above, with room. */
+export const FAILOVER_TIMEOUT_MS = 120_000;
+
+/** One failure this Transport reported, kept with the moment it was reported. */
+interface Reported {
+  at: number;
+  what: string;
+}
+
+/**
+ * What a blocking reader does while the master under it is replaced — the one runtime behaviour
+ * on Cluster and on Sentinel that #57 left asserted by reasoning (#79).
+ *
+ * The case is the deployment's: subscribe, see a Publish, force the promotion of a replica, and
+ * Publish again once every node reports the new master. What is asserted is what ADR-0004 makes
+ * acceptable — the next Publish arrives with the gap covered, or a Reset is raised — within a
+ * bound stated in one place above; an unbounded hang fails here rather than in production.
+ *
+ * The Publish after the promotion is retried inside its own bound: the shared client has to
+ * re-resolve the master too, and a `MOVED` or a dropped socket on the write path is not what
+ * this case is about. What it costs is measured and narrated with the rest.
+ */
+export async function readerSurvivesAFailover(
+  client: RedisClientLike,
+  topology: FailoverTopology,
+  where: string,
+): Promise<void> {
+  const prefix = freshPrefix();
+  const failures: Reported[] = [];
+  const gaps: Reported[] = [];
+  const transport = createRedisTransport({
+    client,
+    prefix,
+    onError: (error, operation) =>
+      failures.push({ at: Date.now(), what: `${operation}: ${String(error)}` }),
+  });
+  const seen: StoredEntry[] = [];
+
+  try {
+    await transport.subscribe((entry) => seen.push(entry), {
+      onGap: (resumeFrom) => gaps.push({ at: Date.now(), what: `reset at ${resumeFrom}` }),
+    });
+    await transport.publish(tick("before"));
+    await vi.waitFor(() => expect(seen).toHaveLength(1), { timeout: 5_000, interval: 25 });
+
+    await topology.promote(logKeyOf(prefix));
+    const promoted = Date.now();
+
+    await vi.waitFor(() => transport.publish(tick("after")), {
+      timeout: FAILOVER_PUBLISH_BOUND_MS,
+      interval: 100,
+    });
+    const published = Date.now();
+
+    await vi.waitFor(() => expect(seen).toHaveLength(2), {
+      timeout: FAILOVER_DELIVERY_BOUND_MS,
+      interval: 25,
+    });
+    const delivered = Date.now();
+
+    /**
+     * The measurement is the point of the case as much as the assertion is: the bound above and
+     * what ADR-0006 says about failover are only worth what a run can be held to, so every run
+     * prints what it actually took.
+     */
+    console.info(
+      `[#79] ${where}: publish accepted ${String(published - promoted)}ms after the promotion, ` +
+        `delivered ${String(delivered - published)}ms after that; ` +
+        `${String(gaps.length)} reset(s) ${describe(gaps, promoted)}; ` +
+        `${String(failures.length)} reported failure(s) ${describe(failures, promoted)}`,
+    );
+
+    expect(seen.map((entry) => entry.type === "message" && entry.payload)).toEqual([
+      "before",
+      "after",
+    ]);
+  } finally {
+    await transport.close();
+  }
+}
+
+/** One Message of the failover case, told apart by what it was published either side of. */
+function tick(payload: string): Entry {
+  return { v: 1, type: "message", channel: "failover", event: "tick", payload };
+}
+
+/** What was reported, and when, relative to the moment the promotion became visible. */
+function describe(reported: Reported[], since: number): string {
+  return reported.length === 0
+    ? ""
+    : `[${reported.map((one) => `+${String(one.at - since)}ms ${one.what}`).join("; ")}]`;
 }
