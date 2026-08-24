@@ -243,10 +243,16 @@ async function tryFetch(url: string): Promise<Response | undefined> {
 }
 
 async function stop(child: ChildProcess): Promise<Exit> {
+  /**
+   * A `SIGKILL` is a forced end whoever pulled the trigger, including a `stop()` that gave up
+   * before this one was called: reading it off the process rather than off this call's own timer
+   * is what keeps a second `stop()` of an Instance that had to be killed reporting the reason it
+   * was, instead of accusing it of not handling a signal it never received.
+   */
   const ended = (forced: boolean): Exit => ({
     code: child.exitCode,
     signal: child.signalCode,
-    forced,
+    forced: forced || child.signalCode === "SIGKILL",
   });
   if (child.exitCode !== null || child.signalCode !== null) return ended(false);
 
