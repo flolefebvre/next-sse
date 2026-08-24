@@ -38,7 +38,12 @@ import {
   type StandardSchemaV1,
   type Handle as ServerHandle,
 } from "@flefebvre/next-sse/server";
-import { FakeEventSource, transportContract } from "@flefebvre/next-sse/testing";
+import {
+  FakeEventSource,
+  transportContract,
+  type TransportBackend,
+  type TransportContractOptions,
+} from "@flefebvre/next-sse/testing";
 import {
   createPublisher,
   TransportClosedError,
@@ -48,6 +53,7 @@ import {
   type Entry,
   type Page,
   type Publisher,
+  type Retention,
   type StoredEntry,
   type Transport,
   type Unsubscribe,
@@ -121,7 +127,10 @@ export type Types = [
   Entry,
   Page,
   Publisher,
+  Retention,
   StoredEntry,
   Transport,
   Unsubscribe,
+  TransportBackend,
+  TransportContractOptions,
 ];

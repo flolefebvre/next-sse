@@ -22,6 +22,19 @@ export type StoredEntry = Entry & { readonly cursor: Cursor };
 /** What one page of a `read` answers: Entries and whether the caller has caught up. */
 export type Page = { entries: StoredEntry[]; done: boolean } | { gone: true };
 
+/**
+ * How much of the log is kept (ADR-0006): a count cap and a time window, both applying to
+ * every Transport. What falls outside either is gone, and a Cursor that pointed into it
+ * answers `gone` rather than resuming somewhere arbitrary. Retention is factory
+ * configuration; the interface only requires `gone` to be honest.
+ */
+export interface Retention {
+  /** How long an Entry stays readable, in seconds. Defaults to 300. */
+  window?: number;
+  /** How many Entries the log keeps at most. Defaults to 10 000. */
+  cap?: number;
+}
+
 /** Detaches a listener from the live feed. */
 export type Unsubscribe = () => void;
 

@@ -5,6 +5,7 @@ import {
   type Cursor,
   type Entry,
   type Page,
+  type Retention,
   type StoredEntry,
   type Transport,
   type Unsubscribe,
@@ -15,18 +16,6 @@ const DEFAULT_WINDOW_SECONDS = 300;
 
 /** How many Entries the log keeps at most, unless the App says otherwise (ADR-0006). */
 const DEFAULT_CAP = 10_000;
-
-/**
- * How much of the log is kept. Both bounds apply to both Transports (ADR-0006): a count cap,
- * and a time window. What falls outside either is gone, and a Cursor that pointed into it
- * answers `gone` rather than resuming somewhere arbitrary.
- */
-export interface Retention {
-  /** How long an Entry stays readable, in seconds. Defaults to 300. */
-  window?: number;
-  /** How many Entries the log keeps at most. Defaults to 10 000. */
-  cap?: number;
-}
 
 export interface MemoryTransportOptions {
   retention?: Retention;
