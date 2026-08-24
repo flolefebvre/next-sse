@@ -42,6 +42,12 @@ import { createHandoff, type Handoff } from "./snapshot.js";
  *
  * A payload is the schema's _Input_: what the App writes, before validation. What reaches the
  * client is the Output the schema produced (ADR-0006).
+ *
+ * A Handle is built from a Registry key and params, so one declaration types its payload — which
+ * is sound because the name that key makes belongs to no other declaration: `createSSE` refuses
+ * a Registry whose patterns can make one name (#68). The worker-side `publish` starts from the
+ * name instead and owes every declaration that name reaches, which is the same rule read from
+ * the other end.
  */
 export type Handle<Events extends EventMap = EventMap> = {
   /**

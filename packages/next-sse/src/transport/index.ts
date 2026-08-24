@@ -105,7 +105,7 @@ export type ChannelNames<App extends PublishableApp> = {
  * The events carried by every declared Channel whose pattern could have made this name.
  *
  * Patterns are matched, not resolved: `chat:42` picks the declaration that could have produced
- * it. Where two patterns overlap the answer is the union of their event maps, and `keyof` on a
+ * it. Where two of them answer the answer is the union of their event maps, and `keyof` on a
  * union is the events they agree on — the honest answer when the name alone cannot say which
  * declaration a worker meant.
  */
@@ -133,17 +133,17 @@ type Intersect<Union> = (Union extends unknown ? (member: Union) => void : never
 /**
  * What one Publish takes: a payload every declaration this Channel name matches would accept.
  *
- * A name that only one pattern can make — every name, in almost every App — gives that
- * declaration's Output and nothing else. Where two parameterized patterns overlap, `user:{id}`
- * beside `{kind}:7`, the name `user:7` belongs to both: one Entry, delivered once, read by the
- * subscribers of both Channels, each typing the payload by its own schema. So the payload owes
- * both, and asking for less would be a type that lies to whichever subscriber the worker did
- * not have in mind.
+ * A name that only one pattern can make gives that declaration's Output and nothing else, and
+ * that is every name of every App the Registry accepts: `createSSE` refuses two patterns that
+ * can make one name, parameterized or not (#68, amending ADR-0002). Where two declarations
+ * answer here all the same, the payload owes both, and asking for less would be a type that
+ * lies to whichever subscriber the worker did not have in mind.
  *
- * The Registry lets that overlap through on purpose — whether two patterns with params can
- * collide depends on values it does not have, so it compares only literal names (ADR-0002) —
- * which is exactly why the obligation has to be met here, at the one place the concrete name
- * is known.
+ * They can still answer, which is why this stays. A worker holds the App as a type and never
+ * runs its `createSSE`, so nothing on this path has checked the Registry it was handed; and the
+ * type-level match is coarser than the runtime one — `ChannelNameOf` reads a param as `${string}`,
+ * which spans the `:` a param may not hold — so a name can reach two declarations here that the
+ * matcher would give to one. The obligation is met at the one place the concrete name is known.
  */
 type PayloadFor<App extends PublishableApp, Channel extends string, Event extends string> =
   Intersect<
