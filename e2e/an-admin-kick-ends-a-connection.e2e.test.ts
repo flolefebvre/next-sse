@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { openDemoStream, publish } from "./harness/demo.js";
+import { kick, openDemoStream, publish } from "./harness/demo.js";
 import { assertPromptExit, startInstance } from "./harness/example.js";
 
 /**
@@ -66,18 +66,12 @@ interface Envelope {
   payload: { text: string };
 }
 
-/** One call of the demo's Kick route, as an admin unless the cookie says otherwise. */
+/** The demo's Kick route, called and read for the answer it gives. */
 async function expectKick(
   url: string,
   body: { userId?: string },
   status: number,
   cookie = "role=admin",
 ): Promise<void> {
-  const response = await fetch(`${url}/api/kick`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: cookie },
-    body: JSON.stringify(body),
-  });
-
-  expect(response.status).toBe(status);
+  expect((await kick(url, body, cookie)).status).toBe(status);
 }
