@@ -203,14 +203,19 @@ function streamFor(
   let closed = false;
   let disconnect: (() => void) | undefined;
   let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let heartbeats: ReturnType<typeof setInterval> | undefined;
 
   /**
    * The one teardown, whichever way the Connection ended. `endStream` is false when the stream
    * was cancelled under us — there is nothing left to close, and closing it would throw.
+   *
+   * Every timer this Connection armed is cleared here, and here only: a heartbeat still firing
+   * at a stream nobody reads is a leak that outlives the client by the length of the process.
    */
   const dispose = (endStream: boolean): void => {
     if (closed) return;
     closed = true;
+    clearInterval(heartbeats);
     request.signal.removeEventListener("abort", abort);
     disconnect?.();
     if (endStream) controller?.close();
@@ -261,8 +266,23 @@ function streamFor(
        * hears about a refusal in the same breath as the Connection opening — then the retry,
        * then whatever `start` produces: a `reset`, the replay, `caught-up`.
        */
-      write(encodeControl("ready", { cursor: opening.cursor, refused } satisfies Ready));
+      const heartbeat = instance.heartbeat;
+      write(encodeControl("ready", { cursor: opening.cursor, refused, heartbeat } satisfies Ready));
       write(encodeRetry(RETRY_MS));
+
+      /**
+       * The heartbeat starts with the Connection rather than with its live feed: a replay long
+       * enough to matter is exactly when a proxy would otherwise see an idle pipe, and a
+       * `heartbeat` carries no `id:`, so it can fall anywhere among the Messages without moving
+       * anybody's Cursor. It is unref'd, so a process with nothing else to do can still exit.
+       */
+      if (heartbeat > 0) {
+        heartbeats = setInterval(() => {
+          write(encodeControl("heartbeat"));
+        }, heartbeat);
+        heartbeats.unref?.();
+      }
+
       await opening.start();
     },
 

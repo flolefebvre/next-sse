@@ -455,3 +455,32 @@ test("a client that goes away mid-replay stops it, rather than paging the rest o
   expect(reads).not.toHaveBeenCalled();
   expect(instance.connections.size).toBe(0);
 });
+
+/**
+ * The two durations of ADR-0004, as the Instance resolves them: the App's value, or the default
+ * when it configured none. `0` is a value — the feature off — and never a stand-in for "use the
+ * default", which is what makes `heartbeat: 0` a Connection with no heartbeat at all.
+ */
+test("the lifecycle durations are the App's, or the defaults, with 0 meaning off", () => {
+  expect(getInstance()).toMatchObject({ heartbeat: 15_000, maxLifetime: 30 * 60_000 });
+  expect(getInstance({ heartbeat: 0, maxLifetime: 0 })).toMatchObject({
+    heartbeat: 0,
+    maxLifetime: 0,
+  });
+  expect(getInstance({ heartbeat: 250 })).toMatchObject({
+    heartbeat: 250,
+    maxLifetime: 30 * 60_000,
+  });
+});
+
+/**
+ * Handed to `setTimeout`, a negative delay fires at once and `NaN` fires at once too, so a
+ * mistyped option would become every Connection ending the instant it opened. It is refused
+ * where it is written instead.
+ */
+test.each([
+  ["a negative interval", { heartbeat: -1 }],
+  ["an interval that is no number at all", { maxLifetime: Number.NaN }],
+])("%s is refused at the configuration rather than armed", (_case, options) => {
+  expect(() => getInstance(options)).toThrow(/milliseconds/);
+});

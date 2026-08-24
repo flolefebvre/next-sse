@@ -51,6 +51,25 @@ export interface InitOptions<Ctx = undefined> {
    * keep.
    */
   transport?: Transport;
+  /**
+   * How often every Connection is sent the `heartbeat` Control event, in milliseconds. Default
+   * 15 000, and `0` turns it off — never "use the default" (ADR-0004).
+   *
+   * It is what keeps a proxy from idling the Connection out, and what the client watches: the
+   * interval travels in `ready`, and a core that goes 3× it without a single byte reconnects
+   * rather than sitting on a pipe that died without saying so.
+   */
+  heartbeat?: number;
+  /**
+   * How long a Connection is allowed to live before the Instance ends it with the `reconnect`
+   * Control event, in milliseconds, spread ±10 % so a whole table does not come back at once.
+   * Default 30 minutes, and `0` disables it.
+   *
+   * The cut is gap-free — the client core comes back at once with its Cursor — and it is what
+   * re-spreads Connections across Instances after a deploy and reclaims the ones a proxy
+   * dropped silently (ADR-0004).
+   */
+  maxLifetime?: number;
 }
 
 /**

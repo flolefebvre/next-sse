@@ -20,6 +20,12 @@ const SLOT = Symbol.for("@flefebvre/next-sse");
  */
 const REPLAY_PAGE_SIZE = 500;
 
+/** How often a Connection is heartbeated when the App configures nothing (ADR-0004). */
+const DEFAULT_HEARTBEAT_MS = 15_000;
+
+/** How long a Connection lives when the App configures nothing (ADR-0004). */
+const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
+
 /** One open SSE Connection, as the Instance sees it: what it listens to, and how to feed it. */
 export interface Connection {
   /** The Channels this Connection subscribed to: the ones Authorize let through. */
@@ -74,6 +80,14 @@ export interface Instance {
   context: ContextBuilder | undefined;
   /** How this App names the holder of a Connection, if it names one (ADR-0003). */
   key: KeyBuilder | undefined;
+  /**
+   * How often every Connection of this Instance is heartbeated, in milliseconds, and how long
+   * one is allowed to live before it is ended with `reconnect`. Both are resolved here — the
+   * App's value or the default, `0` meaning off — so that the handler arms its timers from a
+   * number rather than from a policy of its own.
+   */
+  heartbeat: number;
+  maxLifetime: number;
   /** The Connections this Instance is holding open right now. */
   readonly connections: ReadonlySet<Connection>;
   /**
@@ -109,6 +123,15 @@ interface InstanceState extends Instance {
 
 const globals = globalThis as unknown as { [key: symbol]: InstanceState | undefined };
 
+/** Everything an App configures on `initSSE`, as the Instance takes it (ADR-0008). */
+export interface InstanceOptions {
+  transport?: Transport;
+  context?: ContextBuilder;
+  key?: KeyBuilder;
+  heartbeat?: number;
+  maxLifetime?: number;
+}
+
 /**
  * The Instance of this process, created on first use.
  *
@@ -120,15 +143,18 @@ const globals = globalThis as unknown as { [key: symbol]: InstanceState | undefi
  * `createSSE` swaps the Registry (ADR-0004): they are App code holding no live state, and
  * pinning them to the first evaluation would leave an edit to `context` with no effect until
  * the process restarts, while the Authorize beside it — which lives in the Registry — did
- * change.
+ * change. `heartbeat` and `maxLifetime` are refreshed for the same reason; the Connections
+ * already open keep the timers they were armed with, and the next ones get the new values.
  */
-export function getInstance(
-  options: { transport?: Transport; context?: ContextBuilder; key?: KeyBuilder } = {},
-): Instance {
+export function getInstance(options: InstanceOptions = {}): Instance {
+  const heartbeat = milliseconds(options.heartbeat, DEFAULT_HEARTBEAT_MS, "heartbeat");
+  const maxLifetime = milliseconds(options.maxLifetime, DEFAULT_MAX_LIFETIME_MS, "maxLifetime");
   const existing = globals[SLOT];
   if (existing) {
     existing.context = options.context;
     existing.key = options.key;
+    existing.heartbeat = heartbeat;
+    existing.maxLifetime = maxLifetime;
 
     return existing;
   }
@@ -137,6 +163,8 @@ export function getInstance(
     transport: options.transport ?? selectTransport(),
     context: options.context,
     key: options.key,
+    heartbeat,
+    maxLifetime,
     held: new Map(),
     get connections(): ReadonlySet<Connection> {
       return new Set(state.held.keys());
@@ -305,4 +333,26 @@ function feed(held: Held, entry: StoredEntry): void {
 function deliver(connection: Connection, entry: StoredEntry): void {
   if (entry.type !== "message") return;
   if (connection.channels.has(entry.channel)) connection.deliver(entry);
+}
+
+/**
+ * One duration off the App's configuration: the value it gave, or the default when it gave
+ * none. `0` is a value like any other and means the feature is off — never "use the default",
+ * which is what makes `heartbeat: 0` a Connection with no heartbeat rather than one with the
+ * standard fifteen seconds.
+ *
+ * Anything that is not a duration is refused here rather than handed to `setTimeout`, where a
+ * negative number fires at once and `NaN` fires at once too: a mistyped option would otherwise
+ * become a Connection ended the instant it opened.
+ */
+function milliseconds(value: number | undefined, fallback: number, option: string): number {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(
+      `next-sse: initSSE({ ${option} }) takes a number of milliseconds that is zero or more, ` +
+        `and was given ${String(value)}. Pass 0 to turn it off.`,
+    );
+  }
+
+  return value;
 }
