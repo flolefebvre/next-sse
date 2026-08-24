@@ -45,6 +45,7 @@ import {
 } from "@flefebvre/next-sse/server";
 import {
   FakeEventSource,
+  fakeEventSources,
   transportContract,
   type TransportBackend,
   type TransportContractOptions,
@@ -89,7 +90,25 @@ export const values = [
   createRedisPublisher,
   transportContract,
   FakeEventSource,
+  fakeEventSources,
 ];
+
+/**
+ * The double as a consumer's jsdom test holds it: a recorder in the global's place, and a real
+ * `FakeEventSource` to drive out of `opened`. Compiled, not run — what it proves is that the
+ * shape composes off the built declarations, through the real exports map.
+ */
+export function driveOneConnection(): string[] {
+  const fake = fakeEventSources();
+  (globalThis as { EventSource?: unknown }).EventSource = fake.EventSource;
+
+  const connection: FakeEventSource | undefined = fake.opened[0];
+  connection?.ready();
+  connection?.caughtUp();
+  connection?.message("chat:42", "message", { text: "one" }, "cursor-1");
+
+  return connection?.channels ?? [];
+}
 
 /** One App's Registry type, which is what the typed surface is read against. */
 type AnApp = {
