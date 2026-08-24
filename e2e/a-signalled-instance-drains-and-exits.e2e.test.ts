@@ -13,6 +13,11 @@ import { startInstance } from "./harness/example.js";
  * dead socket. The Drain ending the responses is what lets that `close()` resolve, and the two
  * are self-synchronizing because Node runs every listener for a signal: nothing here is
  * configured, and `NEXT_MANUAL_SIG_HANDLE` is never set (ADR-0011).
+ *
+ * What this reader is not is a browser: the client here reads the stream and stops, where a real
+ * one reconnects over the socket it already has and used to hold the process open by doing so
+ * (#74). That half of the claim is every browser scenario's, which signal their Instance with the
+ * reader still on the page — see `harness/browser.ts`.
  */
 
 /** Comfortably inside the harness's ten-second `SIGKILL` fallback, and outside the 3 s window. */
