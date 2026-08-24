@@ -2,7 +2,7 @@ import type { ChannelRecord, DeclaredAuthorize } from "../internal/channel.js";
 import { matchPattern } from "../internal/pattern.js";
 import { TransportError } from "../transport/index.js";
 
-import type { Connection, Instance } from "./instance.js";
+import type { Connection, Instance, Opening } from "./instance.js";
 import { encodeControl, encodeMessage, encodeRetry, type Ready } from "./wire.js";
 
 /** What ADR-0004 tells the client core to wait before reconnecting on its own, in milliseconds. */
@@ -258,7 +258,14 @@ async function streamFor(
   let heartbeats: ReturnType<typeof setInterval> | undefined;
   let lifetime: ReturnType<typeof setTimeout> | undefined;
   let overflowed = false;
-  const waiting: Uint8Array[] = [];
+  /**
+   * The Connection as the Instance holds it, from the moment it is registered — which is before
+   * `open` resolves. Everything that can end a Connection has to work either side of that line,
+   * so this is a value the teardown reads rather than one it closes over.
+   */
+  let opening: Opening | undefined = undefined;
+  /** It was ended before its stream existed, and the stream's first act is to say so. */
+  let ending = false;
 
   const connection: Connection = {
     channels: allowed,
@@ -266,27 +273,36 @@ async function streamFor(
     deliver: (entry) => write(encodeMessage(entry)),
     reset: () => write(encodeControl("reset")),
     caughtUp: () => write(encodeControl("caught-up")),
+    /**
+     * Ending a Connection is a no-op the second time, and a no-op on one whose client has already
+     * gone. Before its stream exists there is nowhere to write `reconnect` to, so the ending is
+     * remembered and the stream's own opening carries it out: this client is told where it stands
+     * (`ready`) and then to come back (`reconnect`), which is the whole of what it is owed.
+     */
     reconnect: () => {
+      if (closed) return;
+      if (controller === undefined) {
+        ending = true;
+
+        return;
+      }
+
       write(encodeControl("reconnect"));
       dispose(true);
     },
   };
 
-  const opening = await instance.open(connection, { after });
+  opening = await instance.open(connection, { after });
+  const { cursor, start: replay } = opening;
 
   /**
-   * Nothing can reach this Connection before this line: until `open` resolves, the Instance is
-   * its only holder and holds it as one that is still opening. Which is why what follows may be
-   * written against a Connection that certainly exists, and is hoisted to where the Connection's
-   * own methods, defined above it, can close over it.
+   * A Connection is in the Instance's table before `open` resolves, so a Kick or a Drain walking
+   * that table reaches it while this handler is still awaiting the log. That is why the two
+   * functions below are declarations — hoisted to where the Connection's own methods, written
+   * above them, can call them — and why neither assumes there is a stream yet.
    */
   function write(bytes: Uint8Array): void {
-    if (closed) return;
-    if (controller === undefined) {
-      waiting.push(bytes);
-
-      return;
-    }
+    if (closed || controller === undefined) return;
 
     controller.enqueue(bytes);
 
@@ -314,7 +330,7 @@ async function streamFor(
     clearInterval(heartbeats);
     clearTimeout(lifetime);
     request.signal.removeEventListener("abort", abort);
-    opening.close();
+    opening?.close();
     if (endStream) controller?.close();
   }
 
@@ -349,11 +365,20 @@ async function streamFor(
          * produces: a `reset`, the replay, `caught-up`.
          */
         const heartbeat = instance.heartbeat;
-        write(
-          encodeControl("ready", { cursor: opening.cursor, refused, heartbeat } satisfies Ready),
-        );
+        write(encodeControl("ready", { cursor, refused, heartbeat } satisfies Ready));
         write(encodeRetry(RETRY_MS));
-        for (const bytes of waiting.splice(0)) write(bytes);
+
+        /**
+         * It was ended while it was opening, so this stream exists only to say so. No timer is
+         * armed and no replay is run: what this client missed is the next Connection's to carry,
+         * and it comes back with the Cursor `ready` has just given it — which is what a Cursor is
+         * for.
+         */
+        if (ending) {
+          connection.reconnect();
+
+          return;
+        }
 
         /**
          * The heartbeat starts with the Connection rather than with its live feed: a replay long
@@ -381,7 +406,7 @@ async function streamFor(
           lifetime.unref?.();
         }
 
-        await opening.start();
+        await replay();
       },
 
       /**

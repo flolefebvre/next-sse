@@ -715,3 +715,79 @@ test("a Connection whose client is not reading is ended with reconnect, not left
   expect(delivered).toBeLessThan(12);
   await expect(frames.next()).rejects.toThrow("the stream ended");
 });
+
+/**
+ * A Transport whose tail this test holds, so that a Connection can be caught in the window it is
+ * registered in but not yet opened — which is the window a Kick or a Drain walking the Connection
+ * table reaches it in.
+ */
+const holdingTheTail = (): { transport: Transport; release: () => void } => {
+  const memory = createMemoryTransport();
+  let release = (): void => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  return {
+    transport: {
+      ...memory,
+      tail: async () => {
+        await held;
+
+        return memory.tail();
+      },
+    },
+    release: () => {
+      release();
+    },
+  };
+};
+
+/**
+ * The primitive Kick and Drain will rest on, exercised the way they will use it: over the
+ * Instance's Connection table, on a Connection that is still opening. It is told where it stands
+ * and to come back, and it runs no replay — what it missed is the next Connection's to carry, and
+ * it has the Cursor to ask for it with.
+ */
+test("a Connection ended while it is still opening carries ready, the retry and reconnect", async () => {
+  const { transport, release } = holdingTheTail();
+  const sse = appWith(transport, { heartbeat: 0, maxLifetime: 0 });
+  const responding = connect(sse, "?channel=chat:42");
+  await vi.waitFor(() => expect(getInstance().connections.size).toBe(1));
+
+  const [held] = [...getInstance().connections];
+  held?.reconnect();
+  release();
+
+  const frames = framesOf(await responding);
+  expect((await frames.next()).event).toBe("ready");
+  expect(await frames.next()).toEqual({ retry: "3000" });
+  expect(await frames.next()).toEqual({ event: "reconnect", data: "{}" });
+  await expect(frames.next()).rejects.toThrow("the stream ended");
+  expect(getInstance().connections.size).toBe(0);
+});
+
+test("ending a Connection twice ends it once", async () => {
+  const sse = appWith(createMemoryTransport(), { heartbeat: 0, maxLifetime: 0 });
+  const frames = await liveConnection(sse, "?channel=chat:42");
+  const [held] = [...getInstance().connections];
+
+  held?.reconnect();
+  held?.reconnect();
+
+  expect(await frames.next()).toEqual({ event: "reconnect", data: "{}" });
+  await expect(frames.next()).rejects.toThrow("the stream ended");
+  expect(getInstance().connections.size).toBe(0);
+});
+
+test("ending a Connection whose client has already gone does nothing at all", async () => {
+  const sse = appWith(createMemoryTransport(), { heartbeat: 0, maxLifetime: 0 });
+  const client = new AbortController();
+  await connect(sse, "?channel=chat:42", { signal: client.signal });
+  const [held] = [...getInstance().connections];
+
+  client.abort();
+
+  expect(() => held?.reconnect()).not.toThrow();
+  expect(getInstance().connections.size).toBe(0);
+});
