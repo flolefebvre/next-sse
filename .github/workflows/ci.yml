@@ -17,17 +17,11 @@ permissions:
   contents: read
 
 jobs:
-  # One job runs the whole ADR-0009 gate, Docker included: the runner has a daemon, so the
-  # integration project's testcontainers and the e2e project's `next start` Instances both run
-  # here.
-  #
-  # When this grows into the ADR-0009 shape — an `integration` matrix over redis:8 and
-  # valkey/valkey:8, and an `e2e` job on valkey/valkey:8 alone — the job named `gate` must
-  # survive as the job that `needs:` them and reports their verdict. `gate` is the required
-  # status check in .github/rulesets/main.json, and a ruleset is only re-imported by hand:
-  # keep the name and the split costs nobody anything.
-  gate:
-    name: gate
+  # Everything the gate runs that needs no backend of its own. It is the same runner as a local
+  # `pnpm run gate`, given the steps of that gate it owns: CI and the workstation can never
+  # disagree about what a step is or in which order it comes.
+  checks:
+    name: checks
     runs-on: ubuntu-latest
 
     steps:
@@ -47,5 +41,86 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run gate
-        run: pnpm run gate
+      - name: Run the Docker-free gate steps
+        run: pnpm exec tsx scripts/gate.ts format:check,lint,duplication,typecheck,test:unit,test:client,build,pack:check,typecheck:dist
+
+  # The backend matrix of ADR-0009: the contract suite and the two-Instance scenarios against a
+  # real server, on both engines the library claims to support. The harness reads
+  # `NEXT_SSE_TEST_IMAGE` and starts the container itself through testcontainers.
+  integration:
+    name: integration (${{ matrix.image }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [redis:8, valkey/valkey:8]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run the integration project
+        run: pnpm exec tsx scripts/gate.ts test:integration
+        env:
+          NEXT_SSE_TEST_IMAGE: ${{ matrix.image }}
+
+  # The end-to-end scenarios exercise the App protocol rather than Redis semantics, so they run
+  # on Valkey alone (ADR-0009). They need the built package and the built example app, which is
+  # why `build` runs here too.
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run the e2e project
+        run: pnpm exec tsx scripts/gate.ts build,test:e2e
+
+  # The verdict of the whole gate, and the one required status check of
+  # .github/rulesets/main.json — which is why this job keeps its name whatever the split above
+  # becomes. It runs even when a job it needs failed, was cancelled or was skipped, and reports
+  # what happened: `needs:` alone would let a cancelled job through as a green gate.
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [checks, integration, e2e]
+
+    steps:
+      - name: Report the verdict
+        run: |
+          echo "checks:      ${{ needs.checks.result }}"
+          echo "integration: ${{ needs.integration.result }}"
+          echo "e2e:         ${{ needs.e2e.result }}"
+          if [ "${{ needs.checks.result }}" != "success" ] \
+            || [ "${{ needs.integration.result }}" != "success" ] \
+            || [ "${{ needs.e2e.result }}" != "success" ]; then
+            echo "--gate FAILED--"
+            exit 1
+          fi
+          echo "--gate OK--"
