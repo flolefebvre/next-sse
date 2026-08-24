@@ -132,13 +132,15 @@ itself. Which layer carries the reader is not part of what this library promises
 delivery — or a Reset — inside the bound, and it holds whether node-redis absorbs the loss or hands
 it to the Transport's reconnect path.
 
-What an ungraceful loss does cost your App is on the **write** side: for the ~4 s the detection,
-election and re-homing take there is no master to write to, so a Publish attempted in that window
-rejects on its `operationTimeout` — with the usual caveat below that it may still have landed. Reads simply
-resume. And one thing the tests deliberately do not stage: the case replicates the log to the
-replica before killing the master, so what is measured is the failover and not Redis's
-asynchronous replication dropping a write the dying master had not yet passed on. That loss is
-real, it is Redis's, and on a promoted replica missing Entries the reader would report a Reset.
+What an ungraceful loss does cost your App is on the **write** side, in two windows for two
+different reasons. For the ~2 s of detection and election there is genuinely no master to write to;
+for the ~2 s after that a master exists, but the client has not re-homed onto it yet. A Publish
+attempted in either rejects on its `operationTimeout` — with the usual caveat below that it may
+still have landed. Reads simply resume. And one thing the tests deliberately do not stage: the
+case replicates the log to the replica before killing the master, so what is measured is the
+failover and not Redis's asynchronous replication dropping a write the dying master had not yet
+passed on. That loss is real, it is Redis's, and on a promoted replica missing Entries the reader
+would report a Reset.
 
 ### Error behaviour
 
