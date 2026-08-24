@@ -7,7 +7,7 @@ import type { Transport } from "../transport/index.js";
 import { chatApp, type ChatApp } from "./chat-app.testkit.js";
 import { framesOf, type Frames } from "./frames.testkit.js";
 import { DrainingError } from "./drain.js";
-import { getInstance } from "./instance.js";
+import { currentInstance, getInstance } from "./instance.js";
 
 /**
  * The Drain, through the real handler: the Connections it ends are Connections a client is
@@ -85,12 +85,12 @@ async function opened(response: Response): Promise<Frames> {
 }
 
 /**
- * How many Connections this Instance is holding. It goes through `getInstance()`, which is a
- * configuration call as much as an accessor — every option it is not given goes back to its
- * default (ADR-0004) — so it is read once a Drain is under way and never before one, where it
- * would put the window back to 3000 under the test that is measuring it.
+ * How many Connections this Instance is holding. It goes through `currentInstance`, the reading
+ * door, so it can be read at any point of a test: `getInstance()` would put the drain window back
+ * to its default as it read (ADR-0004), under the very tests measuring that window. A process
+ * with no Instance holds no Connections, which is what the `0` says.
  */
-const held = (): number => getInstance().connections.size;
+const held = (): number => currentInstance()?.connections.size ?? 0;
 
 /**
  * A Transport call held open, for the two cases about the race the Drain has: `opened` resolves
