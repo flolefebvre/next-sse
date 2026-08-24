@@ -1,9 +1,6 @@
 import { expect, inject, test } from "vitest";
 
-import { framesOf, type Frame } from "../packages/next-sse/src/server/frames.testkit.js";
-import type { ChatApp } from "../packages/next-sse/src/server/chat-app.testkit.js";
-
-import { twoInstances } from "./two-instances.js";
+import { connect, twoInstances } from "./two-instances.js";
 
 /**
  * The claim Kick is for, on a real log: an App revokes on one Instance, and the Connections
@@ -15,33 +12,6 @@ import { twoInstances } from "./two-instances.js";
  * Memory-Transport test cannot make this claim: it has one log and one Instance by construction.
  */
 
-/** One Connection on this Instance, opened as `user`, reading its opening sequence. */
-async function connect(
-  sse: ChatApp,
-  user: string,
-): Promise<{ next: () => Promise<Frame>; leave: () => void }> {
-  const client = new AbortController();
-  const response = await sse.handlers.GET(
-    new Request("http://example.test/api/sse?channel=chat:42", {
-      signal: client.signal,
-      headers: { "x-user": user },
-    }),
-  );
-  expect(response.status).toBe(200);
-
-  const frames = framesOf(response);
-  expect((await frames.next()).event).toBe("ready");
-  expect((await frames.next()).retry).toBe("3000");
-  expect((await frames.next()).event).toBe("caught-up");
-
-  return {
-    next: () => frames.next(),
-    leave: () => {
-      client.abort();
-    },
-  };
-}
-
 test("a Kick from one Instance ends the Connections another Instance holds", async () => {
   const { here, there, close } = await twoInstances(inject("redisUrl"), {
     context: (request) => request.headers.get("x-user") ?? undefined,
@@ -49,8 +19,10 @@ test("a Kick from one Instance ends the Connections another Instance holds", asy
   });
 
   try {
-    const hers = await connect(here, "ada");
-    const his = await connect(here, "sam");
+    const hers = await connect(here, { user: "ada" });
+    const his = await connect(here, { user: "sam" });
+    expect((await hers.next()).event).toBe("caught-up");
+    expect((await his.next()).event).toBe("caught-up");
 
     /** The Kick is written on the Instance that never saw either Connection. */
     await there.kick({ key: "ada" });
@@ -84,7 +56,8 @@ test("a Kick of a Handle from one Instance ends the Connections another Instance
   const { here, there, close } = await twoInstances(inject("redisUrl"));
 
   try {
-    const subscribed = await connect(here, "ada");
+    const subscribed = await connect(here, { user: "ada" });
+    expect((await subscribed.next()).event).toBe("caught-up");
 
     await there.kick(there.chat({ roomId: "42" }));
 
