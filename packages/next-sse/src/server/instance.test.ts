@@ -175,12 +175,27 @@ const registryOf = (pattern: string): ChannelRecord => ({
   chat: { pattern, events: {}, authorize: () => true },
 });
 
-test("a Message reaches the Connections subscribed to its Channel, and no others", async () => {
+/**
+ * Two Connections that overlap on one Channel: one holding both rooms, one holding only the
+ * second. It is the fixture behind both "reaches the Connections it names" claims — a Message's
+ * and a Kick's — which is why it is named once rather than written twice.
+ */
+const twoOverlapping = async (): Promise<{
+  instance: Instance;
+  subscribed: Connection;
+  elsewhere: Connection;
+}> => {
   const instance = getInstance({ transport: createMemoryTransport() });
   const subscribed = connectionOn("chat:42", "chat:7");
   const elsewhere = connectionOn("chat:7");
   await live(instance, subscribed);
   await live(instance, elsewhere);
+
+  return { instance, subscribed, elsewhere };
+};
+
+test("a Message reaches the Connections subscribed to its Channel, and no others", async () => {
+  const { instance, subscribed, elsewhere } = await twoOverlapping();
 
   const cursor = await instance.transport.publish(message("chat:42", { text: "hello" }));
 
@@ -641,11 +656,7 @@ test("a Kick by Key ends the Connections that Key holds, and no others", async (
  * back with its full Channel set and its Cursor, and Authorize settles what survives.
  */
 test("a Kick by Channel ends every Connection subscribed to it, whatever else it carries", async () => {
-  const instance = getInstance({ transport: createMemoryTransport() });
-  const subscribed = connectionOn("chat:42", "chat:7");
-  const elsewhere = connectionOn("chat:7");
-  await live(instance, subscribed);
-  await live(instance, elsewhere);
+  const { instance, subscribed, elsewhere } = await twoOverlapping();
 
   await instance.transport.publish(kick({ channel: "chat:42" }));
 
@@ -658,16 +669,27 @@ test("a Kick by Channel ends every Connection subscribed to it, whatever else it
  * skip it: the client is on the far end either way, and `reconnect` on a Connection that is still
  * opening is remembered and carried out after `ready` (ADR-0004). Skipping it would leave a
  * window — the width of a replay — in which a revocation silently misses.
+ *
+ * The Kick is acted on where it arrives and is never put in the buffer, which is what the rest of
+ * the trace pins: the buffer this Connection drains when its replay ends holds the two Messages
+ * and nothing else, each once and in the order the log carried them.
  */
-test("a Kick reaches a Connection that is still opening", async () => {
+test("a Kick reaches a Connection that is still opening, and never enters its buffer", async () => {
   const instance = getInstance({ transport: createMemoryTransport() });
-  const connection = keyed("ada", "chat:42");
-  const opening = await instance.open(connection);
+  const { connection, trace } = tracing("chat:42");
+  const opening = await instance.open({ ...connection, key: "ada" });
 
+  await instance.transport.publish(message("chat:42", { text: "before the kick" }));
   await instance.transport.publish(kick({ key: "ada" }));
+  await instance.transport.publish(message("chat:42", { text: "after the kick" }));
   await opening.start();
 
-  expect(connection.reconnect).toHaveBeenCalledTimes(1);
+  expect(trace).toEqual([
+    "reconnect",
+    "caught-up",
+    "chat:42 before the kick",
+    "chat:42 after the kick",
+  ]);
 });
 
 /**
