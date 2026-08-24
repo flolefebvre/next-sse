@@ -78,6 +78,13 @@ const MAX_RETRY_MS = 30_000;
 interface Subscriber extends Subscription {
   status: Status;
   /**
+   * Its Cursor has not been spent on a Connection yet. A subscriber that brought one is asking
+   * for a reopen, and it stops asking the moment a Connection opens — or the moment it leaves,
+   * which is why this is held per subscriber rather than as one pending value: a Cursor whose
+   * subscriber is gone must not close a healthy Connection on its behalf.
+   */
+  unspent: boolean;
+  /**
    * True until the first `caught-up` this subscriber lives through. A subscriber that brought
    * no Cursor has no way to tell a replayed Entry from one it already has, so it is told
    * nothing until the Connection is live (ADR-0007); one that brought a Cursor asked for that
@@ -109,10 +116,10 @@ interface Subscriber extends Subscription {
  * is how a server render's Snapshot becomes live with no gap. It is a reason to call
  * `openSource`, not a second way to open a Connection: the Cursor is parked as the pending one
  * and the same reconcile that follows a Channel-set change spends it. Two subscribers bringing
- * two different Cursors on one tick is decided by fiat — the last one parked wins — because the
- * core cannot compare Cursors and must not learn how (ADR-0001). In practice they are the same
- * Cursor, since one render's Snapshots share one request-cached one; and a Cursor that is older
- * than another costs a longer replay, which the reducers absorb, and never a gap.
+ * two different Cursors on one tick is decided by fiat — the last one still asking wins —
+ * because the core cannot compare Cursors and must not learn how (ADR-0001). In practice they
+ * are the same Cursor, since one render's Snapshots share one request-cached one; and a Cursor
+ * that is older than another costs a longer replay, which the reducers absorb, and never a gap.
  *
  * The heartbeat watchdog, the max lifetime and the page-lifecycle handling of ADR-0004 belong
  * to the Connection-lifecycle ticket and are not here.
@@ -125,8 +132,6 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
   let open: ReadonlySet<string> = new Set();
   let live = false;
   let scheduled = false;
-  /** A Cursor a subscriber brought, waiting for the reconcile that will open a Connection on it. */
-  let pending: string | undefined;
   let attempt = 0;
   let retry: ReturnType<typeof setTimeout> | undefined;
   /**
@@ -147,6 +152,20 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
 
   function wanted(): Set<string> {
     return new Set([...subscribers].map((subscriber) => subscriber.channel));
+  }
+
+  /**
+   * The Cursor the subscribers are asking to resume from, or `undefined` when none is. Read
+   * from the subscribers that are here now, so that one which arrived and left inside the same
+   * tick asks for nothing: leaving is never a reason to reopen.
+   */
+  function brought(): string | undefined {
+    let cursor: string | undefined;
+    for (const subscriber of subscribers) {
+      if (subscriber.unspent && subscriber.cursor !== undefined) cursor = subscriber.cursor;
+    }
+
+    return cursor;
   }
 
   /**
@@ -172,8 +191,8 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
      * position a server render read its data at, and resuming from it is what closes the
      * handoff window. It is spent here, whichever reason brought the Connection down.
      */
-    const resumeFrom = pending ?? lastEventId;
-    pending = undefined;
+    const resumeFrom = brought() ?? lastEventId;
+    for (const subscriber of subscribers) subscriber.unspent = false;
 
     const query = new URLSearchParams();
     for (const channel of channels) query.append("channel", channel);
@@ -277,12 +296,11 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
    */
   function reconcile(): void {
     const channels = wanted();
-    if (source !== undefined && pending === undefined && sameSet(channels, open)) return;
+    if (source !== undefined && brought() === undefined && sameSet(channels, open)) return;
 
     closeSource();
     if (channels.size === 0) {
       open = new Set();
-      pending = undefined;
 
       return;
     }
@@ -305,17 +323,20 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
         ...subscription,
         status: "connecting",
         liveOnly: subscription.cursor === undefined,
+        unspent: subscription.cursor !== undefined,
       };
       subscribers.add(subscriber);
-      if (subscription.cursor !== undefined) pending = subscription.cursor;
 
       /**
        * A hook mounting onto a Connection that already carries its Channel is live at once:
-       * nothing will reopen for it, so nothing else would ever tell it so. One that brought a
-       * Cursor is not: a Connection is about to reopen on its behalf, and it starts where every
-       * subscriber of that Connection starts.
+       * nothing will reopen for it, so nothing else would ever tell it so. It stops being
+       * live-only in the same breath — it joined at the live point, so the next replay this
+       * Connection carries is one it lived through the beginning of and must not miss. One that
+       * brought a Cursor is neither: a Connection is about to reopen on its behalf, and it
+       * starts where every subscriber of that Connection starts.
        */
       if (live && open.has(subscriber.channel) && subscription.cursor === undefined) {
+        subscriber.liveOnly = false;
         setStatus(subscriber, "live");
       }
       schedule();

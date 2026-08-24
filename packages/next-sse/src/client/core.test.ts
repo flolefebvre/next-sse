@@ -599,3 +599,42 @@ test("a reset every subscriber handles itself never reaches the Connection's han
 
   expect(appWide).not.toHaveBeenCalled();
 });
+
+/**
+ * The hole a live-only subscriber would otherwise fall into. It joined a Connection that was
+ * already live, so it never lived through a `caught-up` — and if that alone kept it live-only,
+ * the replay the browser's own retry brings back would be dropped for it and never offered
+ * again. Joining at the live point is what ends live-only, not the next `caught-up`.
+ */
+test("a subscriber that joined live is fed the replay a native retry brings back", async () => {
+  const { core, opened } = await subscribed();
+  only(opened).ready();
+  only(opened).caughtUp();
+  const late = recorder("chat:42");
+  core.subscribe(late);
+  await tick();
+
+  only(opened).drop();
+  only(opened).message("chat:42", "message", { text: "replayed after the drop" }, "cursor-1");
+
+  expect(late.messages.map((message) => message.payload)).toEqual([
+    { text: "replayed after the drop" },
+  ]);
+});
+
+/**
+ * A Cursor belongs to the subscriber that brought it, and it leaves with it: a hook that
+ * mounted and unmounted inside one tick must not close the Connection everybody else is on and
+ * replay a Snapshot nobody is waiting for.
+ */
+test("a Cursor whose subscriber left before the tick reopens nothing", async () => {
+  const { core, opened } = await subscribed();
+  only(opened).ready();
+  only(opened).caughtUp();
+
+  const leave = core.subscribe(recorder("chat:42", { cursor: "snapshot-1" }));
+  leave();
+  await tick();
+
+  expect(only(opened).cursor).toBe(null);
+});
