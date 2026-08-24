@@ -1,8 +1,8 @@
 import { expect, test } from "vitest";
 
 import {
+  aLiveReaderOn,
   openBrowser,
-  readerIn,
   rowsOf,
   textOf,
   waitForRow,
@@ -35,12 +35,9 @@ import { assertPromptExit, startInstance } from "./harness/example.js";
 test("a reader who loses the role sees that Channel refused while the room streams on", async () => {
   const instance = await startInstance();
   const browser = await openBrowser();
-  const reader = await readerIn(browser);
-  const { page } = reader;
 
   try {
-    await reader.open(instance.url);
-    await waitUntilLive(page);
+    const { page } = await aLiveReaderOn(browser, instance.url);
 
     /** A guest, on the Connection the server rendered for one: the room, and no notices. */
     expect(await textOf(page, "role")).toBe("guest");
@@ -86,7 +83,6 @@ test("a reader who loses the role sees that Channel refused while the room strea
       "after the role changed",
     ]);
   } finally {
-    await reader.close();
     await browser.close();
     assertPromptExit(await instance.stop());
   }

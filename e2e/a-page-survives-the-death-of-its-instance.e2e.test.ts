@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 
 import {
   openBrowser,
-  readerIn,
+  aLiveReaderOn,
   rowsOf,
   waitForRow,
   waitUntilLive,
@@ -39,12 +39,9 @@ test(
     const app = await twoInstances();
     const proxy = await startProxy(app.here.url);
     const browser = await openBrowser();
-    const reader = await readerIn(browser);
-    const { page } = reader;
 
     try {
-      await reader.open(proxy.url);
-      await waitUntilLive(page);
+      const { page } = await aLiveReaderOn(browser, proxy.url);
 
       await publish(app.here.url, "before the deploy");
       await waitForRow(page, "messages", "before the deploy");
@@ -73,7 +70,6 @@ test(
         "and the deploy is over",
       ]);
     } finally {
-      await reader.close();
       await browser.close();
       await proxy.close();
       await app.stop();
@@ -110,12 +106,9 @@ test(
     const publisher = await startInstance(app);
     let instance = await startInstance(app);
     const browser = await openBrowser();
-    const reader = await readerIn(browser);
-    const { page } = reader;
 
     try {
-      await reader.open(instance.url);
-      await waitUntilLive(page);
+      const { page } = await aLiveReaderOn(browser, instance.url);
 
       await publish(publisher.url, "before the restart");
       await waitForRow(page, "messages", "before the restart");
@@ -137,7 +130,6 @@ test(
         "and it is back",
       ]);
     } finally {
-      await reader.close();
       await browser.close();
       assertPromptExit(await instance.stop());
       assertPromptExit(await publisher.stop());

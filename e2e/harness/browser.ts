@@ -22,10 +22,17 @@ export const RECONNECT_WAIT_MS = 30_000;
 /**
  * One Chromium for the scenario that opens it, and every scenario owes it a `close()` in a
  * `finally` — a browser left running holds a process and a temporary profile for the rest of the
- * machine's day, exactly as a `next start` does.
+ * machine's day, exactly as a `next start` does. It is launched per scenario file rather than
+ * once for the run because the e2e project forks a process per file (ADR-0009): there is no place
+ * a shared browser could live.
  *
- * It is launched per scenario file rather than once for the run because the e2e project forks a
- * process per file (ADR-0009): there is no place a shared browser could live.
+ * That `close()` comes *before* the Instance is signalled, in every scenario here, and on
+ * purpose. A signalled Instance with a browser still pointed straight at it does not exit within
+ * the ten seconds `stop()` allows: the Drain ends its Connections and refuses new ones, but
+ * Chromium keeps pooled sockets to that address and goes on retrying its stream over them, so
+ * `server.close()` never sees an idle connection. It is a real shape and it has an issue of its
+ * own; what it is not is this suite's claim, and a scenario that left the browser open would fail
+ * `assertPromptExit` for a reason that has nothing to do with it.
  */
 export function openBrowser(): Promise<Browser> {
   return chromium.launch();
@@ -42,7 +49,6 @@ export interface Reader {
   connections: URL[];
   /** Open the demo page. What happens next is the scenario's to wait for. */
   open(url: string): Promise<void>;
-  close(): Promise<void>;
 }
 
 /**
@@ -71,8 +77,23 @@ export async function readerIn(browser: Browser): Promise<Reader> {
     open: async (url: string) => {
       await page.goto(url);
     },
-    close: () => context.close(),
   };
+}
+
+/**
+ * A reader with the demo page open and its Connection live: where every scenario starts except
+ * the one whose subject is the moment before that.
+ *
+ * It is one call rather than three lines repeated five times, and the three lines are not
+ * ceremony: a scenario that asserted on a page which had not gone live yet would be reading a
+ * server render and calling it a stream.
+ */
+export async function aLiveReaderOn(browser: Browser, url: string): Promise<Reader> {
+  const reader = await readerIn(browser);
+  await reader.open(url);
+  await waitUntilLive(reader.page);
+
+  return reader;
 }
 
 /**
@@ -93,7 +114,7 @@ export function waitForText(page: Page, testid: string, text: string, timeoutMs 
 export function waitForRow(page: Page, testid: string, text: string, timeoutMs = WAIT_MS) {
   return page.waitForFunction(
     ([id, want]) =>
-      [...document.querySelectorAll(`[data-testid="${id}"] li`)].some(
+      Array.from(document.querySelectorAll(`[data-testid="${id}"] li`)).some(
         (row) => row.textContent === want,
       ),
     [testid, text],

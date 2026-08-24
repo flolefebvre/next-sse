@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { openBrowser, readerIn, waitForRow, waitUntilLive } from "./harness/browser.js";
+import { aLiveReaderOn, openBrowser, waitForRow } from "./harness/browser.js";
 import { publish } from "./harness/demo.js";
 import { assertPromptExit, startInstance } from "./harness/example.js";
 
@@ -34,12 +34,10 @@ const DEMO_CHANNELS = ["chat:42", "announcements", "notifications:anonymous", "a
 test("a page of several Snapshots opens one Connection carrying every Channel", async () => {
   const instance = await startInstance();
   const browser = await openBrowser();
-  const reader = await readerIn(browser);
-  const { page } = reader;
 
   try {
-    await reader.open(instance.url);
-    await waitUntilLive(page);
+    const reader = await aLiveReaderOn(browser, instance.url);
+    const { page } = reader;
 
     /**
      * A round trip through the live stream before the count is read: it puts the page well past
@@ -54,7 +52,6 @@ test("a page of several Snapshots opens one Connection carrying every Channel", 
     expect(connection?.searchParams.getAll("channel")).toEqual(DEMO_CHANNELS);
     expect(connection?.searchParams.getAll("cursor")).toEqual([expect.any(String)]);
   } finally {
-    await reader.close();
     await browser.close();
     assertPromptExit(await instance.stop());
   }

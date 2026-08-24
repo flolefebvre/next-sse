@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 
 import {
   openBrowser,
-  readerIn,
+  aLiveReaderOn,
   rowsOf,
   waitForRow,
   waitForText,
@@ -44,12 +44,9 @@ test("a reader whose pipe is cut comes back with every Message, once", async () 
   const instance = await startInstance();
   const proxy = await startProxy(instance.url);
   const browser = await openBrowser();
-  const reader = await readerIn(browser);
-  const { page } = reader;
 
   try {
-    await reader.open(proxy.url);
-    await waitUntilLive(page);
+    const { page } = await aLiveReaderOn(browser, proxy.url);
 
     await publish(instance.url, "before the network went");
     await waitForRow(page, "messages", "before the network went");
@@ -81,7 +78,6 @@ test("a reader whose pipe is cut comes back with every Message, once", async () 
       "and the reader is back",
     ]);
   } finally {
-    await reader.close();
     await browser.close();
     await proxy.close();
     assertPromptExit(await instance.stop());
