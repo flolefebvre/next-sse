@@ -179,7 +179,7 @@ const publishUntilTrimmed = async (transport: Transport, atLeast = 2): Promise<T
   }
 
   throw new Error(
-    `Retention never bounded the log: ${String(published.length)} Entries were published under a cap of 2 and all of them are still readable.`,
+    `Retention never bounded the log: ${String(published.length)} Entries were published under the cap this case asked for, and the log still holds every one of them.`,
   );
 };
 

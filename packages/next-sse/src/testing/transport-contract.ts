@@ -131,7 +131,9 @@ export async function runContractCase(
   try {
     await contractCase.run(context);
   } finally {
-    for (const transport of outaged) await options.backend?.outage?.end(transport);
+    for (const transport of outaged) {
+      await options.backend?.outage?.end(transport).catch(() => undefined);
+    }
     for (const transport of opened) await transport.close().catch(() => undefined);
   }
 }
