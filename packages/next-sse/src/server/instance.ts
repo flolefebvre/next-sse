@@ -1,5 +1,6 @@
-import { createMemoryTransport } from "../transport/memory.js";
 import type { Cursor, StoredEntry, Transport, Unsubscribe } from "../transport/index.js";
+
+import { selectTransport } from "./select-transport.js";
 
 import type { StoredMessage } from "./wire.js";
 
@@ -84,15 +85,16 @@ const globals = globalThis as unknown as { [key: symbol]: InstanceState | undefi
  * The Instance of this process, created on first use.
  *
  * A `transport` given on a later call is deliberately ignored: the whole point of the slot is
- * that a second evaluation of the App's Registry module — which builds a second Memory
- * Transport as it goes — keeps Publishing into the log the open Connections are reading.
+ * that a second evaluation of the App's Registry module — which builds a second Transport as it
+ * goes — keeps Publishing into the log the open Connections are reading. An App that configures
+ * none gets the Transport `REDIS_URL` chooses (ADR-0008).
  */
 export function getInstance(options: { transport?: Transport } = {}): Instance {
   const existing = globals[SLOT];
   if (existing) return existing;
 
   const state: InstanceState = {
-    transport: options.transport ?? createMemoryTransport(),
+    transport: options.transport ?? selectTransport(),
     held: new Map(),
     get connections(): ReadonlySet<Connection> {
       return new Set(state.held.keys());

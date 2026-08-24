@@ -29,10 +29,11 @@ export type { ClientChannel, ClientChannels } from "../client/index.js";
 
 export interface InitOptions {
   /**
-   * The log this App runs on. Omitted, the App gets the Memory Transport, which serves one
-   * Instance; choosing the Transport from `REDIS_URL` is what the Redis Transport's own ticket
-   * puts here. Every other option of ADR-0008 joins this type as the ticket that honours it
-   * lands: an option that is declared but ignored is a promise the library does not keep.
+   * The log this App runs on. Omitted, the App gets the one its environment chooses (ADR-0008):
+   * the Redis Transport when `REDIS_URL` is set, the Memory Transport — which serves one
+   * Instance — when it is not. Every other option of ADR-0008 joins this type as the ticket that
+   * honours it lands: an option that is declared but ignored is a promise the library does not
+   * keep.
    */
   transport?: Transport;
 }

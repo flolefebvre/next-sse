@@ -1,0 +1,228 @@
+import { expect, test } from "vitest";
+
+import { TransportError, type Entry } from "./index.js";
+import {
+  assertPrefix,
+  compareIds,
+  isStreamId,
+  justBefore,
+  logKeyOf,
+  parseEntry,
+  readRange,
+  readStreamInfo,
+  readStreams,
+} from "./redis-reply.js";
+
+const message: Entry = {
+  v: 1,
+  type: "message",
+  channel: "chat:42",
+  event: "message",
+  payload: { text: "one" },
+};
+
+/** The fields one stream Entry carries: the single `entry` field of ADR-0006. */
+const fieldsOf = (json: string): string[] => ["entry", json];
+
+test("the Prefix goes inside the hash tag, so an App's keys share one slot", () => {
+  expect(logKeyOf("next-sse")).toBe("{next-sse}:log");
+  expect(logKeyOf("my-app")).toBe("{my-app}:log");
+});
+
+test("a Prefix that would break the key, or the tag, is refused", () => {
+  expect(() => assertPrefix("")).toThrow(TransportError);
+  expect(() => assertPrefix("{app}")).toThrow(/braces, whitespace or control characters/);
+  expect(() => assertPrefix("my app")).toThrow(/braces, whitespace or control characters/);
+  expect(() => assertPrefix("my\napp")).toThrow(/braces, whitespace or control characters/);
+  expect(() => assertPrefix("my\u0007app")).toThrow(/braces, whitespace or control characters/);
+  expect(assertPrefix("acme:app-1")).toBe("acme:app-1");
+});
+
+test("only what a Stream could have minted is a Cursor this log can read", () => {
+  expect(isStreamId("1700000000000-0")).toBe(true);
+  expect(isStreamId("0-0")).toBe(true);
+  expect(isStreamId("")).toBe(false);
+  expect(isStreamId("not-a-cursor")).toBe(false);
+  expect(isStreamId("1700000000000")).toBe(false);
+  expect(isStreamId("abcd-1")).toBe(false);
+});
+
+test("stream IDs order by their two parts, not as strings", () => {
+  expect(compareIds("9-0", "10-0")).toBeLessThan(0);
+  expect(compareIds("10-0", "9-0")).toBeGreaterThan(0);
+  expect(compareIds("10-2", "10-10")).toBeLessThan(0);
+  expect(compareIds("10-2", "10-2")).toBe(0);
+});
+
+/**
+ * Both halves of a stream ID are unsigned 64-bit, and an external publisher may use the range:
+ * read as JavaScript numbers, two IDs past the safe integer would compare equal and a Cursor
+ * into what was dropped would read as a good one.
+ */
+test("stream IDs beyond the safe integer still order, and still have a predecessor", () => {
+  expect(compareIds("9007199254740993-0", "9007199254740994-0")).toBeLessThan(0);
+  expect(compareIds("1-9007199254740993", "1-9007199254740994")).toBeLessThan(0);
+  expect(justBefore("1-9007199254740994")).toBe("1-9007199254740993");
+  expect(justBefore("7-0")).toBe("6-18446744073709551615");
+  expect(justBefore("7-3")).toBe("7-2");
+  expect(justBefore("0-0")).toBe("0-0");
+});
+
+test("XINFO STREAM reads the same on a RESP2 array and a RESP3 map", () => {
+  const expected = { lastGeneratedId: "5-0", oldestKeptId: "3-0", everDropped: true };
+  const fields = {
+    length: 2,
+    "entries-added": 5,
+    "last-generated-id": "5-0",
+    "recorded-first-entry-id": "3-0",
+  };
+
+  expect(readStreamInfo(Object.entries(fields).flat())).toEqual(expected);
+  expect(readStreamInfo(new Map<string, unknown>(Object.entries(fields)))).toEqual(expected);
+  expect(readStreamInfo(fields)).toEqual(expected);
+});
+
+/**
+ * Both fields `gone` is decided on are Redis 7.0. A server that reports neither would have this
+ * Transport answer "nothing was lost" to every Cursor, which is silent loss rather than a Reset,
+ * so it is refused by name instead.
+ */
+test("a server too old to say what it dropped is refused, naming the floor", () => {
+  expect(() => readStreamInfo(["length", 2, "last-generated-id", "5-0"])).toThrow(
+    /Redis >= 7.0 or Valkey >= 8/,
+  );
+  expect(() =>
+    readStreamInfo(["length", 2, "last-generated-id", "5-0", "entries-added", 5]),
+  ).toThrow(TransportError);
+  expect(() =>
+    readStreamInfo(["length", 2, "last-generated-id", "5-0", "recorded-first-entry-id", "3-0"]),
+  ).toThrow(TransportError);
+});
+
+/** A log that has dropped nothing can have lost nothing, whatever a Cursor points at. */
+test("a log that never dropped an Entry says so", () => {
+  const reply = [
+    "length",
+    5,
+    "entries-added",
+    5,
+    "last-generated-id",
+    "5-0",
+    "recorded-first-entry-id",
+    "1-0",
+  ];
+
+  expect(readStreamInfo(reply).everDropped).toBe(false);
+});
+
+/**
+ * A log the retention emptied has dropped everything: its oldest served position is the one it
+ * reached, or an old Cursor would read as one that lost nothing.
+ */
+test("an empty log is read as having dropped everything up to where it stands", () => {
+  const emptied = [
+    "length",
+    0,
+    "entries-added",
+    9,
+    "last-generated-id",
+    "9-0",
+    "recorded-first-entry-id",
+    "0-0",
+  ];
+
+  expect(readStreamInfo(emptied)).toEqual({
+    lastGeneratedId: "9-0",
+    oldestKeptId: "9-0",
+    everDropped: true,
+  });
+  expect(
+    readStreamInfo(["length", 0, "entries-added", 0, "recorded-first-entry-id", "0-0"]),
+  ).toEqual({
+    lastGeneratedId: "0-0",
+    oldestKeptId: "0-0",
+    everDropped: false,
+  });
+});
+
+test("XRANGE is read into Entries with the position they were minted at", () => {
+  const reply = [
+    ["1-0", fieldsOf(JSON.stringify(message))],
+    ["2-0", fieldsOf(JSON.stringify(message))],
+  ];
+
+  expect(readRange(reply, "XRANGE").map((entry) => entry.id)).toEqual(["1-0", "2-0"]);
+});
+
+test("XREAD reads the same on a RESP2 array of streams and a RESP3 map of them", () => {
+  const entries = [["1-0", fieldsOf(JSON.stringify(message))]];
+
+  expect(readStreams([["{app}:log", entries]], "XREAD").map((entry) => entry.id)).toEqual(["1-0"]);
+  expect(readStreams(new Map([["{app}:log", entries]]), "XREAD").map((raw) => raw.id)).toEqual([
+    "1-0",
+  ]);
+  expect(readStreams({ "{app}:log": entries }, "XREAD").map((raw) => raw.id)).toEqual(["1-0"]);
+  expect(
+    readStreams([{ name: "{app}:log", messages: entries }], "XREAD").map((raw) => raw.id),
+  ).toEqual(["1-0"]);
+});
+
+/** A block that timed out with nothing to say is no Entries, not a failure. */
+test("a block that brought nothing back reads as no Entries", () => {
+  expect(readStreams(null, "XREAD")).toEqual([]);
+  expect(readStreams(undefined, "XREAD")).toEqual([]);
+  expect(readRange(null, "XRANGE")).toEqual([]);
+});
+
+/**
+ * An empty page reads as "caught up", so a shape this library cannot read must never be
+ * answered as one: it is a failure naming the command.
+ */
+test("a reply in no shape this Transport knows fails, naming the command", () => {
+  expect(() => readStreams("what?", "XREAD")).toThrow(TransportError);
+  expect(() => readStreams("what?", "XREAD")).toThrow(/`XREAD` answered a reply/);
+  expect(() => readRange("what?", "XRANGE")).toThrow(/`XRANGE` answered a reply/);
+  expect(() => readRange([["1-0"]], "XRANGE")).toThrow(TransportError);
+  expect(() => readStreamInfo("what?")).toThrow(/`XINFO STREAM` answered a reply/);
+});
+
+/** A client answering in Buffers is a caller's posture, not a shape to refuse. */
+test("a reply that came back as Buffers is read as the strings it holds", () => {
+  const reply = [
+    [Buffer.from("1-0"), [Buffer.from("entry"), Buffer.from(JSON.stringify(message))]],
+  ];
+
+  const raw = readRange(reply, "XRANGE");
+  expect(raw[0]?.id).toBe("1-0");
+  expect(parseEntry(raw[0]?.fields ?? [])).toEqual(message);
+});
+
+test("the envelope comes back out as the Entry that was published", () => {
+  expect(parseEntry(fieldsOf(JSON.stringify(message)))).toEqual(message);
+  const kick: Entry = { v: 1, type: "control", control: "kick", key: "user-7" };
+  expect(parseEntry(fieldsOf(JSON.stringify(kick)))).toEqual(kick);
+});
+
+/**
+ * The read path validates nothing beyond being able to make an Entry of what it read: an
+ * envelope it cannot is skipped, and everything else is delivered as it stands.
+ */
+test("an Entry this library cannot read is no Entry at all", () => {
+  expect(parseEntry([])).toBeUndefined();
+  expect(parseEntry(["other", "value"])).toBeUndefined();
+  expect(parseEntry(fieldsOf("{ not json"))).toBeUndefined();
+  expect(parseEntry(fieldsOf(JSON.stringify({ ...message, v: 2 })))).toBeUndefined();
+  expect(parseEntry(fieldsOf(JSON.stringify({ v: 1, type: "rumour" })))).toBeUndefined();
+  expect(
+    parseEntry(fieldsOf(JSON.stringify({ v: 1, type: "control", control: "reboot" }))),
+  ).toBeUndefined();
+  expect(
+    parseEntry(fieldsOf(JSON.stringify({ v: 1, type: "message", channel: 42 }))),
+  ).toBeUndefined();
+});
+
+test("a payload that does not match its schema is not this log's business", () => {
+  const odd = { v: 1, type: "message", channel: "chat:42", event: "message", payload: "a string" };
+
+  expect(parseEntry(fieldsOf(JSON.stringify(odd)))).toEqual(odd);
+});

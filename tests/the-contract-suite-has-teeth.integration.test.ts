@@ -34,7 +34,7 @@ type Flaw =
   | "inclusive-read"
   | "always-done"
   | "silent-replay"
-  | "approximate-gone"
+  | "over-eager-gone"
   | "skip-own-publishes"
   | "late-subscribe"
   | "open-after-close"
@@ -152,7 +152,7 @@ const createToyTransport = (log: ToyLog, flaw?: Flaw): Transport => {
       const lost =
         position === undefined ||
         position > log.minted ||
-        (flaw === "approximate-gone" ? position <= log.dropped : position < log.dropped);
+        (flaw === "over-eager-gone" ? position <= log.dropped + 1 : position < log.dropped);
 
       if (lost && flaw !== "silent-replay") return { gone: true };
 
@@ -279,7 +279,10 @@ const BROKEN: ReadonlyArray<[Flaw, string]> = [
     "read pages strictly after a Cursor and reports whether the caller has caught up",
   ],
   ["silent-replay", "the cap bounds the log, and a Cursor into what it dropped is gone"],
-  ["approximate-gone", "gone is exact: the Cursor of the newest dropped Entry still reads"],
+  [
+    "over-eager-gone",
+    "gone is honest: the oldest retained Entry reads, and what was dropped is gone",
+  ],
   [
     "skip-own-publishes",
     "subscribe delivers every Entry published after it resolved, this Instance's own included",
