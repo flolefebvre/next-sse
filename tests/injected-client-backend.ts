@@ -16,7 +16,8 @@ import type {
 import { createRedisTransport } from "../packages/next-sse/src/transport/redis.js";
 import { logKeyOf } from "../packages/next-sse/src/transport/redis-reply.js";
 
-import type { FailoverTopology, RunningTopology } from "./redis-topologies.js";
+import type { FailoverTopology, KillableTopology, RunningTopology } from "./redis-topologies.js";
+import { SENTINEL_DOWN_AFTER_MS, SENTINEL_FAILOVER_TIMEOUT_MS } from "./redis-topologies.js";
 
 /** How long a topology has to come up, image pull included, before the file gives up. */
 const TOPOLOGY_TIMEOUT_MS = 180_000;
@@ -176,11 +177,41 @@ export async function readerSurvivesAQuietLog(client: RedisClientLike): Promise<
  */
 export const FAILOVER_DELIVERY_BOUND_MS = 20_000;
 
+/**
+ * The same bound for the failover nobody arranged: the master's process dies where it stands
+ * (#81). It is a different number because a kill is a *detection*, not a handover — the reader
+ * has nothing to be routed to until the sentinel has noticed and elected.
+ *
+ * Derived, in the order the clock runs, and every term of it named: the sentinel will not call
+ * the master down before `down-after-milliseconds` (1 s, stated in the topology's sentinel
+ * config), the handover that follows is bounded by `failover-timeout` (5 s), and only then does
+ * the reader have somewhere to go — where the bound above already applies in full (the 15 s
+ * `socketTimeout` a written `XREAD` can sit for, plus the reissue pause and a round trip). So:
+ * 1 s + 5 s + 20 s = 26 s.
+ */
+const KILLED_MASTER_BOUND_MS =
+  SENTINEL_DOWN_AFTER_MS + SENTINEL_FAILOVER_TIMEOUT_MS + FAILOVER_DELIVERY_BOUND_MS;
+
 /** How long the client is given to find the promoted master again before the case Publishes. */
 const FAILOVER_USABLE_BOUND_MS = 20_000;
 
 /** How long the whole failover case is given: the promotion, then both bounds above, with room. */
 export const FAILOVER_TIMEOUT_MS = 120_000;
+
+/**
+ * Which failover a case forces, with the topology that can stage it. A discriminated pair
+ * rather than a name beside a topology: only a `KillableTopology` can be killed, so the type
+ * says what the action needs instead of a method throwing when it is not there.
+ */
+export type Failover =
+  | { action: "promote"; topology: FailoverTopology }
+  | { action: "kill"; topology: KillableTopology };
+
+/** What the failover the case forced is called in what it prints, and which issue observed it. */
+const failoverNames = {
+  promote: { what: "the promotion", issue: "#79" },
+  kill: { what: "the kill", issue: "#81" },
+} as const;
 
 /** One failure this Transport reported, kept with the moment it was reported. */
 interface Reported {
@@ -192,10 +223,12 @@ interface Reported {
  * What a blocking reader does while the master under it is replaced — the one runtime behaviour
  * on Cluster and on Sentinel that #57 left asserted by reasoning (#79).
  *
- * The case is the deployment's: subscribe, see a Publish, force the promotion of a replica, and
- * Publish again once every node reports the new master. What it asserts is the promise an App
- * holds the log to — both Entries, in order, inside a bound stated in one place above — so that
- * an unbounded hang fails here rather than in production. A Reset in between is recorded and
+ * The case is the deployment's: subscribe, see a Publish, force the failover the caller asked
+ * for — the replica promoted under the reader (#79), or the master killed outright under it
+ * (#81) — and Publish again once the topology reports the new master. What it asserts is the
+ * promise an App holds the log to — both Entries, in order, inside the bound that failover is
+ * worth, stated in one place above — so that an unbounded hang fails here rather than in
+ * production. A Reset in between is recorded and
  * printed rather than failed: ADR-0004 makes it an acceptable way through a failover, and which
  * way through it goes is the ADR's to describe, not this case's to pin.
  *
@@ -204,12 +237,19 @@ interface Reported {
  * written, so a retried Publish is a Publish that may land twice. So the case waits for the
  * client with a `tail`, which reads and writes nothing and can be asked again for as long as it
  * takes, and Publishes exactly once after it. What that wait costs is measured with the rest.
+ *
+ * The bound is the one the failover it was handed is worth: a handover is over as soon as the
+ * cluster or the sentinel says so, a kill cannot even begin before the sentinel has noticed.
  */
 export async function readerSurvivesAFailover(
   client: RedisClientLike,
-  topology: FailoverTopology,
+  failover: Failover,
   where: string,
 ): Promise<void> {
+  const bound = failover.action === "kill" ? KILLED_MASTER_BOUND_MS : FAILOVER_DELIVERY_BOUND_MS;
+  const usableBound =
+    failover.action === "kill" ? KILLED_MASTER_BOUND_MS : FAILOVER_USABLE_BOUND_MS;
+  const named = failoverNames[failover.action];
   const prefix = freshPrefix();
   const failures: Reported[] = [];
   const gaps: Reported[] = [];
@@ -228,11 +268,13 @@ export async function readerSurvivesAFailover(
     await transport.publish(tick("before"));
     await vi.waitFor(() => expect(seen).toHaveLength(1), { timeout: 5_000, interval: 25 });
 
-    await topology.promote(logKeyOf(prefix));
+    const key = logKeyOf(prefix);
+    if (failover.action === "kill") await failover.topology.kill(key);
+    else await failover.topology.promote(key);
     const promoted = Date.now();
 
     await vi.waitFor(() => transport.tail(), {
-      timeout: FAILOVER_USABLE_BOUND_MS,
+      timeout: usableBound,
       interval: 100,
     });
     const usable = Date.now();
@@ -240,7 +282,7 @@ export async function readerSurvivesAFailover(
     const published = Date.now();
 
     await vi.waitFor(() => expect(seen).toHaveLength(2), {
-      timeout: FAILOVER_DELIVERY_BOUND_MS,
+      timeout: bound,
       interval: 25,
     });
     const delivered = Date.now();
@@ -251,8 +293,8 @@ export async function readerSurvivesAFailover(
      * prints what it actually took.
      */
     console.info(
-      `[#79] ${where}: the log was readable again ${String(usable - promoted)}ms after the ` +
-        `promotion, the Publish accepted ${String(published - usable)}ms after that and ` +
+      `[${named.issue}] ${where}: the log was readable again ${String(usable - promoted)}ms ` +
+        `after ${named.what}, the Publish accepted ${String(published - usable)}ms after that and ` +
         `delivered ${String(delivered - published)}ms after that; ` +
         `${String(gaps.length)} reset(s)${describe(gaps, promoted)}; ` +
         `${String(failures.length)} reported failure(s)${describe(failures, promoted)}`,

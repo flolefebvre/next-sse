@@ -29,7 +29,7 @@ test(
   async () => {
     const { client, topology } = injected();
 
-    await readerSurvivesAFailover(client, topology, "cluster");
+    await readerSurvivesAFailover(client, { action: "promote", topology }, "cluster");
   },
   FAILOVER_TIMEOUT_MS,
 );
