@@ -17,6 +17,11 @@ export interface Session {
 }
 
 export const ROLE_COOKIE = "role";
+/**
+ * The cookie this reader's Key comes from. Nothing in the demo writes it: the Key is the
+ * identity, and the identity does not change when the role does — a Connection can only be
+ * Kicked by the Key it opened with. A real App sets it when it signs somebody in.
+ */
 export const USER_COOKIE = "user";
 
 /** The session a `Cookie` header carries, with the guest one as the default. */

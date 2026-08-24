@@ -31,6 +31,7 @@ import type { Cursor } from "../transport/index.js";
 
 import { createGetHandler } from "./handler.js";
 import type { Instance } from "./instance.js";
+import { createKick, type Kick } from "./kick.js";
 import { createHandoff, type Handoff } from "./snapshot.js";
 
 /**
@@ -43,6 +44,12 @@ import { createHandoff, type Handoff } from "./snapshot.js";
  * client is the Output the schema produced (ADR-0006).
  */
 export type Handle<Events extends EventMap = EventMap> = {
+  /**
+   * The Channel this Handle is bound to, as a string: the pattern with its params filled in
+   * (`chat:42`), never the Registry key it was declared under (`chat`). It is the exact value a
+   * Connection's Channel set holds, which is what makes `sse.kick(handle)` a match on it.
+   */
+  readonly name: string;
   publish<Name extends keyof Events & string>(
     event: Name,
     payload: InferInput<Events[Name]>,
@@ -56,13 +63,15 @@ export type Handle<Events extends EventMap = EventMap> = {
  * server-render handoff, and one Handle factory per Channel — called with the params its
  * pattern asks for, and with nothing when it asks for none.
  *
- * `channels` is what `<SSEProvider>` strips down and shares with the client, and `cursor` and
- * `snapshot` are the handoff of ADR-0007; all three are Registry keys ADR-0008 reserves,
- * precisely because the Registry needs the properties for itself.
+ * `channels` is what `<SSEProvider>` strips down and shares with the client, `cursor` and
+ * `snapshot` are the handoff of ADR-0007, and `kick` is the revocation of ADR-0003; all of them
+ * are Registry keys ADR-0008 reserves, precisely because the Registry needs the properties for
+ * itself.
  */
 export type Registry<Channels extends ChannelRecord = ChannelRecord> = Handoff & {
   handlers: { GET: (request: Request) => Promise<Response> };
   channels: Channels;
+  kick: Kick;
 } & {
   [Key in Exclude<keyof Channels & string, ReservedRegistryKey>]: (
     ...args: ParamsArgs<PatternOf<Channels[Key]>>
@@ -175,6 +184,7 @@ export function createSSE<Channels extends ChannelRecord>(
   const handoff = createHandoff(instance);
   registry.handlers = { GET: createGetHandler(instance) };
   registry.channels = declarations;
+  registry.kick = createKick(instance);
   registry.cursor = handoff.cursor;
   registry.snapshot = handoff.snapshot;
 
@@ -240,7 +250,7 @@ function handleFor(
     });
   };
 
-  const handle = { publish } as Handle;
+  const handle = { name, publish } as Handle;
   for (const event of Object.keys(declaration.events)) {
     handle[event] = (payload: unknown) => publish(event, payload);
   }

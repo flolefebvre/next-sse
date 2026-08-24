@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { cookies, headers } from "next/headers";
 
 import { appendMessage, appendNotice, type Message } from "@/lib/messages";
-import { ROLE_COOKIE, sessionFrom, USER_COOKIE, type Role } from "@/lib/session";
+import { ROLE_COOKIE, sessionFrom, type Role } from "@/lib/session";
 import { sse } from "@/lib/sse";
 
 /**
@@ -41,16 +41,42 @@ export async function announce(text: string): Promise<Message> {
 }
 
 /**
- * Who this reader is, for as long as this demo lasts: two cookies, and a re-render.
+ * What this reader may do, for as long as this demo lasts: one cookie, and a re-render.
  *
- * A real App signs in here. What matters for the library is what happens next: the page is
- * rendered again for the new session, the hooks reopen their Connection, and Authorize decides
- * afresh — which is why an admin sees the notices go live without a reload, and a guest sees
- * that Channel refused.
+ * A real App signs in here. The re-render is only half of what a change of session owes: it
+ * gives the page new server-rendered data, and it does nothing at all to the Connection that is
+ * already open — that one is still carrying the Channels the *old* session was authorized for.
+ * `kickMe` below is the other half.
+ *
+ * The Key is deliberately left alone. What changed about this reader is their role, not who
+ * they are, and a Kick addresses a Connection by the Key it *opened* with: rotate the Key here
+ * and the open Connection is left addressable only by a name nothing will ever use again — a
+ * revocation that writes an Entry and matches nobody. An App whose sign-in really does change
+ * identity has to Kick the Key that is being left behind, before the new one is anywhere.
  */
 export async function switchRole(role: Role): Promise<void> {
   const jar = await cookies();
   jar.set(ROLE_COOKIE, role);
-  jar.set(USER_COOKIE, role === "admin" ? "ada" : "sam");
   revalidatePath("/");
+}
+
+/**
+ * End this reader's own Connections, so the next one is Authorized against the session it has
+ * now: the admin panel flips to `refused` where it was live, without a reload and without
+ * losing a Message on the room, which goes on streaming across the cut.
+ *
+ * It is a call of its own, and that is the whole lesson. A Kick issued by the very request that
+ * changed the session races that request's own response: the `reconnect` travels on the open
+ * stream, the new cookie travels in the response, and nothing orders the two — a client that
+ * reopens first is re-Authorized against the session it was just taken out of. When the session
+ * about to be re-Authorized is the one you just changed, Kick from the next request, not from
+ * the same one.
+ *
+ * The Key it reads is the one the open Connection carries, because `switchRole` did not touch
+ * it. That is the other half of the same rule: a Kick can only ever end a Connection whose Key
+ * it names.
+ */
+export async function kickMe(): Promise<void> {
+  const session = sessionFrom((await headers()).get("cookie"));
+  await sse.kick({ key: session.userId });
 }

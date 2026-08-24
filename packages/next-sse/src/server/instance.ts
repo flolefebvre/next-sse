@@ -32,8 +32,8 @@ export interface Connection {
   readonly channels: ReadonlySet<string>;
   /**
    * The opaque identity this App gave the Connection, when it configured a `key` (ADR-0003).
-   * Nothing reads it yet: it is what a Kick will address Connections by, and the Connection
-   * table is where it has to be for that to be possible at all.
+   * It is what a Kick addresses Connections by, which is why it lives on the Connection table:
+   * a Kick is a walk of that table, and this is the field it matches on.
    */
   readonly key?: string;
   /** Hand it one Message it is subscribed to. Must not throw. */
@@ -116,14 +116,18 @@ export interface Instance {
 }
 
 /**
- * One Connection as the Instance holds it: itself, the live Entries buffered while it is still
+ * One Connection as the Instance holds it: itself, the live Messages buffered while it is still
  * opening, and the Cursors its replay already carried. A buffer of `undefined` is a Connection
  * that has caught up and is live; `replayed` of `undefined` is one the live feed has carried
  * past everything it was replayed.
+ *
+ * Only Messages are buffered. A control Entry is acted on the moment the feed carries it — a
+ * Connection that is still opening is kicked like any other — so it has nothing to wait in a
+ * buffer for, and the Cursor cut that empties the buffer never has to reason about it.
  */
 interface Held {
   connection: Connection;
-  buffer: StoredEntry[] | undefined;
+  buffer: StoredMessage[] | undefined;
   replayed: Set<Cursor> | undefined;
   /**
    * The live feed lost its place while this Connection was still opening, so it is owed a
@@ -354,12 +358,25 @@ function gap(state: InstanceState): void {
 }
 
 /**
- * One Entry, to the Connections that asked for its Channel. An Entry no Connection here
- * subscribes to is dropped for free — during a rolling deploy an Instance legitimately reads
- * Channels it knows nothing about. A Connection that is still opening buffers it whole,
- * Channel and kind alike: the cut that ends its replay searches that buffer by Cursor.
+ * One Entry, to the Connections it concerns. A Message goes to the ones that asked for its
+ * Channel, and an Entry no Connection here subscribes to is dropped for free — during a rolling
+ * deploy an Instance legitimately reads Channels it knows nothing about. A Connection that is
+ * still opening buffers it whole, Channel and kind alike: the cut that ends its replay searches
+ * that buffer by Cursor.
+ *
+ * A Kick is the other thing the log carries, and it takes the branch above rather than the
+ * delivery path: it is not addressed to a Channel a Connection reads, it is addressed to the
+ * Connection itself. Every Instance reads the whole log, so the Kick one of them published
+ * reaches the Connections all the others hold, which is the whole of how it crosses Instances
+ * (ADR-0003).
  */
 function route(state: InstanceState, entry: StoredEntry): void {
+  if (entry.type === "control") {
+    kick(state, entry);
+
+    return;
+  }
+
   for (const held of state.held.values()) {
     if (held.buffer === undefined) feed(held, entry);
     else held.buffer.push(entry);
@@ -367,10 +384,37 @@ function route(state: InstanceState, entry: StoredEntry): void {
 }
 
 /**
- * One Entry to a Connection past its replay, unless the replay already carried it. The first
+ * The Connections this Kick names, ended the one way a Connection is ended: `reconnect`, and the
+ * client comes straight back with its Cursor to be Authorized afresh (ADR-0003).
+ *
+ * A Connection that is still opening is kicked here like any other. `reconnect()` is safe on one
+ * — the ending is remembered and carried out after `ready`, with no replay (ADR-0004) — and it
+ * is a no-op the second time, so nothing has to be held back for the buffer this Kick is not put
+ * into. It is deliberately not routed through `feed()`: a Kick is never replayed, so it has no
+ * business near the Cursor dedupe that ends a replay.
+ *
+ * A Kick that names neither a Key nor a Channel names no Connection. It is a malformed Entry —
+ * something else writing this App's log, or a version of the library that meant something by it —
+ * and the safe reading of it is none, never every Connection this Instance holds.
+ */
+function kick(state: InstanceState, entry: Extract<StoredEntry, { type: "control" }>): void {
+  const matches = (connection: Connection): boolean => {
+    if (entry.key !== undefined) return connection.key === entry.key;
+    if (entry.channel !== undefined) return connection.channels.has(entry.channel);
+
+    return false;
+  };
+
+  for (const held of state.held.values()) {
+    if (matches(held.connection)) held.connection.reconnect();
+  }
+}
+
+/**
+ * One Message to a Connection past its replay, unless the replay already carried it. The first
  * Entry the replay did not carry is where the two joined up, and nothing is checked afterwards.
  */
-function feed(held: Held, entry: StoredEntry): void {
+function feed(held: Held, entry: StoredMessage): void {
   if (held.replayed !== undefined) {
     if (held.replayed.has(entry.cursor)) return;
     held.replayed = undefined;
@@ -379,9 +423,8 @@ function feed(held: Held, entry: StoredEntry): void {
   deliver(held.connection, entry);
 }
 
-/** One Entry to one live Connection: a Message on a Channel it named, and nothing else. */
-function deliver(connection: Connection, entry: StoredEntry): void {
-  if (entry.type !== "message") return;
+/** One Message to one live Connection, if it is on a Channel that Connection named. */
+function deliver(connection: Connection, entry: StoredMessage): void {
   if (connection.channels.has(entry.channel)) connection.deliver(entry);
 }
 
