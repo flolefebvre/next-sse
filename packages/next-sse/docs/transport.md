@@ -91,10 +91,13 @@ runs on a `duplicate()` of it. Standalone, Cluster and Sentinel clients are reco
 structurally, and commands are handed to each one the way it takes them — a Cluster client gets
 the routing key, a Sentinel client the read/write intent, always the master.
 
-**Posture on Cluster and Sentinel, stated plainly**: those clients are accepted and routed
-correctly, and that routing is covered by unit tests only. They have not been exercised against a
-real Cluster or Sentinel topology. Standalone Redis and Valkey are what the integration suite runs
-against on every push. Treat Cluster and Sentinel as best effort until that gap is closed.
+**Posture on Cluster and Sentinel, stated plainly**: the whole Transport contract runs on every
+push against a real three-master cluster through an injected `createCluster` client, and against a
+real master watched by a sentinel through an injected `createSentinel` client, on both Redis 8 and
+Valkey 8 — the same suite standalone runs, minus the outage cases, which need one Transport's own
+path to the backend cut and have no honest counterpart in a multi-node topology. What is _not_
+covered is failover: what the reader's blocking read does while a cluster or a sentinel promotes a
+new master has not been exercised.
 
 ### Error behaviour
 

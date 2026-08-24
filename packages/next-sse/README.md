@@ -140,10 +140,10 @@ whatever the Registry imports — into the browser bundle.
 - [Wire format](docs/wire-format.md) — publish into an app from any language.
 - [When not to use SSE](docs/when-not-to-use-sse.md) — and what to use instead.
 
-On Redis and Valkey: standalone servers are exercised by the integration suite on every push
-(Redis 8 and Valkey 8; the floor is Redis 7.0 / Valkey 8). Injected Cluster and Sentinel clients
-are accepted and routed correctly, but that routing is covered by unit tests only — treat them as
-best effort until a real topology is in the suite.
+On Redis and Valkey: the integration suite exercises standalone servers, a real three-master
+cluster and a real master-plus-sentinel on every push (Redis 8 and Valkey 8; the floor is Redis
+7.0 / Valkey 8), the last two through an injected `createCluster` or `createSentinel` client.
+Failover of the blocking reader is the one thing not covered.
 
 ## License
 
