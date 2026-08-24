@@ -417,13 +417,13 @@ test("two Channels declaring the same pattern are refused", () => {
  * so a different number of parts or a different literal anywhere in one of them is enough.
  */
 test("patterns that can make no common name are left alone", () => {
-  const { channel, createSSE } = initSSE({ drain: false, transport: createMemoryTransport() });
   const events = { message: messageSchema };
+  const { channel, createSSE } = initSSE({ drain: false, transport: createMemoryTransport() });
 
   expect(() =>
     createSSE({
-      chat: channel({ pattern: "chat:{roomId}", events, authorize: () => true }),
       presence: channel({ pattern: "presence:{roomId}", events, authorize: () => true }),
+      chat: channel({ pattern: "chat:{roomId}", events, authorize: () => true }),
       typing: channel({ pattern: "chat:{roomId}:typing", events, authorize: () => true }),
       inbox: channel({ pattern: "user:{userId}:inbox", events, authorize: () => true }),
       outbox: channel({ pattern: "user:{userId}:outbox", events, authorize: () => true }),
