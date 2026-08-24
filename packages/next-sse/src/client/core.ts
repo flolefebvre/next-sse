@@ -118,7 +118,8 @@ interface Subscriber extends Subscription {
  *
  * The Cursor is the third rule, and the core's whole part in gap-free delivery is to carry it:
  * it remembers the last event id it saw — `ready`'s Cursor to begin with, then every Message's
- * `id` — and puts it in the URL of every Connection it opens itself. It never parses it, never
+ * `id`, and the position a `reset` names when the one it held turns out to be unusable — and
+ * puts it in the URL of every Connection it opens itself. It never parses it, never
  * compares two of them, and never decides what to replay; the format stays the Transport's
  * (ADR-0001) and the exactly-once cut stays the Instance's (ADR-0005). A native `EventSource`
  * reconnect does the same thing for free through `Last-Event-ID`.
@@ -403,8 +404,18 @@ export function createCore({ url, eventSource, page, onReset }: CoreOptions): Co
      * this Connection, and the gap this Cursor left is not in anything it holds — refetching on
      * its behalf would refresh a route because of a stream it is not on.
      * Reset is not a status (ADR-0007): the Connection is live and stays live.
+     *
+     * It also says where the Instance has put this Connection — the tail it adopted, or the
+     * position its live feed resumed at — and that is taken exactly as `ready`'s is, because the
+     * position this client was holding is the one just refused. Without it a page whose hooks
+     * carry no Snapshot would keep the refused Cursor, meet the same refusal on its next
+     * reconnect, and pay a second refetch for the same gap. Presence is all that is checked,
+     * never the value: what a Cursor means is the Transport's (ADR-0001).
      */
-    on("reset", () => {
+    on("reset", (event) => {
+      const { cursor } = JSON.parse(event.data) as { cursor?: unknown };
+      if (typeof cursor === "string" && cursor !== "") lastEventId = cursor;
+
       let anyDefault = false;
       for (const subscriber of [...subscribers]) {
         if (refused.has(subscriber.channel)) continue;

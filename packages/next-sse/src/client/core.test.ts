@@ -425,10 +425,11 @@ test("the core carries the Cursor it was last given, without comparing it to the
 
 /**
  * Control events are not positions (ADR-0004): they carry no `id:`, so none of them moves the
- * Cursor — and `reset`, whatever refetch it sets off above, leaves the Connection exactly where
- * it was.
+ * Cursor by being received. A `reset` that names no position is one of them — and it is the one
+ * that leaves the Connection where it was rather than nowhere, which is what makes a wire this
+ * core did not write safe to read.
  */
-test("no Control event moves the Cursor, reset included", async () => {
+test("no Control event moves the Cursor by being received", async () => {
   const { opened, subscriber } = await positioned();
 
   only(opened).emit("reset");
@@ -439,6 +440,42 @@ test("no Control event moves the Cursor, reset included", async () => {
 
   expect(opened[1]?.cursor).toBe("cursor-8");
   expect(subscriber.statuses).toEqual(["live", "reconnecting"]);
+});
+
+/**
+ * The one position a Control event does move, and it moves it by saying so rather than by
+ * arriving. The Cursor this client holds is the one the Instance has just refused, so keeping it
+ * would mean meeting the same refusal on the next reconnect — one more `reset`, one more
+ * refetch, for a gap already dealt with. The value is taken as it comes and never compared
+ * (ADR-0001).
+ */
+test("a reset moves the Cursor to the position it names, and the next Connection opens there", async () => {
+  const { opened, subscriber } = await positioned();
+
+  only(opened).emit("reset", { cursor: "cursor-40" });
+  only(opened).fail();
+  await vi.advanceTimersByTimeAsync(1000);
+
+  expect(opened[1]?.cursor).toBe("cursor-40");
+  expect(subscriber.statuses).toEqual(["reconnecting"]);
+});
+
+/**
+ * The case the whole thing exists for: a page whose hooks brought no Snapshot. Its default
+ * `onReset` refreshes a route that hands it no new Cursor, so the position a `reset` names is
+ * the only one it will ever get — and a client that never received a Message has nothing else
+ * to move it on.
+ */
+test("a live-only subscriber reconnects on the position its reset named", async () => {
+  const { opened } = await subscribed();
+  only(opened).ready({ cursor: "cursor-0", refused: [] });
+
+  only(opened).emit("reset", { cursor: "cursor-99" });
+  only(opened).caughtUp();
+  only(opened).fail();
+  await vi.advanceTimersByTimeAsync(1000);
+
+  expect(opened[1]?.cursor).toBe("cursor-99");
 });
 
 /**
