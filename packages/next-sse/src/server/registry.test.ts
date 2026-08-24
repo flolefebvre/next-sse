@@ -200,6 +200,12 @@ test("a payload the schema refuses rejects the Publish, and reaches no log", asy
   expect(page.entries).toEqual([]);
 });
 
+test("a Channel whose pattern has a placeholder the filler cannot fill is refused", () => {
+  const { channel } = initSSE({ transport: createMemoryTransport() });
+
+  expect(() => channel({ pattern: "chat:{room-id}", events: {} })).toThrow(/placeholder/);
+});
+
 /** A `:` in a param value would forge a Channel name another pattern could have made. */
 test("a param value that would forge another Channel name is refused", () => {
   const sse = anApp();

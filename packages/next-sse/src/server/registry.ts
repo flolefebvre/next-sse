@@ -8,7 +8,7 @@ import type {
   NoReservedKeys,
   PatternOf,
 } from "../internal/channel.js";
-import { fillPattern, type ParamsArgs } from "../internal/pattern.js";
+import { assertFillablePattern, fillPattern, type ParamsArgs } from "../internal/pattern.js";
 import {
   RESERVED_EVENT_NAMES,
   RESERVED_REGISTRY_KEYS,
@@ -86,6 +86,8 @@ export function channel<const Pattern extends string, Events extends EventMap>(d
   pattern: Pattern;
   events: Events & JsonOutputs<Events> & NoReservedEvents<Events>;
 }): ChannelDeclaration<Pattern, Events> {
+  assertFillablePattern(declaration.pattern);
+
   const events = declaration.events as Events;
   for (const name of Object.keys(events)) {
     if ((RESERVED_EVENT_NAMES as readonly string[]).includes(name)) {

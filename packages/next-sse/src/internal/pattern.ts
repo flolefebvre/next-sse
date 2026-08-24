@@ -1,6 +1,12 @@
 /** Where a param goes in a Channel pattern: `chat:{roomId}`. */
 const PLACEHOLDER = /\{(\w+)\}/g;
 
+/** Anything written between braces, whether or not it is a name a param can have. */
+const ANY_PLACEHOLDER = /\{([^}]*)\}/g;
+
+/** What a param name may be made of: exactly what the filler's placeholder recognises. */
+const PARAM_NAME = /^\w+$/;
+
 /** The separator a pattern is written with, and so the one character a param value cannot hold. */
 const SEPARATOR = ":";
 
@@ -48,4 +54,25 @@ export function fillPattern(pattern: string, params: Record<string, string>): st
 
     return value;
   });
+}
+
+/**
+ * Refuse a pattern whose placeholders the filler would not fill.
+ *
+ * `{room-id}` reads like a param and the type level infers one from it, but the filler only
+ * recognises `\w+`, so the brace would survive into the Channel name and every room would
+ * publish to the same one. The two grammars have to agree, and the declaration is where the
+ * App hears that they do not.
+ */
+export function assertFillablePattern(pattern: string): void {
+  for (const match of pattern.matchAll(ANY_PLACEHOLDER)) {
+    const name = match[1] ?? "";
+    if (!PARAM_NAME.test(name)) {
+      throw new Error(
+        `The Channel "${pattern}" has a "{${name}}" placeholder, and a param name may only ` +
+          `hold letters, digits and "_": nothing else is filled in, and the braces would ` +
+          `reach the wire.`,
+      );
+    }
+  }
 }

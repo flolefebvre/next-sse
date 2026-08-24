@@ -1,6 +1,12 @@
 import { expect, expectTypeOf, test } from "vitest";
 
-import { fillPattern, type ParamNames, type ParamsArgs, type ParamsOf } from "./pattern.js";
+import {
+  assertFillablePattern,
+  fillPattern,
+  type ParamNames,
+  type ParamsArgs,
+  type ParamsOf,
+} from "./pattern.js";
 
 test("a pattern makes a Channel name out of its params", () => {
   expect(fillPattern("chat:{roomId}", { roomId: "42" })).toBe("chat:42");
@@ -35,4 +41,19 @@ test("a pattern says which params it needs, from the literal alone", () => {
 test("the call takes params exactly when the pattern has them", () => {
   expectTypeOf<ParamsArgs<"chat:{roomId}">>().toEqualTypeOf<[params: { roomId: string }]>();
   expectTypeOf<ParamsArgs<"announcements">>().toEqualTypeOf<[]>();
+});
+
+/**
+ * The type level reads every `{...}` as a param; the filler only fills `\w+`. A pattern where
+ * the two disagree would publish every room to one Channel, so it is refused where it is
+ * written.
+ */
+test("a pattern whose placeholder could not be filled is refused", () => {
+  expect(() => assertFillablePattern("chat:{room-id}")).toThrow(/only.*letters, digits/s);
+  expect(() => assertFillablePattern("chat:{}")).toThrow(/placeholder/);
+  expect(() => assertFillablePattern("chat:{ roomId }")).toThrow(/placeholder/);
+
+  expect(() => assertFillablePattern("chat:{roomId}")).not.toThrow();
+  expect(() => assertFillablePattern("user:{user_id}:inbox")).not.toThrow();
+  expect(() => assertFillablePattern("announcements")).not.toThrow();
 });

@@ -3,7 +3,7 @@ import * as v from "valibot";
 import { expect, expectTypeOf, test } from "vitest";
 import { z } from "zod";
 
-import type { IsJson } from "./json.js";
+import type { IsJson, JsonValue } from "./json.js";
 import {
   asType,
   InvalidPayloadError,
@@ -127,6 +127,21 @@ test("what JSON can carry is what the bound accepts", () => {
   expectTypeOf<IsJson<Record<string, number>>>().toEqualTypeOf<true>();
 });
 
+/**
+ * A payload type may be recursive — a comment with its replies is the ordinary case — and the
+ * walk has a floor so that such a type is answered rather than made to fail compilation.
+ */
+interface Comment {
+  id: string;
+  replies: Comment[];
+}
+
+test("a recursive payload type is answered, not made to fail compilation", () => {
+  expectTypeOf<IsJson<Comment>>().toEqualTypeOf<true>();
+  expectTypeOf<IsJson<JsonValue>>().toEqualTypeOf<true>();
+  expectTypeOf(asType<Comment>()).toEqualTypeOf<StandardSchemaV1<Comment, Comment>>();
+});
+
 test("what JSON cannot carry honestly is what the bound rejects", () => {
   expectTypeOf<IsJson<Date>>().toEqualTypeOf<false>();
   expectTypeOf<IsJson<{ at: Date }>>().toEqualTypeOf<false>();
@@ -135,6 +150,12 @@ test("what JSON cannot carry honestly is what the bound rejects", () => {
   expectTypeOf<IsJson<{ run: () => void }>>().toEqualTypeOf<false>();
   expectTypeOf<IsJson<bigint>>().toEqualTypeOf<false>();
   expectTypeOf<IsJson<symbol>>().toEqualTypeOf<false>();
+});
+
+/** `JSON.stringify` drops a symbol-keyed property; a number-keyed one comes back as a string. */
+test("a property is JSON only if stringify keeps its key", () => {
+  expectTypeOf<IsJson<{ [Symbol.iterator]: string }>>().toEqualTypeOf<false>();
+  expectTypeOf<IsJson<{ 1: string }>>().toEqualTypeOf<true>();
 });
 
 /** `undefined` follows `JSON.stringify`: omitted where a key may be missing, a lie anywhere else. */
