@@ -21,19 +21,16 @@ test("a refused Channel is dropped while the others stream", async () => {
 
     await stream.next("caught-up");
 
-    const published = await fetch(`${instance.url}/api/webhook`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: "the room is not refused" }),
-    });
-    expect(published.status).toBe(200);
+    await publish(instance.url, "the room is not refused");
 
-    const message = await stream.next("message");
-    expect(JSON.parse(message.data)).toEqual({
-      channel: "chat:42",
-      event: "message",
-      payload: { id: expect.any(String), text: "the room is not refused" },
-    });
+    /**
+     * What the envelope looks like is the Publish scenario's claim; this one asks only that the
+     * Channel which passed Authorize is still carrying its Messages on a Connection that had one
+     * refused.
+     */
+    const { channel, payload } = JSON.parse((await stream.next("message")).data) as Envelope;
+    expect(channel).toBe("chat:42");
+    expect(payload.text).toBe("the room is not refused");
 
     await expectTheAdminChannelAlone(instance.url);
   } finally {
@@ -41,6 +38,23 @@ test("a refused Channel is dropped while the others stream", async () => {
     await instance.stop();
   }
 });
+
+/** As much of a Message as this scenario reads. */
+interface Envelope {
+  channel: string;
+  payload: { text: string };
+}
+
+/** One Message into the room, through the demo's own webhook. */
+async function publish(url: string, text: string): Promise<void> {
+  const published = await fetch(`${url}/api/webhook`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+
+  expect(published.status).toBe(200);
+}
 
 /**
  * The same reader asking for nothing but the Channel it may not have: still a `200`, still
