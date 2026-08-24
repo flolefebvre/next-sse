@@ -10,9 +10,10 @@ export interface Handoff {
   /**
    * This request's Cursor: the log's tail, read once however many server components ask for it.
    *
-   * An App rarely calls it — `snapshot` is what it reaches for — and it is public because a
-   * server component that hands its data over some other way still has to take its position
-   * before it reads.
+   * An App has no use for one on its own: a position is spent by handing a Snapshot to a hook,
+   * and a page with nothing to read still goes gap-free through `sse.snapshot(() => null)`. It
+   * is here because the spec names it (#30, ADR-0007) and because `snapshot` is built on it —
+   * one memoised read, however many server components a render has.
    */
   cursor(): Promise<Cursor>;
   /**
