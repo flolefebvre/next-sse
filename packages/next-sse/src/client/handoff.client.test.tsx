@@ -140,12 +140,18 @@ test("several Snapshots of one render cost one Connection, and one reconnect", a
  * along does not move.
  */
 test("a hook arriving with a Cursor reopens the shared Connection, duplicates and all", async () => {
+  /**
+   * Room 42's Snapshot is taken once and never replaced: without that, opening the other room
+   * would re-render it with a new Snapshot object, restart its state, and the duplicate this
+   * test is about would be absorbed by the restart rather than by the reducer.
+   */
+  const first = snapshotOf("cursor-3", [BEFORE]);
   function Page() {
     const [late, setLate] = useState(false);
 
     return (
       <>
-        <Room snapshot={snapshotOf("cursor-3", [BEFORE])} />
+        <Room snapshot={first} />
         {late && <Room snapshot={snapshotOf("cursor-9")} roomId="7" />}
         <button onClick={() => setLate(true)}>open the other room</button>
       </>

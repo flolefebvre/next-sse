@@ -12,4 +12,4 @@ import type { sse } from "./sse";
  * What is left is types. The Channel names themselves come from `<SSEProvider>` at render
  * time, as data.
  */
-export const { channels, useChannel } = createClient<typeof sse>();
+export const { channels, useChannel, useChannelState } = createClient<typeof sse>();

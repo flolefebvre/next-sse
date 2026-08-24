@@ -15,7 +15,9 @@ const { channel, createSSE } = initSSE();
 export const sse = createSSE({
   chat: channel({
     pattern: "chat:{roomId}",
-    events: { message: z.object({ text: z.string().trim().min(1) }) },
+    events: {
+      message: z.object({ id: z.string(), text: z.string().trim().min(1) }),
+    },
   }),
 });
 
