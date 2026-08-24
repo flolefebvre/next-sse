@@ -1,42 +1,15 @@
 import { useState } from "react";
 import { beforeEach, expect, test, vi } from "vitest";
 
-import type { ChannelDeclaration } from "../internal/channel.js";
-import type { StandardSchemaV1 } from "../internal/standard-schema.js";
-
-import { fakeEventSources, type FakeEventSource } from "./fake-event-source.js";
-import { createClient, SSEClientProvider, type ClientChannels } from "./index.js";
+import { channels, DECLARED, installEventSource, useChannel, type Chat } from "./app.testkit.js";
+import type { FakeEventSource } from "./fake-event-source.js";
+import { createClient, SSEClientProvider } from "./index.js";
 import { act, flush, mount, type Mounted } from "./react.testkit.js";
 
-/**
- * The App of these tests, written the way an App writes it: the Registry is a type, the
- * Channels are Handles, and no Channel name is spelled out in a component.
- */
-type Chat = ChannelDeclaration<"chat:{roomId}", { message: StandardSchemaV1<{ text: string }> }>;
-type Presence = ChannelDeclaration<
-  "presence:{roomId}",
-  { joined: StandardSchemaV1<{ who: string }> }
->;
-
-const { channels, useChannel } = createClient<{ channels: { chat: Chat; presence: Presence } }>();
-
-/** What `<SSEProvider>` would have handed down: the allowlist, and nothing else. */
-const DECLARED: ClientChannels = {
-  chat: { pattern: "chat:{roomId}", events: ["message"] },
-  presence: { pattern: "presence:{roomId}", events: ["joined"] },
-};
-
-/**
- * jsdom registers no `EventSource` — no DOM shim does — so the browser's own global is what a
- * test supplies. The core takes its constructor by injection and defaults to this global,
- * which is why nothing here has to patch a module.
- */
 let opened: FakeEventSource[] = [];
 
 beforeEach(() => {
-  const fake = fakeEventSources();
-  opened = fake.opened;
-  (globalThis as { EventSource?: unknown }).EventSource = fake.EventSource;
+  opened = installEventSource();
 });
 
 function Messages({ roomId = "42" }: { roomId?: string }) {
@@ -58,8 +31,13 @@ function Presence() {
   return <span>{channel}</span>;
 }
 
+/**
+ * The provider, as a test mounts one: with an `onReset` of its own, which is what keeps the
+ * default — `router.refresh()`, and so `next/navigation` and an App Router above it — out of
+ * every test that is not about Reset. Reset itself has its own file.
+ */
 const app = (children: React.ReactNode, url?: string) => (
-  <SSEClientProvider channels={DECLARED} url={url}>
+  <SSEClientProvider channels={DECLARED} url={url} onReset={() => undefined}>
     {children}
   </SSEClientProvider>
 );
