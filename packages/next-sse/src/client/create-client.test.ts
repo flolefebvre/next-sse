@@ -3,7 +3,8 @@ import { z } from "zod";
 
 import type { ChannelDeclaration } from "../internal/channel.js";
 
-import type { Channels, Handle, Handlers, SSEClient } from "./create-client.js";
+import type { SSEClient } from "./create-client.js";
+import type { Channels, Handle, Handlers } from "./handle.js";
 
 /**
  * The client's half of ADR-0002, as a type test: a Client Component knows the App's Channels

@@ -3,13 +3,8 @@
 import { notImplemented } from "../internal/not-implemented.js";
 
 export { createClient } from "./create-client.js";
-export type {
-  ChannelSubscription,
-  Channels,
-  Handle,
-  Handlers,
-  SSEClient,
-} from "./create-client.js";
+export type { SSEClient } from "./create-client.js";
+export type { ChannelOptions, Channels, ChannelSubscription, Handle, Handlers } from "./handle.js";
 export { SSEClientProvider } from "./provider.js";
 export type { ClientChannel, ClientChannels, SSEClientProviderProps } from "./provider.js";
 export type { Status } from "./core.js";

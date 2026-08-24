@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { beforeEach, expect, test, vi } from "vitest";
 
+import { sealSnapshot, type Snapshot } from "../internal/snapshot.js";
+
 import { channels, DECLARED, installEventSource, useChannel, type Chat } from "./app.testkit.js";
 import type { FakeEventSource } from "./fake-event-source.js";
 import { createClient, SSEClientProvider } from "./index.js";
@@ -294,6 +296,94 @@ test("a hook that never received a Message still reconnects from the Cursor read
   });
 
   expect(tree.container.textContent).toBe("published while it was away");
+
+  await tree.unmount();
+});
+
+/**
+ * The low-level half of the handoff (ADR-0007): the component takes the Snapshot its server
+ * component handed it, gives it to the hook, and the Connection resumes from the position that
+ * render read its data at. Nothing here spells out a Cursor — the component cannot, and that is
+ * the point of the Snapshot being opaque.
+ */
+function Resuming({ snapshot }: { snapshot: Snapshot<string[]> }) {
+  const [texts, setTexts] = useState(snapshot.data);
+  useChannel(
+    channels.chat({ roomId: "42" }),
+    { message: (payload) => setTexts((seen) => [...seen, payload.text]) },
+    { snapshot },
+  );
+
+  return <p>{texts.join("|")}</p>;
+}
+
+test("a hook that brings a Snapshot resumes its Connection from inside it", async () => {
+  const tree = await mount(app(<Resuming snapshot={sealSnapshot("cursor-3", ["read"])} />));
+  await flush();
+
+  expect(only().cursor).toBe("cursor-3");
+  expect(tree.container.textContent).toBe("read");
+
+  await tree.unmount();
+});
+
+/**
+ * A replay answers the Cursor somebody brought, and is a duplicate to everybody else. The hook
+ * that asked for it is fed it; the one that brought no Snapshot hears nothing until the
+ * Connection is live, because it has no way to tell what it already has.
+ */
+test("the replay reaches the hook that brought a Snapshot, and not the live-only one", async () => {
+  const tree = await mount(
+    app(
+      <>
+        <Resuming snapshot={sealSnapshot("cursor-3", ["read"])} />
+        <Messages />
+      </>,
+    ),
+  );
+  await flush();
+
+  await act(() => {
+    only().ready({ cursor: "cursor-3", refused: [] });
+    only().message("chat:42", "message", { text: "replayed" }, "cursor-4");
+    only().caughtUp();
+    only().message("chat:42", "message", { text: "live" }, "cursor-5");
+  });
+
+  expect(tree.container.querySelector("p")?.textContent).toBe("read|replayed|live");
+  expect(tree.container.querySelectorAll("p")[1]?.textContent).toBe("live");
+
+  await tree.unmount();
+});
+
+/**
+ * What a Reset costs once the refetch has happened: the refreshed server component minted a new
+ * Snapshot, the new prop reaches the hook, and the Connection reopens from that position. One
+ * reconnect, and the reducers of whatever holds the state absorb the overlap.
+ */
+test("a new Snapshot prop reopens the Connection from the new position", async () => {
+  function Refreshing() {
+    const [snapshot, setSnapshot] = useState(sealSnapshot("cursor-3", ["read"]));
+
+    return (
+      <>
+        <Resuming snapshot={snapshot} />
+        <button onClick={() => setSnapshot(sealSnapshot("cursor-9", ["read again"]))}>
+          refresh
+        </button>
+      </>
+    );
+  }
+  const tree = await mount(app(<Refreshing />));
+  await flush();
+
+  await act(() => {
+    tree.container.querySelector("button")?.click();
+  });
+  await flush();
+
+  expect(opened).toHaveLength(2);
+  expect(opened[1]?.cursor).toBe("cursor-9");
 
   await tree.unmount();
 });

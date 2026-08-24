@@ -25,8 +25,8 @@ beforeEach(() => {
   opened = installEventSource();
 });
 
-function Subscriber({ roomId = "42" }: { roomId?: string }) {
-  const { status } = useChannel(channels.chat({ roomId }), {});
+function Subscriber({ roomId = "42", onReset }: { roomId?: string; onReset?: () => void }) {
+  const { status } = useChannel(channels.chat({ roomId }), {}, { onReset });
 
   return <p data-status={status} />;
 }
@@ -77,6 +77,31 @@ test("an onReset on the provider replaces the refetch, and Next is never reached
   });
 
   expect(onReset).toHaveBeenCalledTimes(1);
+
+  await tree.unmount();
+});
+
+/**
+ * A hook that knows how to refetch its own state says so, and the others are still covered by
+ * the provider: overriding is per hook, not per page.
+ */
+test("a hook's own onReset overrides the provider's, for that hook alone", async () => {
+  const provider = vi.fn();
+  const mine = vi.fn();
+  const tree = await mount(
+    <SSEClientProvider channels={DECLARED} onReset={provider}>
+      <Subscriber onReset={mine} />
+      <Subscriber roomId="7" />
+    </SSEClientProvider>,
+  );
+  await flush();
+
+  await act(() => {
+    opened[0]?.emit("reset");
+  });
+
+  expect(mine).toHaveBeenCalledTimes(1);
+  expect(provider).toHaveBeenCalledTimes(1);
 
   await tree.unmount();
 });
