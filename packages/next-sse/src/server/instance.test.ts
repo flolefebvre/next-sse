@@ -5,7 +5,13 @@ import { createMemoryTransport } from "../transport/memory.js";
 import { TransportUnavailableError } from "../transport/index.js";
 import type { Cursor, Entry, Transport } from "../transport/index.js";
 
-import { getInstance, type Connection, type Instance, type InstanceOptions } from "./instance.js";
+import {
+  currentInstance,
+  getInstance,
+  type Connection,
+  type Instance,
+  type InstanceOptions,
+} from "./instance.js";
 import type { StoredMessage } from "./wire.js";
 
 /**
@@ -191,6 +197,39 @@ test("the Instance swaps the context and the Key builder across evaluations", ()
 
   expect(instance.context).toBe(second);
   expect(instance.key).toBeUndefined();
+});
+
+/**
+ * The other door, and the reason it exists: everything `getInstance` refreshes, `currentInstance`
+ * leaves alone. A test that reads the Connection table through the configuring door puts
+ * `context`, `key`, both durations and the drain window back to their defaults as it reads, which
+ * is a hazard the reading door removes rather than documents.
+ */
+test("currentInstance hands back the Instance and configures nothing on it", () => {
+  const context = () => ({ role: "admin" });
+  const key = () => "ada";
+  const instance = anInstance({ transport: createMemoryTransport() });
+  anInstance({ context, key, heartbeat: 250, maxLifetime: 1_000, drain: 250 });
+
+  expect(currentInstance()).toBe(instance);
+  expect(currentInstance()).toBe(instance);
+
+  expect(instance).toMatchObject({
+    context,
+    key,
+    heartbeat: 250,
+    maxLifetime: 1_000,
+    drainWindow: 250,
+  });
+});
+
+/** Nothing is created here: a process that has built no Instance has none to read. */
+test("currentInstance is undefined until something builds an Instance", () => {
+  expect(currentInstance()).toBeUndefined();
+
+  const instance = anInstance({ transport: createMemoryTransport() });
+
+  expect(currentInstance()).toBe(instance);
 });
 
 /** One Registry, as data: the handler reads patterns and Authorize off exactly this shape. */

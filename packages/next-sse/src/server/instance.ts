@@ -193,7 +193,12 @@ export interface InstanceOptions {
 }
 
 /**
- * The Instance of this process, created on first use.
+ * The Instance of this process, created on first use, **configured on every call**.
+ *
+ * This is the configuring door, and the only one production uses: `initSSE` calls it with the
+ * App's options, and every option it is not given goes back to its default. Reading the
+ * Instance is what `currentInstance` below is for; calling this one to read would silently put
+ * a configured Instance back to defaults.
  *
  * Two rules, and they are opposites on purpose. A `transport` given on a later call is
  * deliberately **ignored**: the whole point of the slot is that a second evaluation of the App's
@@ -249,6 +254,23 @@ export function getInstance(options: InstanceOptions = {}): Instance {
   if (options.drain !== false) installSignalHandlers(state);
 
   return state;
+}
+
+/**
+ * The Instance of this process, if this process has one. Nothing is created, nothing is
+ * configured, nothing is installed: it is the content of the slot, read.
+ *
+ * It exists because `getInstance` is not an accessor — by the refresh rule above, a call with no
+ * options re-applies the defaults for `context`, `key`, `heartbeat`, `maxLifetime` and the drain
+ * window — so anything that only wants to *look* at the Instance goes through here. That is the
+ * test suites, which read the Connection table: reading it through the configuring door made the
+ * order of a test's own assertions part of what it measured.
+ *
+ * `undefined` is the honest answer before anything has built an Instance, and the reason this
+ * cannot stand in for `getInstance`: whoever needs one to exist is configuring it.
+ */
+export function currentInstance(): Instance | undefined {
+  return globals[SLOT];
 }
 
 /**
