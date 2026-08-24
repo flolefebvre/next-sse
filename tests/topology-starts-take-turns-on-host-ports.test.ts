@@ -61,6 +61,26 @@ test("a turn left behind by a process that died is taken over", async () => {
   await expect(takingHostPorts(() => Promise.resolve("in"), lock)).resolves.toBe("in");
 });
 
+test("several starters facing a turn nobody holds still go in one at a time", async () => {
+  await writeFile(lock, String(await deadPid()));
+
+  let inside = 0;
+  let most = 0;
+
+  await Promise.all(
+    Array.from({ length: 6 }, async () =>
+      takingHostPorts(async () => {
+        inside += 1;
+        most = Math.max(most, inside);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        inside -= 1;
+      }, lock),
+    ),
+  );
+
+  expect(most).toBe(1);
+});
+
 test("a turn held far longer than any start could last is taken over", async () => {
   await writeFile(lock, String(process.pid));
   const longAgo = new Date(Date.now() - ABANDONED_AFTER_MS - 60_000);

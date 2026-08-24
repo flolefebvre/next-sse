@@ -1,4 +1,5 @@
-import { mkdir, open, readFile, rm, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -56,45 +57,99 @@ function alive(pid: number): boolean {
   }
 }
 
-/** Whether the turn has been held so long that no live start could still explain it. */
-async function abandoned(lock: string): Promise<boolean> {
+/** When that file was last written, or nothing when it is not there any more. */
+async function mtimeOf(path: string): Promise<number | undefined> {
   try {
-    return Date.now() - (await stat(lock)).mtimeMs > ABANDONED_AFTER_MS;
+    return (await stat(path)).mtimeMs;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
+/** Whether the turn has been held so long that no live start could still explain it. */
+async function abandoned(lock: string): Promise<boolean> {
+  const held = await mtimeOf(lock);
+
+  return held !== undefined && Date.now() - held > ABANDONED_AFTER_MS;
+}
+
 /**
- * Take the turn, waiting for whoever has it: creating the file exclusively is what makes one of
- * several starters the holder, and every other one a waiter. A turn whose holder is gone — a
- * worker killed mid-start — is cleared rather than waited on for ever, and so is one older than
- * any start could be.
+ * Write a pid to a path nothing occupies, and say whether it got there: creating the file
+ * exclusively is one operation, so of several processes doing this at once exactly one comes
+ * back holding it. The pid is a parameter because a turn is also written back on behalf of the
+ * holder it was taken from (see `clear`).
+ */
+async function claim(path: string, pid: number = process.pid): Promise<boolean> {
+  try {
+    const file = await open(path, "wx");
+    try {
+      await file.writeFile(String(pid));
+    } finally {
+      await file.close();
+    }
+
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+
+    throw error;
+  }
+}
+
+/** Whether the turn is nobody's: its holder's process is gone, or it is older than any start. */
+async function stale(lock: string): Promise<boolean> {
+  const holder = await heldBy(lock);
+
+  return holder === undefined || !alive(holder) || (await abandoned(lock));
+}
+
+/**
+ * Clear a turn nobody holds — a worker killed mid-start leaves one behind, and it must not stop
+ * the run for ever.
  *
- * The file is read back after it is created, because clearing somebody else's turn is the one
- * move that can hand the same turn to two starters: a starter that does not find its own pid in
- * the file it just wrote did not get the turn, and waits like the others.
+ * Renaming it away is what makes that safe, and nothing else here would: of several waiters
+ * that all found the same turn stale, exactly one rename succeeds and the rest get `ENOENT` and
+ * go back to waiting. Removing the file instead would let the second waiter remove what the
+ * first had already handed to a live starter, and two starters would then believe they hold the
+ * same turn (found in review).
+ *
+ * What was renamed away is then judged on its own, because between finding the turn stale and
+ * taking it away it may have become somebody's: a rename carries the file's pid and its age
+ * along, so a turn that turns out to be held is written straight back to where it was.
+ *
+ * The name renamed to is this clearing's own, so that two of them can never be the same file;
+ * one left behind by a process that died mid-clear is read by nobody, and goes with the folder.
+ */
+async function clear(lock: string): Promise<void> {
+  const taken = `${lock}.stale-${randomUUID()}`;
+
+  try {
+    await rename(lock, taken);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+
+    return;
+  }
+
+  const holder = await heldBy(taken);
+  if (holder !== undefined && !(await stale(taken))) await claim(lock, holder);
+  await rm(taken, { force: true });
+}
+
+/**
+ * Take the turn, waiting for whoever has it, and clearing it when it is nobody's.
+ *
+ * The file is read back after it is created, and that is the last line rather than the first:
+ * a turn taken away in the instant it was granted is written back by whoever took it, unless
+ * a third starter claimed the free path in between — and a starter that does not find its own
+ * pid in the file it just wrote waits like the others rather than start beside someone.
  */
 async function take(lock: string): Promise<void> {
   await mkdir(dirname(lock), { recursive: true });
 
   for (;;) {
-    try {
-      const file = await open(lock, "wx");
-      try {
-        await file.writeFile(String(process.pid));
-      } finally {
-        await file.close();
-      }
-      if ((await heldBy(lock)) === process.pid) return;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-
-      const holder = await heldBy(lock);
-      if (holder === undefined || !alive(holder) || (await abandoned(lock))) {
-        await rm(lock, { force: true });
-      }
-    }
+    if ((await claim(lock)) && (await heldBy(lock)) === process.pid) return;
+    if (await stale(lock)) await clear(lock);
 
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }
