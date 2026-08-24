@@ -4,6 +4,7 @@ import { afterAll, beforeAll, expect, vi } from "vitest";
 
 import type { TransportContractOptions } from "../packages/next-sse/src/testing/index.js";
 import type {
+  Cursor,
   Entry,
   Retention,
   StoredEntry,
@@ -280,9 +281,9 @@ export async function readerSurvivesAFailover(
     /** What is left of the one end-to-end budget, so that no step of it can borrow from another. */
     const left = (): number => Math.max(0, from + bound - Date.now());
 
-    await vi.waitFor(() => transport.tail(), { timeout: left(), interval: 100 });
+    const readable = await vi.waitFor(() => transport.tail(), { timeout: left(), interval: 100 });
     const usable = Date.now();
-    await transport.publish(tick("after"));
+    const sends = await publishedOnce(transport, tick("after"), readable, left);
     const published = Date.now();
 
     await vi.waitFor(() => expect(seen).toHaveLength(2), { timeout: left(), interval: 25 });
@@ -296,7 +297,8 @@ export async function readerSurvivesAFailover(
     console.info(
       `[${named.issue}] ${where}: ${String(promoted - from)}ms from ${named.what} to a new ` +
         `master, the log readable again ${String(usable - promoted)}ms after that, the Publish ` +
-        `accepted ${String(published - usable)}ms after that and delivered ` +
+        `accepted ${String(published - usable)}ms and ${String(sends)} send(s) after that, ` +
+        `delivered ` +
         `${String(delivered - published)}ms after that — ${String(delivered - from)}ms end to ` +
         `end, bounded at ${String(bound)}ms; ` +
         `${String(gaps.length)} reset(s)${describe(gaps, from)}; ` +
@@ -310,6 +312,69 @@ export async function readerSurvivesAFailover(
   } finally {
     await transport.close();
   }
+}
+
+/**
+ * How many Entries after the position held before the Publish are looked at when asking the log
+ * whether that Publish landed: this case publishes one, and nothing else writes to this log.
+ */
+const AFTER_THE_POSITION_HELD = 10;
+
+/**
+ * Publish one Entry exactly once **on the log**, which is not what sending one `XADD` gives you
+ * (#86).
+ *
+ * A client whose master has just been replaced can fail a command it has already written, and
+ * fail it in the caller's hands: node-redis's Sentinel client retries a master command of its
+ * own accord only when it finds that connection not ready at the moment the rejection is caught
+ * (`sentinel/index.js`, `#execute`), and on a loaded host the reconnection routinely wins that
+ * race — so what the caller is handed is `Socket closed unexpectedly`, and a case that Published
+ * blind once fails on it although nothing about the log was wrong.
+ *
+ * What is done about it is what ADR-0005 tells an application to do, which is why the case
+ * carries it rather than a retry: a Publish that failed may still have landed, so the log is
+ * asked — strictly after the position held before the send — and the Entry is sent again only
+ * when the log does not hold it. A blind retry would put it in the log twice, and a duplicate is
+ * the one thing the assertion below could not tell apart from a hole.
+ *
+ * It buys no time it was not given: every attempt is inside the same end-to-end budget, and the
+ * failure the budget ran out on is the one that is thrown. What it answers is how many sends it
+ * took, which the case prints — a run that needed a second one is exactly the run this exists
+ * for, and it should be visible rather than smoothed away.
+ */
+async function publishedOnce(
+  transport: Transport,
+  entry: Entry,
+  after: Cursor,
+  left: () => number,
+): Promise<number> {
+  for (let sends = 1; ; sends++) {
+    try {
+      await transport.publish(entry);
+
+      return sends;
+    } catch (error) {
+      if (left() <= 0) throw error;
+
+      const page = await vi.waitFor(() => transport.read(after, AFTER_THE_POSITION_HELD), {
+        timeout: left(),
+        interval: 100,
+      });
+
+      if (!("gone" in page) && page.entries.some((stored) => sameTick(stored, entry))) return sends;
+    }
+  }
+}
+
+/** Whether the log already holds this very Entry, told by what the case publishes it as. */
+function sameTick(stored: StoredEntry, entry: Entry): boolean {
+  return (
+    stored.type === "message" &&
+    entry.type === "message" &&
+    stored.channel === entry.channel &&
+    stored.event === entry.event &&
+    stored.payload === entry.payload
+  );
 }
 
 /** One Message of the failover case, told apart by what it was published either side of. */

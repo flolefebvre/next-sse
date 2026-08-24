@@ -26,6 +26,14 @@ const READY = "TOPOLOGY READY";
  * gives up. A `CLUSTER FAILOVER` or a `SENTINEL FAILOVER` is a coordinated handover, not a
  * failure detection: it takes a round of gossip, not a node timeout. Well above that, and
  * bounded, because a promotion that never lands must fail the test rather than hang it.
+ *
+ * What it has to cover on Sentinel, now that nothing here waits on the sentinel's own polling
+ * (#86, see `promoteInSentinel`): the handover, which the sentinel bounds by its
+ * `failover-timeout` (5 s), and then the resync of a demoted server that has to catch up on a
+ * log one test wrote — milliseconds of data, seconds of round trips on a busy host. Every term
+ * of it is measured in single seconds, so this ceiling is several times the whole thing, and it
+ * is the ceiling rather than the expectation: it is here so that a promotion that never lands
+ * fails readably.
  */
 const PROMOTION_TIMEOUT_MS = 30_000;
 
@@ -639,30 +647,45 @@ async function namedMaster(ask: Ask, sentinel: number): Promise<number> {
 }
 
 /**
- * Promote the replica on a Sentinel topology: tell the sentinel to fail over, and wait until it
- * answers a different address for the master, the server at that address says it is one, **and**
- * the server it replaces says it is now a connected replica of it.
+ * Promote the replica on a Sentinel topology: tell the sentinel to fail over, wait until it
+ * answers a different address for the master and the server at that address says it is one,
+ * hand the server it replaces over to that new master, and wait until it says it is now a
+ * connected replica of it.
  *
- * All three matter, and the last one is not belt and braces: the sentinel publishes the switch
- * before it has reconfigured the old master, and until it has, that server still answers writes.
- * A caller that Published in that window could have it accepted by a node that is about to be
- * told to replicate from someone else — and to throw away what it holds of its own — which is a
- * case passing on a Message the canonical log never received.
+ * That third state is not belt and braces, and it is why this does the handing over itself: the
+ * sentinel publishes the switch before it has reconfigured the old master, and until it has,
+ * that server still answers writes. A caller that Published in that window could have it
+ * accepted by a node that is about to be told to replicate from someone else — and to throw
+ * away what it holds of its own — which is a case passing on a Message the canonical log never
+ * received.
+ *
+ * Waiting for the sentinel to get there on its own is what made this load-sensitive (#86). The
+ * sentinel reconfigures an old master from an `INFO` round, not from the handover: measured on a
+ * loaded host, the reconfiguration landed 16.5 s after the failover was asked for, against a 30 s
+ * ceiling, and one missed round costs a whole `INFO` period more. Shortening that period is worse
+ * than the disease — the same number bounds three other guards, and at 500 ms the sentinel starts
+ * refusing the failover outright with `NOGOODSLAVE`, measured — so the harness issues the
+ * `REPLICAOF` the sentinel is about to issue instead. What is waited for is unchanged and still
+ * the server's own answer; only who asked for it moves. The trade is that this no longer notices
+ * a Redis that has stopped reconfiguring old masters by itself, which is Redis's housekeeping and
+ * not what these cases are about.
  */
 async function promoteInSentinel(sentinel: number): Promise<void> {
   await onNodes(async (ask) => {
     const before = await namedMaster(ask, sentinel);
     await ask(sentinel, ["SENTINEL", "FAILOVER", SENTINEL_MASTER_NAME]);
 
-    await until(`the promotion of the replica of ${String(before)}`, async () => {
-      const now = await namedMaster(ask, sentinel);
-      if (now === before) return `the sentinel still names ${String(before)}`;
+    const now = await promotedMaster(ask, sentinel, before);
 
-      const promoted = (await ask(now, ["ROLE"])) as unknown[];
-      if (promoted[0] !== "master") {
-        return `${String(now)} is named but reports ${String(promoted[0])}`;
-      }
+    /**
+     * The same command the sentinel itself sends when it gets around to it (`+convert-to-slave`),
+     * so that it finds the server already where it wanted it. It is sent once the switch is over
+     * — the sentinel names someone else and that someone answers `master` — so nothing here can
+     * race the handover it is not part of.
+     */
+    await ask(before, ["REPLICAOF", "127.0.0.1", String(now)]);
 
+    await until(`the demotion of ${String(before)} under ${String(now)}`, async () => {
       /**
        * `ROLE` on a replica answers its role, the master it follows and the state of that link:
        * anything but `slave` of the promoted node, connected, still leaves the old master
@@ -675,6 +698,29 @@ async function promoteInSentinel(sentinel: number): Promise<void> {
         : `${String(before)} still reports ${JSON.stringify(demoted.slice(0, 4))}`;
     });
   });
+}
+
+/**
+ * The port of the master the sentinel named in place of the one it was asked to replace, once
+ * that server answers for itself that it is one. Both halves are the handover, and it is over as
+ * soon as they hold: the sentinel has switched, and the node it switched to knows it.
+ */
+async function promotedMaster(ask: Ask, sentinel: number, before: number): Promise<number> {
+  let promoted = before;
+
+  await until(`the promotion of the replica of ${String(before)}`, async () => {
+    const now = await namedMaster(ask, sentinel);
+    if (now === before) return `the sentinel still names ${String(before)}`;
+
+    const role = (await ask(now, ["ROLE"])) as unknown[];
+    if (role[0] !== "master") return `${String(now)} is named but reports ${String(role[0])}`;
+
+    promoted = now;
+
+    return undefined;
+  });
+
+  return promoted;
 }
 
 /**

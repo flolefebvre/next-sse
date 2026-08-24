@@ -15,7 +15,12 @@ const SIGNALS = ["SIGTERM", "SIGINT"] as const;
  * wait for a table that never empties. Rejecting where the Connection would have been
  * registered is what keeps "every Connection is ended" a claim about a table nothing enters.
  */
-export class DrainingError extends Error {}
+export class DrainingError extends Error {
+  constructor(message?: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "DrainingError";
+  }
+}
 
 /**
  * Shut this Instance down: refuse, spread, close (ADR-0011).
