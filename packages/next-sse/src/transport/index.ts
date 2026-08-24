@@ -116,6 +116,49 @@ export type EventsFor<App extends PublishableApp, Channel extends string> = {
 }[keyof App["channels"]];
 
 /**
+ * Every member of a union at once.
+ *
+ * The members it is given are boxes, one per matching declaration, and that is the whole point:
+ * intersecting the boxes intersects the declarations, while a union _inside_ one declaration's
+ * payload — a schema whose Output is a discriminated union — travels in a single box and comes
+ * out untouched. Intersecting the payload types directly would collapse that union into an
+ * impossible type, and refuse a payload the App declared.
+ */
+type Intersect<Union> = (Union extends unknown ? (member: Union) => void : never) extends (
+  member: infer Single,
+) => void
+  ? Single
+  : never;
+
+/**
+ * What one Publish takes: a payload every declaration this Channel name matches would accept.
+ *
+ * A name that only one pattern can make — every name, in almost every App — gives that
+ * declaration's Output and nothing else. Where two parameterized patterns overlap, `user:{id}`
+ * beside `{kind}:7`, the name `user:7` belongs to both: one Entry, delivered once, read by the
+ * subscribers of both Channels, each typing the payload by its own schema. So the payload owes
+ * both, and asking for less would be a type that lies to whichever subscriber the worker did
+ * not have in mind.
+ *
+ * The Registry lets that overlap through on purpose — whether two patterns with params can
+ * collide depends on values it does not have, so it compares only literal names (ADR-0002) —
+ * which is exactly why the obligation has to be met here, at the one place the concrete name
+ * is known.
+ */
+type PayloadFor<App extends PublishableApp, Channel extends string, Event extends string> =
+  Intersect<
+    {
+      [Key in keyof App["channels"]]: Channel extends ChannelNameOf<PatternOf<App["channels"][Key]>>
+        ? Event extends keyof EventsOf<App["channels"][Key]>
+          ? { payload: InferOutput<EventsOf<App["channels"][Key]>[Event]> }
+          : never
+        : never;
+    }[keyof App["channels"]]
+  > extends { payload: infer Payload }
+    ? Payload
+    : never;
+
+/**
  * The typed publish surface of a process outside Next.js: one call, Messages only.
  *
  * A payload here is the schema's **Output**, where a server Handle takes its Input. Nothing on
@@ -127,7 +170,7 @@ export interface TypedPublisher<App extends PublishableApp> {
   publish<Channel extends ChannelNames<App>, Event extends keyof EventsFor<App, Channel> & string>(
     channel: Channel,
     event: Event,
-    payload: InferOutput<EventsFor<App, Channel>[Event]>,
+    payload: PayloadFor<App, Channel, Event>,
   ): Promise<Cursor>;
 }
 

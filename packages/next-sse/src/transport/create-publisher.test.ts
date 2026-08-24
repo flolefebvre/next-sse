@@ -126,3 +126,64 @@ test("a Channel no pattern can make, an undeclared event and a wrong payload are
   // @ts-expect-error the wire carries the Output, which has an id
   void sse.publish("chat:42", "message", { text: "one" });
 });
+
+/**
+ * Two patterns with params that one name satisfies at once. The Registry lets this through on
+ * purpose — it compares only literal names, because whether two parameterized patterns can
+ * collide depends on values it does not have (ADR-0002) — so `user:7` is genuinely a name of
+ * both Channels, and one Entry on it is read by the subscribers of both.
+ */
+type Overlapping = {
+  channels: {
+    user: ChannelDeclaration<"user:{id}", { ping: StandardSchemaV1<{ a: string }> }>;
+    kind: ChannelDeclaration<"{kind}:7", { ping: StandardSchemaV1<{ b: number }> }>;
+    only: ChannelDeclaration<"only:{id}", { ping: StandardSchemaV1<{ c: boolean }> }>;
+  };
+};
+
+test("a name two patterns both match owes a payload both declarations accept", () => {
+  const { publisher } = recordingPublisher();
+  const sse = createPublisher<Overlapping>(publisher);
+
+  expectTypeOf<Parameters<typeof sse.publish<"user:7", "ping">>[2]>().toEqualTypeOf<
+    { a: string } & { b: number }
+  >();
+
+  void sse.publish("user:7", "ping", { a: "x", b: 1 });
+  /** Valid for `user:{id}` alone, and a lie to every subscriber of `{kind}:7`. */
+  // @ts-expect-error the name also belongs to {kind}:7, whose ping carries a number b
+  void sse.publish("user:7", "ping", { a: "x" });
+});
+
+test("a name only one pattern matches owes that declaration and nothing more", () => {
+  const { publisher } = recordingPublisher();
+  const sse = createPublisher<Overlapping>(publisher);
+
+  expectTypeOf<Parameters<typeof sse.publish<"user:8", "ping">>[2]>().toEqualTypeOf<{
+    a: string;
+  }>();
+  expectTypeOf<Parameters<typeof sse.publish<"only:9", "ping">>[2]>().toEqualTypeOf<{
+    c: boolean;
+  }>();
+
+  void sse.publish("user:8", "ping", { a: "x" });
+  void sse.publish("only:9", "ping", { c: true });
+});
+
+/** One Channel whose event carries a discriminated union, which is a payload and not a choice. */
+type Shape = { kind: "circle"; r: number } | { kind: "square"; side: number };
+type WithUnion = {
+  channels: {
+    shapes: ChannelDeclaration<"shapes:{id}", { drawn: StandardSchemaV1<Shape> }>;
+  };
+};
+
+test("a schema whose Output is a union stays a union", () => {
+  const { publisher } = recordingPublisher();
+  const sse = createPublisher<WithUnion>(publisher);
+
+  expectTypeOf<Parameters<typeof sse.publish<"shapes:1", "drawn">>[2]>().toEqualTypeOf<Shape>();
+
+  void sse.publish("shapes:1", "drawn", { kind: "circle", r: 1 });
+  void sse.publish("shapes:1", "drawn", { kind: "square", side: 2 });
+});
