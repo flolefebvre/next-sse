@@ -174,10 +174,8 @@ interface Refusal {
  * answer to a Cursor it cannot serve, not a stream this test wrote.
  */
 async function refuseTheFirstCursor(reader: Reader): Promise<Refusal> {
-  let announceOpened!: () => void;
-  let release!: () => void;
-  const opened = new Promise<void>((resolve) => (announceOpened = resolve));
-  const released = new Promise<void>((resolve) => (release = resolve));
+  const opened = moment();
+  const released = moment();
   const sent: URL[] = [];
   let held = false;
 
@@ -193,15 +191,23 @@ async function refuseTheFirstCursor(reader: Reader): Promise<Refusal> {
       }
 
       held = true;
-      announceOpened();
-      await released;
+      opened.arrive();
+      await released.arrived;
       asked.searchParams.set("cursor", REFUSED);
       sent.push(asked);
       await route.continue({ url: asked.href });
     },
   );
 
-  return { opened, release, sent };
+  return { opened: opened.arrived, release: released.arrive, sent };
+}
+
+/** A moment a scenario waits for and something else announces: the two ends of holding a request. */
+function moment(): { arrived: Promise<void>; arrive: () => void } {
+  let arrive!: () => void;
+  const arrived = new Promise<void>((resolve) => (arrive = resolve));
+
+  return { arrived, arrive };
 }
 
 /** One Connection this page opened, and whether the Instance ever refused its Cursor. */
