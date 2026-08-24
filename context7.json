@@ -1,0 +1,30 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "next-sse",
+  "description": "Typed, authorization-aware pub/sub over Server-Sent Events for the Next.js App Router, gap-free across reconnects, redeploys and the server-render handoff.",
+  "folders": ["packages/next-sse/docs"],
+  "excludeFolders": [
+    ".github",
+    "docs",
+    "e2e",
+    "examples",
+    "packages/next-sse/src",
+    "scripts",
+    "tests"
+  ],
+  "excludeFiles": ["AGENTS.md", "CLAUDE.md", "CONTEXT.md"],
+  "rules": [
+    "Import a subpath, never the package: there is no root export. ./server, ./client, ./transport, ./transport/memory, ./transport/redis, ./testing.",
+    "./server is for Server Components and server-only modules: it resolves to the implementation under the react-server condition and throws everywhere else, so a Client Component cannot import the Registry.",
+    "Requires Next.js >= 16.3.0, React >= 19.2.0, Node >= 22.12, ESM only, App Router only.",
+    "A Channel is the only primitive: declare pattern, events (any Standard Schema) and authorize together in one server-only Registry built by createSSE, and re-export sse.handlers from one route file.",
+    "All configuration goes on initSSE (context, key, transport, heartbeat, maxLifetime, drain); createSSE takes the Channel record and nothing else.",
+    "Publish through bound Handles only — sse.chat({ roomId }).message(payload) — never a generic sse.publish; the payload is the schema's Input and the wire carries its Output.",
+    "Authorize runs at connect and at every reconnect, once per requested Channel, never per Message; a refused Channel is dropped while the rest keep streaming, and sse.kick({ key }) forces a re-Authorize.",
+    "Reserved names: a Channel may not be called handlers, channels, cursor, snapshot, kick or drain, an event may not be called publish, snapshot, pattern, params or name, and two Channel patterns may not be able to produce the same Channel name.",
+    "redis is a plain dependency and the Transport is chosen from the environment: REDIS_URL set gives the Redis/Valkey Transport (Redis >= 7.0 or Valkey >= 8), unset gives the Memory Transport; set NEXT_SSE_PREFIX per App, since the Prefix is the only isolation on a shared server.",
+    "The server-render handoff is sse.snapshot(read) in a Server Component passed as a prop to useChannelState, which makes it gap-free; App code never sees a Cursor, and upsertBy('id') absorbs every duplicate a replay can produce.",
+    "The wire envelope is a stable contract: a publisher outside Next.js XADDs {\"v\":1,\"type\":\"message\",\"channel\":…,\"event\":…,\"payload\":…} in the entry field of {<Prefix>}:log.",
+    "If a snippet disagrees with the installed package, trust the .d.ts in node_modules over the docs."
+  ]
+}

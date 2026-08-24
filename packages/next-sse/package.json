@@ -60,6 +60,7 @@
   },
   "files": [
     "dist",
+    "docs",
     "LICENSE"
   ],
   "scripts": {
