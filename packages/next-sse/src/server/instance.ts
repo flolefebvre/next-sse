@@ -42,6 +42,17 @@ export interface Connection {
   reset(): void;
   /** The replay is over and everything from here on is live. Must not throw. */
   caughtUp(): void;
+  /**
+   * End this Connection with the `reconnect` Control event: the client core comes back at once,
+   * with its Cursor, so the cut costs a round trip and never a Message (ADR-0004).
+   *
+   * It is the **one** way a Connection is ended from the server side, and the reason it lives on
+   * the Connection rather than in the handler's own scope: the max lifetime reaches it from
+   * there, and Kick (ADR-0003) and Drain (ADR-0011) reach it from here, over the Connection
+   * table, needing nothing of a Connection but this. Ending one twice is a no-op, and so is
+   * ending one whose client has already gone. Must not throw.
+   */
+  reconnect(): void;
 }
 
 /**

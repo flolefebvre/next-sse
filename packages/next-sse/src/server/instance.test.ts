@@ -31,6 +31,7 @@ const connectionOn = (...channels: string[]): Connection => ({
   deliver: vi.fn<(entry: StoredMessage) => void>(),
   reset: vi.fn<() => void>(),
   caughtUp: vi.fn<() => void>(),
+  reconnect: vi.fn<() => void>(),
 });
 
 /**
@@ -47,6 +48,7 @@ const tracing = (...channels: string[]): { connection: Connection; trace: string
       deliver: (entry) => trace.push(`${entry.channel} ${(entry.payload as Text).text}`),
       reset: () => trace.push("reset"),
       caughtUp: () => trace.push("caught-up"),
+      reconnect: () => trace.push("reconnect"),
     },
     trace,
   };
@@ -443,6 +445,7 @@ test("a client that goes away mid-replay stops it, rather than paging the rest o
     },
     reset: () => trace.push("reset"),
     caughtUp: () => trace.push("caught-up"),
+    reconnect: () => leaving.close?.(),
   };
 
   const opening = await instance.open(connection, { after: from });

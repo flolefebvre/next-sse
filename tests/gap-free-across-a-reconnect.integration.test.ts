@@ -33,8 +33,8 @@ beforeEach(() => {
   delete globals[Symbol.for("@flefebvre/next-sse")];
 });
 
-const anApp = (): ChatApp => {
-  const { channel, createSSE } = initSSE({ transport: createMemoryTransport() });
+const anApp = (lifecycle: { maxLifetime?: number } = {}): ChatApp => {
+  const { channel, createSSE } = initSSE({ transport: createMemoryTransport(), ...lifecycle });
 
   return createSSE({
     chat: channel({
@@ -214,6 +214,35 @@ test("a Connection whose Cursor the log has dropped is reset in band, and goes o
 
   expect(on(afterwards, "42")).toEqual(["after-0"]);
   expect(on(afterwards, "7")).toEqual(["after-1"]);
+
+  second.leave();
+});
+
+/**
+ * The max lifetime, end to end and on the real handler: the Instance ends a Connection it has
+ * held long enough with the `reconnect` Control event, the client comes back with the Cursor of
+ * the last Message it saw, and everything Published in between reaches it exactly once. The
+ * lifetime is shortened through the App's own configuration — there is no test-only branch in
+ * the library — and the test waits for the cut rather than for a clock.
+ */
+test("a Connection ended at its max lifetime resumes from its Cursor with no gap", async () => {
+  const sse = anApp({ maxLifetime: 1000 });
+  const first = await connect(sse);
+
+  await publish(sse, 4, "before");
+  const live = await receive(first, 4);
+
+  expect((await first.frames.next()).event).toBe("reconnect");
+  await expect(first.frames.next()).rejects.toThrow("the stream ended");
+
+  await publish(sse, 20, "away");
+  const second = await connect(sse, live[3]?.cursor, false);
+  const replayed = await receive(second, 20);
+  expect((await second.frames.next()).event).toBe("caught-up");
+
+  expect(on(replayed, "42")).toEqual(alternating("away", 0));
+  expect(on(replayed, "7")).toEqual(alternating("away", 1));
+  expect(replayed.map((one) => one.text)).not.toContain("before-3");
 
   second.leave();
 });

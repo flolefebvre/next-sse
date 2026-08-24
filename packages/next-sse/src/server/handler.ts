@@ -204,6 +204,7 @@ function streamFor(
   let disconnect: (() => void) | undefined;
   let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
   let heartbeats: ReturnType<typeof setInterval> | undefined;
+  let lifetime: ReturnType<typeof setTimeout> | undefined;
 
   /**
    * The one teardown, whichever way the Connection ended. `endStream` is false when the stream
@@ -216,6 +217,7 @@ function streamFor(
     if (closed) return;
     closed = true;
     clearInterval(heartbeats);
+    clearTimeout(lifetime);
     request.signal.removeEventListener("abort", abort);
     disconnect?.();
     if (endStream) controller?.close();
@@ -238,6 +240,10 @@ function streamFor(
         deliver: (entry) => write(encodeMessage(entry)),
         reset: () => write(encodeControl("reset")),
         caughtUp: () => write(encodeControl("caught-up")),
+        reconnect: () => {
+          write(encodeControl("reconnect"));
+          dispose(true);
+        },
       };
 
       const opening = await instance.open(connection, { after });
@@ -283,6 +289,19 @@ function streamFor(
         heartbeats.unref?.();
       }
 
+      /**
+       * The Connection's own end, armed at the same moment: when it comes, it comes through the
+       * one primitive that ends a Connection at all, so the max lifetime, a Kick and a Drain are
+       * the same three bytes on the wire and the same teardown behind it.
+       */
+      const maxLifetime = instance.maxLifetime;
+      if (maxLifetime > 0) {
+        lifetime = setTimeout(() => {
+          connection.reconnect();
+        }, spread(maxLifetime));
+        lifetime.unref?.();
+      }
+
       await opening.start();
     },
 
@@ -295,4 +314,15 @@ function streamFor(
       dispose(false);
     },
   });
+}
+
+/**
+ * One Connection's share of the max lifetime: the configured value ±10 %, drawn per Connection.
+ *
+ * Without the spread, an Instance that started its Connections together would end them together
+ * — a deploy's worth of clients re-Authorizing and replaying against the survivors in the same
+ * instant, which is the thundering herd the lifetime exists to prevent rather than to cause.
+ */
+function spread(milliseconds: number): number {
+  return milliseconds * (0.9 + Math.random() * 0.2);
 }

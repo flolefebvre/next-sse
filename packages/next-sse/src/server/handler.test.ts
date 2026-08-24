@@ -591,7 +591,7 @@ test("the interval this App configured is what ready carries", async () => {
 /** `0` is off, and never "use the default": a Connection nothing will write to unprompted. */
 test("a heartbeat of 0 is a Connection that is never heartbeated", async () => {
   vi.useFakeTimers();
-  const sse = appWith(createMemoryTransport(), { heartbeat: 0 });
+  const sse = appWith(createMemoryTransport(), { heartbeat: 0, maxLifetime: 0 });
   const frames = framesOf(await connect(sse, "?channel=chat:42"));
 
   expect(JSON.parse((await frames.next()).data ?? "").heartbeat).toBe(0);
@@ -617,4 +617,56 @@ test("a client that goes away leaves no heartbeat behind", async () => {
   await frames.cancel();
 
   expect(vi.getTimerCount()).toBe(0);
+});
+
+/**
+ * The max lifetime, and with it the one way a Connection is ended from the server side: the
+ * `reconnect` Control event and the end of the stream. The client core comes back at once with
+ * its Cursor, which is what makes the cut gap-free — and what Kick and Drain will reuse whole.
+ */
+test("a Connection that reaches its max lifetime is ended with reconnect", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(Math, "random").mockReturnValue(0.5);
+  const sse = appWith(createMemoryTransport(), { maxLifetime: 1000 });
+  const frames = await liveConnection(sse, "?channel=chat:42");
+
+  await vi.advanceTimersByTimeAsync(1000);
+
+  expect(await frames.next()).toEqual({ event: "reconnect", data: "{}" });
+  await expect(frames.next()).rejects.toThrow("the stream ended");
+  expect(getInstance().connections.size).toBe(0);
+});
+
+/**
+ * ±10 % full jitter, drawn per Connection: an Instance whose Connections all started together
+ * does not end them together, which is the herd the lifetime exists to prevent.
+ */
+test.each([
+  ["the low end of the spread", 0, 900],
+  ["the high end of the spread", 1, 1100],
+])("a Connection ends at %s", async (_case, random, expected) => {
+  vi.useFakeTimers();
+  vi.spyOn(Math, "random").mockReturnValue(random);
+  const sse = appWith(createMemoryTransport(), { maxLifetime: 1000 });
+  await liveConnection(sse, "?channel=chat:42");
+
+  await vi.advanceTimersByTimeAsync(expected - 1);
+  expect(getInstance().connections.size).toBe(1);
+
+  await vi.advanceTimersByTimeAsync(1);
+  expect(getInstance().connections.size).toBe(0);
+});
+
+test("a maxLifetime of 0 is a Connection nothing brings to an end", async () => {
+  vi.useFakeTimers();
+  const sse = appWith(createMemoryTransport(), { maxLifetime: 0, heartbeat: 0 });
+  const frames = await liveConnection(sse, "?channel=chat:42");
+
+  await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+
+  expect(getInstance().connections.size).toBe(1);
+  expect(vi.getTimerCount()).toBe(0);
+  const live = await sse.chat({ roomId: "42" }).message({ text: "a day later" });
+  expect((await frames.next()).id).toBe(live);
+  await frames.cancel();
 });
