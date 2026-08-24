@@ -2,6 +2,17 @@ export { transportContract } from "./transport-contract.js";
 export type { TransportBackend, TransportContractOptions } from "./transport-contract.js";
 
 /**
+ * The Snapshot a component test hands its hook, sealed exactly as the server seals one.
+ *
+ * It ships here for the same reason the `EventSource` double does: a consumer testing a
+ * component of their own has to produce what a Server Component would have handed it, and the
+ * type is deliberately unopenable from outside (ADR-0007). Without this member the only way in
+ * is a cast, in every consumer's suite (#46 widened this entry a second time; ADR-0009 records
+ * the first).
+ */
+export { snapshotOf } from "./snapshot.js";
+
+/**
  * The `EventSource`-shaped double the library's own client tests run on, and the recorder that
  * hands back every Connection opened through it.
  *

@@ -65,6 +65,15 @@ export default defineConfig({
       },
       {
         extends: true,
+        /**
+         * The App's own path alias, which its `tsconfig.json` declares and Next.js honours.
+         * Vitest reads no `tsconfig` paths, so the one the example uses is restated here — the
+         * alternative would be an example whose imports are written for the test runner rather
+         * than for the App.
+         */
+        resolve: {
+          alias: { "@/": new URL("./examples/basic/", import.meta.url).pathname },
+        },
         test: {
           name: "example",
           environment: "jsdom",
