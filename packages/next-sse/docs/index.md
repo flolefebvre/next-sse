@@ -10,18 +10,18 @@ it. Read the file for the job at hand.
 
 ## Which file for which job
 
-| Job                                                             | File                                                      |
-| --------------------------------------------------------------- | --------------------------------------------------------- |
-| Understand the words this library uses                          | [core-concepts.md](core-concepts.md)                      |
-| Install it and get the first Message on screen                  | [setup.md](setup.md)                                      |
-| Declare Channels, publish, kick, drain, hand data to the client | [server.md](server.md)                                    |
-| Subscribe from a component, own list state, handle Reset        | [client.md](client.md)                                    |
-| Choose or configure a Transport, or write one                   | [transport.md](transport.md)                              |
-| Test an App that uses this library                              | [testing.md](testing.md)                                  |
-| Publish from a service that does not have this library          | [wire-format.md](wire-format.md)                          |
-| Put it behind a proxy, run several Instances, redeploy          | [deployment.md](deployment.md)                            |
-| Decide whether SSE is the right tool at all                     | [when-not-to-use-sse.md](when-not-to-use-sse.md)          |
-| Copy a working recipe                                           | [patterns/](patterns/) — ten of them, each standing alone |
+| Job                                                             | File                                                              |
+| --------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Understand the words this library uses                          | [core-concepts.md](core-concepts.md)                              |
+| Install it and get the first Message on screen                  | [setup.md](setup.md)                                              |
+| Declare Channels, publish, kick, drain, hand data to the client | [server.md](server.md)                                            |
+| Subscribe from a component, own list state, handle Reset        | [client.md](client.md)                                            |
+| Choose or configure a Transport, or write one                   | [transport.md](transport.md)                                      |
+| Test an App that uses this library                              | [testing.md](testing.md)                                          |
+| Publish from a service that does not have this library          | [wire-format.md](wire-format.md)                                  |
+| Put it behind a proxy, run several Instances, redeploy          | [deployment.md](deployment.md)                                    |
+| Decide whether SSE is the right tool at all                     | [when-not-to-use-sse.md](when-not-to-use-sse.md)                  |
+| Copy a working recipe                                           | [patterns/index.md](patterns/index.md) — ten, each standing alone |
 
 ## Import map
 

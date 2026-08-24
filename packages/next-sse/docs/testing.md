@@ -63,7 +63,7 @@ test("the room shows what the server rendered, then what arrives", async () => {
     connection.message("chat:42", "message", { id: "2", text: "arrived" });
   });
 
-  expect(container.querySelectorAll("li")).toHaveLength(2);
+  expect(container.querySelectorAll('[data-testid="messages"] li')).toHaveLength(2);
 });
 ```
 
