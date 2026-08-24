@@ -13,10 +13,11 @@ export function Messages({ roomId }: { roomId: string }) {
   const [messages, setMessages] = useState<string[]>([]);
   const { status } = useChannel(channels.chat({ roomId }), {
     /**
-     * The payload is `unknown` until the Registry infers its own types, which is why this is
-     * the one cast in the example app.
+     * `payload` is `{ text: string }` here, and nothing in this file says so: the type comes
+     * from the schema in the server-only Registry, through the `import type` in
+     * `lib/sse.client.ts`.
      */
-    message: (payload) => setMessages((seen) => [...seen, (payload as { text: string }).text]),
+    message: (payload) => setMessages((seen) => [...seen, payload.text]),
   });
 
   return (

@@ -1,4 +1,5 @@
 import { initSSE } from "@flefebvre/next-sse/server";
+import { z } from "zod";
 
 const { channel, createSSE } = initSSE();
 
@@ -6,14 +7,15 @@ const { channel, createSSE } = initSSE();
  * The App's Registry: every Channel it has, declared once, in a server-only module. Both the
  * route file and every place that Publishes import this one value.
  *
- * `events` lists the events the Channel carries; each one becomes a method on a Handle
- * (`chat({ roomId }).message(payload)`). The event's schema is what will sit next to its name
- * once schemas ship, and Authorize will sit beside `events`.
+ * `events` lists the events the Channel carries, each with the schema its payload is checked
+ * against; each one becomes a method on a Handle (`chat({ roomId }).message(payload)`). Any
+ * Standard Schema does — this App happens to use zod 4, and the library depends on none of
+ * them. Authorize will sit beside `events`.
  */
 export const sse = createSSE({
   chat: channel({
     pattern: "chat:{roomId}",
-    events: { message: undefined },
+    events: { message: z.object({ text: z.string().trim().min(1) }) },
   }),
 });
 

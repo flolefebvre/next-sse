@@ -14,10 +14,29 @@ import {
   type Status,
 } from "@flefebvre/next-sse/client";
 import {
+  asType,
   initSSE,
+  InvalidPayloadError,
   SSEProvider,
   toClientChannels,
+  type ChannelDeclaration,
+  type ChannelRecord,
+  type EventMap,
+  type EventsOf,
+  type InferInput,
+  type InferOutput,
+  type JsonValue,
+  type ParamNames,
+  type ParamsArgs,
+  type ParamsOf,
+  type PatternOf,
+  type Registry,
+  type RegistryLike,
   type SSEProviderProps,
+  type StandardIssue,
+  type StandardResult,
+  type StandardSchemaV1,
+  type Handle as ServerHandle,
 } from "@flefebvre/next-sse/server";
 import { FakeEventSource, transportContract } from "@flefebvre/next-sse/testing";
 import {
@@ -43,6 +62,8 @@ import { createRedisPublisher, createRedisTransport } from "@flefebvre/next-sse/
  */
 export const values = [
   initSSE,
+  asType,
+  InvalidPayloadError,
   SSEProvider,
   toClientChannels,
   createClient,
@@ -59,17 +80,41 @@ export const values = [
   FakeEventSource,
 ];
 
+/** One App's Registry type, which is what the typed surface is read against. */
+type AnApp = {
+  channels: {
+    chat: ChannelDeclaration<"chat:{roomId}", { message: StandardSchemaV1<{ text: string }> }>;
+  };
+};
+
 /** And every type of the public surface, named the way the ADRs name them. */
 export type Types = [
   Snapshot<{ id: string }>,
   Status,
   ChannelSubscription,
-  Channels<{ chat: unknown }>,
+  ChannelDeclaration<"chat:{roomId}", { message: StandardSchemaV1<{ text: string }> }>,
+  ChannelRecord,
+  Channels<AnApp>,
+  EventMap,
+  EventsOf<AnApp["channels"]["chat"]>,
+  InferInput<StandardSchemaV1<{ text: string }>>,
+  InferOutput<StandardSchemaV1<{ text: string }>>,
+  JsonValue,
+  ParamNames<"chat:{roomId}">,
+  ParamsArgs<"chat:{roomId}">,
+  ParamsOf<"chat:{roomId}">,
+  PatternOf<AnApp["channels"]["chat"]>,
+  Registry<AnApp["channels"]>,
+  RegistryLike,
+  ServerHandle<AnApp["channels"]["chat"]["events"]>,
+  StandardIssue,
+  StandardResult<{ text: string }>,
+  StandardSchemaV1<{ text: string }>,
   ClientChannel,
   ClientChannels,
   Handle,
   Handlers,
-  SSEClient<{ chat: unknown }>,
+  SSEClient<AnApp>,
   SSEClientProviderProps,
   SSEProviderProps,
   Cursor,
