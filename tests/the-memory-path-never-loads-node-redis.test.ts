@@ -13,7 +13,7 @@ const PROBE = new URL("./loaded-modules-probe.ts", import.meta.url).pathname;
  * App's process really ends up holding.
  */
 async function loadedNodeRedis(env: NodeJS.ProcessEnv): Promise<boolean> {
-  const { stdout } = await run("npx", ["tsx", PROBE], {
+  const { stdout } = await run(process.execPath, ["--import", "tsx", PROBE], {
     env: { ...process.env, REDIS_URL: "", ...env },
   });
   const line = stdout.trim().split("\n").at(-1) ?? "";
