@@ -95,9 +95,29 @@ the routing key, a Sentinel client the read/write intent, always the master.
 push against a real three-master cluster through an injected `createCluster` client, and against a
 real master watched by a sentinel through an injected `createSentinel` client, on both Redis 8 and
 Valkey 8 — the same suite standalone runs, minus the outage cases, which need one Transport's own
-path to the backend cut and have no honest counterpart in a multi-node topology. What is _not_
-covered is failover: what the reader's blocking read does while a cluster or a sentinel promotes a
-new master has not been exercised.
+path to the backend cut and have no honest counterpart in a multi-node topology.
+
+**Failover is covered too, and the two kinds differ.** A replica is promoted under a subscription
+that is mid-read, on a real three-master cluster and on a real sentinel, and in both the Publish
+that follows arrives with no gap and no Reset, well inside the 20 s the cases bound it to (the
+client's `socketTimeout` of 15 s, plus the reader's reissue pause and a round trip). What differs
+is what your App sees:
+
+| Topology     | What the reader does                                                                                        | What `onError` reports                              |
+| ------------ | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| **Cluster**  | the demoted node ends the blocking read, and the loop blocks again on the new master after its 250 ms pause | one failure, `operation: "subscribe"`, per failover |
+| **Sentinel** | node-redis moves the reader onto the new master itself, within about a second                               | nothing                                             |
+
+The Cluster error is `UNBLOCKED force unblock from blocking operation, instance state changed
+(master -> replica?)` — the server saying it is no longer the master of that slot. **It is expected
+and benign**: it is how the reader learns to go and find the new master, it costs no Message, and
+an App that alerts on `onError` should not treat one per failover as an incident. On Sentinel, a
+Message read from the demoted node in the moment after the promotion is not a gap either: that node
+is a replica of the new master, so the worst the window costs is replication lag.
+
+The one thing no test observes is a node the reader sits on dying outright rather than handing over.
+That is the ordinary connection loss the Transport already survives: the read fails, the reader
+resumes from its last position, and a Reset is raised only if the log has meanwhile dropped it.
 
 ### Error behaviour
 
@@ -109,6 +129,13 @@ rejects with one of:
 | `TransportUnavailableError` | the backend is unreachable, or did not answer in time |
 | `TransportClosedError`      | the Transport has been closed                         |
 | `TransportError`            | the family; catch this to catch all three             |
+
+**A Publish that rejects may still have been written.** The deadline bounds how long the Instance
+waits, not what the server did with the command: an `XADD` that timed out can have landed all the
+same. The Transport never retries one — so an App that retries a Publish itself is choosing
+at-least-once, and must either tolerate the duplicate Message or carry its own idempotency in the
+payload. A failover is when this is most likely: the write path is re-resolving the master exactly
+while the deadline runs out.
 
 A Transport outage mid-Connection does **not** drop clients: Connections are held open and
 heartbeated for as long as it lasts, and the Instance resumes from its last position on recovery
