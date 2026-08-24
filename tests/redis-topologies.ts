@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import { createClient } from "redis";
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers";
 
+import { takingHostPorts } from "./topology-start.js";
 import { testImage } from "./valkey-container.js";
 
 /** The master a Sentinel topology monitors, as both the sentinel and the client name it. */
@@ -159,6 +160,14 @@ async function clusterNodes(count: number): Promise<{ client: number; bus: numbe
  * a fixed host binding per port. The ports are taken free at runtime, so two runs on one machine
  * still do not collide.
  *
+ * Nothing about that identity can be handed to Docker to choose: `cluster-announce-*` and the
+ * sentinel's `announce-*` change the address a server publishes **to everyone**, and the peers
+ * that follow it are inside this container, where a host-published port is not bound and
+ * `127.0.0.1` is the container's own loopback. One address has to mean the same server on both
+ * sides of the boundary, so the numbers are picked here — and what picking them costs, a window
+ * in which another worker can take one and a queue of containers hitting Docker's port
+ * publishing at once, is what `takingHostPorts` covers around every start (#83).
+ *
  * The image is whatever `testImage()` names, unchanged: the official Valkey image ships
  * `redis-server`, `redis-cli` and `redis-sentinel` compatibility names, so one script drives
  * both cells of the CI matrix.
@@ -185,19 +194,20 @@ async function startTopology(ports: number[], script: string): Promise<RunningTo
  * slot's master can move on.
  */
 async function startCluster(replicas: number): Promise<RunningTopology> {
-  const nodes = await clusterNodes(3 * (1 + replicas));
-  const ports = nodes.map((node) => node.client);
-  const addresses = ports.map((port) => `127.0.0.1:${String(port)}`).join(" ");
-  const servers = nodes
-    .map(
-      ({ client, bus }) =>
-        `redis-server --port ${String(client)} --cluster-port ${String(bus)} --cluster-enabled yes --cluster-config-file "/tmp/node-${String(client)}.conf" --cluster-node-timeout 5000 --appendonly no --save '' --dir /tmp &`,
-    )
-    .join("\n    ");
+  return takingHostPorts(async () => {
+    const nodes = await clusterNodes(3 * (1 + replicas));
+    const ports = nodes.map((node) => node.client);
+    const addresses = ports.map((port) => `127.0.0.1:${String(port)}`).join(" ");
+    const servers = nodes
+      .map(
+        ({ client, bus }) =>
+          `redis-server --port ${String(client)} --cluster-port ${String(bus)} --cluster-enabled yes --cluster-config-file "/tmp/node-${String(client)}.conf" --cluster-node-timeout 5000 --appendonly no --save '' --dir /tmp &`,
+      )
+      .join("\n    ");
 
-  return startTopology(
-    ports,
-    `
+    return startTopology(
+      ports,
+      `
     set -e
     ${servers}
     for port in ${ports.join(" ")}; do
@@ -211,7 +221,8 @@ async function startCluster(replicas: number): Promise<RunningTopology> {
     echo "${READY}"
     wait
   `,
-  );
+    );
+  });
 }
 
 /**
@@ -250,30 +261,31 @@ async function startSentinel(replicas: number): Promise<{
   topology: RunningTopology;
   sentinel: number;
 }> {
-  const ports = await freePorts(2 + replicas);
-  const [master, sentinel, ...rest] = ports;
-  if (master === undefined || sentinel === undefined) throw new Error("no free port to take");
+  return takingHostPorts(async () => {
+    const ports = await freePorts(2 + replicas);
+    const [master, sentinel, ...rest] = ports;
+    if (master === undefined || sentinel === undefined) throw new Error("no free port to take");
 
-  const followers = rest
-    .map(
-      (port) =>
-        `redis-server --port ${String(port)} --replicaof 127.0.0.1 ${String(master)} --appendonly no --save '' --dir /tmp &`,
-    )
-    .join("\n    ");
+    const followers = rest
+      .map(
+        (port) =>
+          `redis-server --port ${String(port)} --replicaof 127.0.0.1 ${String(master)} --appendonly no --save '' --dir /tmp &`,
+      )
+      .join("\n    ");
 
-  /**
-   * The sentinel is only ready for a forced failover once it has discovered the replica through
-   * the master's `INFO`: asked before that, `SENTINEL FAILOVER` answers `NOGOODSLAVE`. So the
-   * script waits for the replica to be counted rather than for a duration.
-   */
-  const discovered =
-    replicas === 0
-      ? ""
-      : `until [ "$(redis-cli -p ${String(sentinel)} sentinel master ${SENTINEL_MASTER_NAME} | grep -A1 '^num-slaves$' | tail -n1 | tr -d '\\r')" = "${String(replicas)}" ]; do sleep 0.1; done`;
+    /**
+     * The sentinel is only ready for a forced failover once it has discovered the replica through
+     * the master's `INFO`: asked before that, `SENTINEL FAILOVER` answers `NOGOODSLAVE`. So the
+     * script waits for the replica to be counted rather than for a duration.
+     */
+    const discovered =
+      replicas === 0
+        ? ""
+        : `until [ "$(redis-cli -p ${String(sentinel)} sentinel master ${SENTINEL_MASTER_NAME} | grep -A1 '^num-slaves$' | tail -n1 | tr -d '\\r')" = "${String(replicas)}" ]; do sleep 0.1; done`;
 
-  const topology = await startTopology(
-    ports,
-    `
+    const topology = await startTopology(
+      ports,
+      `
     set -e
     redis-server --port ${String(master)} --appendonly no --save '' --dir /tmp &
     until redis-cli -p ${String(master)} ping 2>/dev/null | grep -q PONG; do sleep 0.1; done
@@ -294,12 +306,13 @@ EOF
     echo "${READY}"
     wait
   `,
-  );
+    );
 
-  return {
-    topology: { ...topology, nodes: topology.nodes.filter((node) => node.port === sentinel) },
-    sentinel,
-  };
+    return {
+      topology: { ...topology, nodes: topology.nodes.filter((node) => node.port === sentinel) },
+      sentinel,
+    };
+  });
 }
 
 /**
