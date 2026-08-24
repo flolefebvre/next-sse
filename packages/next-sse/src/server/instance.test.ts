@@ -35,6 +35,20 @@ const connectionOn = (...channels: string[]): Connection => ({
   reconnect: vi.fn<() => void>(),
 });
 
+/** The same Connection, with the Key its App gave it: what a Kick addresses it by. */
+const keyed = (key: string, ...channels: string[]): Connection => ({
+  ...connectionOn(...channels),
+  key,
+});
+
+/** One Kick, as it travels the log: a control Entry naming a Key, a Channel, or neither. */
+const kick = (target: { key?: string; channel?: string }): Entry => ({
+  v: 1,
+  type: "control",
+  control: "kick",
+  ...target,
+});
+
 /**
  * A Connection that records everything the Instance tells it, in one list and in order: a
  * Message as `<channel> <text>`, and the two Control moments by name. Order is what most of
@@ -194,9 +208,10 @@ test("an Entry for a Channel nobody here holds, and a control Entry, reach no Co
   await live(instance, connection);
 
   await instance.transport.publish(message("chat:other", { text: "hello" }));
-  await instance.transport.publish({ v: 1, type: "control", control: "kick", channel: "chat:42" });
+  await instance.transport.publish(kick({ key: "user-7" }));
 
   expect(connection.deliver).not.toHaveBeenCalled();
+  expect(connection.reconnect).not.toHaveBeenCalled();
 });
 
 test("a Connection that was closed leaves the table and is fed nothing further", async () => {
@@ -236,10 +251,16 @@ test("a Connection resuming from a Cursor is replayed what came after it, and no
   expect(trace).toEqual(["chat:42 missed", "caught-up"]);
 });
 
+/**
+ * A replayed Kick is a Kick that has already happened: acting on it would drop a Connection the
+ * fresh Authorize has just let back in, which is why control entries are live-only (ADR-0003).
+ * The Kick below names the very Channel this Connection carries, so a replay that acted on it
+ * would show as a `reconnect` in the trace.
+ */
 test("replay carries no control Entry and no Channel the Connection did not name", async () => {
   const instance = getInstance({ transport: createMemoryTransport() });
   const from = await instance.transport.tail();
-  await instance.transport.publish({ v: 1, type: "control", control: "kick", key: "user-7" });
+  await instance.transport.publish(kick({ channel: "chat:42" }));
   await instance.transport.publish(message("chat:other", { text: "elsewhere" }));
   await instance.transport.publish(message("chat:42", { text: "here" }));
   const { connection, trace } = tracing("chat:42");
@@ -590,4 +611,75 @@ test("a duration longer than a timer can hold is refused, not silently inverted"
   expect(getInstance({ maxLifetime: 2_147_483_647 })).toMatchObject({
     maxLifetime: 2_147_483_647,
   });
+});
+
+/**
+ * A Kick is a walk of the Connection table, matching on the field the Entry names, and the one
+ * thing it does to a match is the one thing that ends a Connection at all: `reconnect` (ADR-0003).
+ * It reaches this Instance the way every Entry does — off the log — which is how a Kick published
+ * by one Instance ends the Connections every other Instance holds.
+ */
+test("a Kick by Key ends the Connections that Key holds, and no others", async () => {
+  const instance = getInstance({ transport: createMemoryTransport() });
+  const hers = keyed("ada", "chat:42");
+  const alsoHers = keyed("ada", "chat:7");
+  const his = keyed("sam", "chat:42");
+  const anonymous = connectionOn("chat:42");
+  for (const connection of [hers, alsoHers, his, anonymous]) await live(instance, connection);
+
+  await instance.transport.publish(kick({ key: "ada" }));
+
+  expect(hers.reconnect).toHaveBeenCalledTimes(1);
+  expect(alsoHers.reconnect).toHaveBeenCalledTimes(1);
+  expect(his.reconnect).not.toHaveBeenCalled();
+  expect(anonymous.reconnect).not.toHaveBeenCalled();
+});
+
+/**
+ * Kicking a Channel ends the whole Connection, not that one Channel of it: there is no way to
+ * take a Channel off a live Connection, and there is no need for one — the client comes straight
+ * back with its full Channel set and its Cursor, and Authorize settles what survives.
+ */
+test("a Kick by Channel ends every Connection subscribed to it, whatever else it carries", async () => {
+  const instance = getInstance({ transport: createMemoryTransport() });
+  const subscribed = connectionOn("chat:42", "chat:7");
+  const elsewhere = connectionOn("chat:7");
+  await live(instance, subscribed);
+  await live(instance, elsewhere);
+
+  await instance.transport.publish(kick({ channel: "chat:42" }));
+
+  expect(subscribed.reconnect).toHaveBeenCalledTimes(1);
+  expect(elsewhere.reconnect).not.toHaveBeenCalled();
+});
+
+/**
+ * A Connection is in the table before it is open, and a Kick walking that table has no reason to
+ * skip it: the client is on the far end either way, and `reconnect` on a Connection that is still
+ * opening is remembered and carried out after `ready` (ADR-0004). Skipping it would leave a
+ * window — the width of a replay — in which a revocation silently misses.
+ */
+test("a Kick reaches a Connection that is still opening", async () => {
+  const instance = getInstance({ transport: createMemoryTransport() });
+  const connection = keyed("ada", "chat:42");
+  const opening = await instance.open(connection);
+
+  await instance.transport.publish(kick({ key: "ada" }));
+  await opening.start();
+
+  expect(connection.reconnect).toHaveBeenCalledTimes(1);
+});
+
+/**
+ * A Kick that names neither a Key nor a Channel names no Connection. Something else writing this
+ * App's log, or a later library meaning something by it, must not read as "end everything".
+ */
+test("a Kick that names neither a Key nor a Channel ends nothing", async () => {
+  const instance = getInstance({ transport: createMemoryTransport() });
+  const connection = keyed("ada", "chat:42");
+  await live(instance, connection);
+
+  await instance.transport.publish(kick({}));
+
+  expect(connection.reconnect).not.toHaveBeenCalled();
 });
