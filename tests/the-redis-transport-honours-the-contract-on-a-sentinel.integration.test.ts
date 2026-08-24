@@ -18,8 +18,8 @@ import { SENTINEL_MASTER_NAME, startSentinelTopology } from "./redis-topologies.
  * blocking `XREAD` included — asked of the master the sentinel names, which is the one thing
  * this client kind decides for us.
  *
- * Failover is out of scope here (#57): what a reader does across one is a claim of its own, and
- * this topology has no replica to fail over to.
+ * Failover is not this file's claim: this topology starts no replica, and what a reader does
+ * across a promotion is a claim of its own, asserted next door (#79).
  */
 const injected = injectedClientOn(startSentinelTopology, (topology) =>
   createSentinel({
