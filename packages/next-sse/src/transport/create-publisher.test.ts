@@ -128,10 +128,11 @@ test("a Channel no pattern can make, an undeclared event and a wrong payload are
 });
 
 /**
- * Two patterns with params that one name satisfies at once. The Registry lets this through on
- * purpose — it compares only literal names, because whether two parameterized patterns can
- * collide depends on values it does not have (ADR-0002) — so `user:7` is genuinely a name of
- * both Channels, and one Entry on it is read by the subscribers of both.
+ * Two patterns with params that one name satisfies at once. `createSSE` refuses an App declaring
+ * these (#68), and this path is where that refusal cannot reach: a worker holds the App as a
+ * type and never runs its `createSSE`, and the type-level match is coarser than the matcher's
+ * anyway. So the obligation is kept here too — `user:7` is a name of both Channels, and one
+ * Entry on it is read by the subscribers of both.
  */
 type Overlapping = {
   channels: {

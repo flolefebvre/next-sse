@@ -355,12 +355,79 @@ test("a Channel another Channel's pattern would match is refused", () => {
       chat: channel({ pattern: "chat:{roomId}", events, authorize: () => true }),
       admin: channel({ pattern: "chat:admin", events, authorize: () => false }),
     }),
-  ).toThrow(/"admin".*"chat:admin".*"chat".*"chat:\{roomId\}"/s);
+  ).toThrow(/"chat".*"chat:\{roomId\}".*"admin".*"chat:admin".*"chat:admin"/s);
 
   expect(() =>
     createSSE({
       chat: channel({ pattern: "chat:{roomId}", events, authorize: () => true }),
       admin: channel({ pattern: "admin", events, authorize: () => false }),
+    }),
+  ).not.toThrow();
+});
+
+/**
+ * The overlap this one cannot see coming: two patterns that both carry params and meet on a name
+ * neither reads as the other's. `sse.user({ id: "7" })` publishes on `user:7`, which is also what
+ * `{kind}:7` makes with `kind: "user"`, so a subscriber of the second Channel receives that very
+ * Message and types its payload `{ b: number }` when it is `{ a: string }` (#68). Whether two
+ * parameterized patterns can meet is decidable on the patterns alone, so the App hears about it
+ * at `createSSE` rather than never.
+ */
+test("two parameterized patterns that can make one name are refused", () => {
+  const { channel, createSSE } = initSSE({ drain: false, transport: createMemoryTransport() });
+
+  expect(() =>
+    createSSE({
+      user: channel({
+        pattern: "user:{id}",
+        events: { ping: z.object({ a: z.string() }) },
+        authorize: () => true,
+      }),
+      kind: channel({
+        pattern: "{kind}:7",
+        events: { ping: z.object({ b: z.number() }) },
+        authorize: () => true,
+      }),
+    }),
+  ).toThrow(/"user".*"user:\{id\}".*"kind".*"\{kind\}:7".*"user:7"/s);
+});
+
+/** The same pattern under two keys is the purest form of it: one Channel, two typings of it. */
+test("two Channels declaring the same pattern are refused", () => {
+  const { channel, createSSE } = initSSE({ drain: false, transport: createMemoryTransport() });
+
+  expect(() =>
+    createSSE({
+      chat: channel({
+        pattern: "chat:{roomId}",
+        events: { message: messageSchema },
+        authorize: () => true,
+      }),
+      mirror: channel({
+        pattern: "chat:{roomId}",
+        events: { message: messageSchema },
+        authorize: () => true,
+      }),
+    }),
+  ).toThrow(/"chat".*"mirror"/s);
+});
+
+/**
+ * Patterns that cannot meet stay legal, and that is most of them: a param stops at the separator,
+ * so a different number of parts or a different literal anywhere in one of them is enough.
+ */
+test("patterns that can make no common name are left alone", () => {
+  const events = { message: messageSchema };
+  const { channel, createSSE } = initSSE({ drain: false, transport: createMemoryTransport() });
+
+  expect(() =>
+    createSSE({
+      presence: channel({ pattern: "presence:{roomId}", events, authorize: () => true }),
+      chat: channel({ pattern: "chat:{roomId}", events, authorize: () => true }),
+      typing: channel({ pattern: "chat:{roomId}:typing", events, authorize: () => true }),
+      inbox: channel({ pattern: "user:{userId}:inbox", events, authorize: () => true }),
+      outbox: channel({ pattern: "user:{userId}:outbox", events, authorize: () => true }),
+      announcements: channel({ pattern: "announcements", events, authorize: () => true }),
     }),
   ).not.toThrow();
 });

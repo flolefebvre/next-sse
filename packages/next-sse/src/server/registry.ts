@@ -12,8 +12,8 @@ import type {
 } from "../internal/channel.js";
 import {
   assertFillablePattern,
+  collidingName,
   fillPattern,
-  isLiteralPattern,
   matchPattern,
   type ParamsArgs,
 } from "../internal/pattern.js";
@@ -42,6 +42,12 @@ import { createHandoff, type Handoff } from "./snapshot.js";
  *
  * A payload is the schema's _Input_: what the App writes, before validation. What reaches the
  * client is the Output the schema produced (ADR-0006).
+ *
+ * A Handle is built from a Registry key and params, so one declaration types its payload — which
+ * is sound because the name that key makes belongs to no other declaration: `createSSE` refuses
+ * a Registry whose patterns can make one name (#68). The worker-side `publish` starts from the
+ * name instead and owes every declaration that name reaches, which is the same rule read from
+ * the other end.
  */
 export type Handle<Events extends EventMap = EventMap> = {
   /**
@@ -200,31 +206,44 @@ export function createSSE<Channels extends ChannelRecord>(
 }
 
 /**
- * Refuse a Registry where one Channel's name is also what another Channel's pattern matches.
+ * Refuse a Registry where two Channel patterns can make the same Channel name.
  *
- * A name on the query of a Connection is resolved against the patterns in the order they were
- * declared, and the first match wins. That is harmless between two patterns that overlap only
- * on names an App would have to go out of its way to write, and dangerous for the overlap an App
- * writes by accident: `chat:{roomId}` beside a literal `chat:admin` means the admin Channel is
- * authorized by the chat rule — silently, and only for the Channel that was declared second.
+ * A Channel name is what everything downstream carries — the Transport an Entry, a Connection its
+ * set, a Handle its binding (ADR-0005) — never the Registry key it was declared under. So a name
+ * two declarations can both make is one stream of Messages with two typings of it: an Entry
+ * published through one Handle is delivered once and read by the subscribers of both, each
+ * validating nothing and typing the payload by its own schema. The type would lie to whichever
+ * of the two the App did not have in mind, and nothing at all would report it (#68).
  *
- * So the check is exactly that case: a Channel whose pattern has no params is a Channel name,
- * and no other pattern may match it. Two patterns that both have params are not compared —
- * whether `user:{id}` and `{kind}:7` can collide depends on values neither the Registry nor this
- * function has — and the ordering rule is what settles those.
+ * Ordering does settle Authorize — the patterns are tried in declaration order and the first
+ * match wins, so a Connection asking for the name is guarded by one rule rather than two — and
+ * that is all it settles. It has nothing to say about which schema typed the payload, because
+ * the Publish that produced it never went near a Connection. So the overlap is refused here,
+ * where the App wrote it, rather than left to a rule that answers a different question.
+ *
+ * Every pair is compared, params or not: whether two patterns can meet is decidable on the
+ * patterns alone (`collidingName`), and where the witness it hands back is a name both patterns
+ * genuinely take apart again, the error quotes it.
  */
 function assertNoOverlap(declarations: ChannelRecord): void {
-  for (const [key, declaration] of Object.entries(declarations)) {
-    if (!isLiteralPattern(declaration.pattern)) continue;
-    for (const [other, candidate] of Object.entries(declarations)) {
-      if (other === key || matchPattern(candidate.pattern, declaration.pattern) === undefined) {
-        continue;
-      }
+  const entries = Object.entries(declarations);
+  for (const [index, [key, declaration]] of entries.entries()) {
+    for (const [other, candidate] of entries.slice(index + 1)) {
+      const name = collidingName(declaration.pattern, candidate.pattern);
+      if (name === undefined) continue;
+
+      const shared =
+        matchPattern(declaration.pattern, name) !== undefined &&
+        matchPattern(candidate.pattern, name) !== undefined
+          ? `both name the Channel "${name}"`
+          : `can name one and the same Channel`;
       throw new Error(
-        `next-sse: the Channel "${key}" is named "${declaration.pattern}", and the Channel ` +
-          `"${other}" declares the pattern "${candidate.pattern}", which matches that name: a ` +
-          `Connection asking for it would be authorized by whichever of the two was declared ` +
-          `first. Name one of them something the other cannot make.`,
+        `next-sse: the Channel "${key}" declares the pattern "${declaration.pattern}" and the ` +
+          `Channel "${other}" declares the pattern "${candidate.pattern}", and they ${shared}: ` +
+          `one Message published there is read by the subscribers of both Channels, each typing ` +
+          `its payload by its own schema, and a Connection asking for it is authorized by ` +
+          `whichever of the two was declared first. Name one of them something the other ` +
+          `cannot make.`,
       );
     }
   }
