@@ -54,18 +54,38 @@ export function isStreamId(cursor: Cursor): boolean {
   return /^\d+-\d+$/.test(cursor);
 }
 
-/** Where one stream ID sits relative to another: negative, zero or positive, as `sort` wants. */
+/**
+ * Where one stream ID sits relative to another: negative, zero or positive, as `sort` wants.
+ *
+ * Both halves of an ID are unsigned 64-bit, and an external publisher may write one that uses
+ * the range, so they are compared as `bigint`: read as `number`, two distinct IDs past
+ * `Number.MAX_SAFE_INTEGER` would compare equal and a dropped Cursor would read as a good one.
+ */
 export function compareIds(left: string, right: string): number {
   const [leftMs, leftSeq] = parseId(left);
   const [rightMs, rightSeq] = parseId(right);
+  const difference = leftMs === rightMs ? leftSeq - rightSeq : leftMs - rightMs;
 
-  return leftMs === rightMs ? leftSeq - rightSeq : leftMs - rightMs;
+  return difference === 0n ? 0 : difference < 0n ? -1 : 1;
 }
 
-function parseId(id: string): [number, number] {
+/** The position immediately below one: what a reader resumes from to be handed that Entry. */
+export function justBefore(id: string): string {
+  const [ms, seq] = parseId(id);
+
+  if (seq > 0n) return `${String(ms)}-${String(seq - 1n)}`;
+  if (ms === 0n) return BEFORE_ANYTHING;
+
+  return `${String(ms - 1n)}-${HIGHEST_SEQUENCE}`;
+}
+
+/** The highest sequence number one millisecond can hold: an unsigned 64-bit integer. */
+const HIGHEST_SEQUENCE = 18_446_744_073_709_551_615n;
+
+function parseId(id: string): [bigint, bigint] {
   const [ms, seq] = id.split("-");
 
-  return [Number(ms), Number(seq)];
+  return [BigInt(ms ?? "0"), BigInt(seq ?? "0")];
 }
 
 /** What `XINFO STREAM` is read for: the tail, and the boundary `gone` is decided on. */
@@ -91,7 +111,6 @@ export interface StreamInfo {
 
 const LAST_GENERATED_ID = "last-generated-id";
 const RECORDED_FIRST_ENTRY_ID = "recorded-first-entry-id";
-const FIRST_ENTRY = "first-entry";
 const ENTRIES_ADDED = "entries-added";
 const LENGTH = "length";
 
@@ -105,23 +124,26 @@ export function readStreamInfo(reply: unknown): StreamInfo {
   const lastGeneratedId =
     asString(fields.get(LAST_GENERATED_ID), "XINFO STREAM") ?? BEFORE_ANYTHING;
   const length = numberOf(fields.get(LENGTH));
-  const entriesAdded = numberOf(fields.get(ENTRIES_ADDED));
 
-  const firstEntryId =
-    asString(fields.get(RECORDED_FIRST_ENTRY_ID), "XINFO STREAM") ??
-    firstEntryIdOf(fields.get(FIRST_ENTRY)) ??
-    BEFORE_ANYTHING;
+  const firstEntryId = asString(fields.get(RECORDED_FIRST_ENTRY_ID), "XINFO STREAM");
+  const entriesAdded = asString(fields.get(ENTRIES_ADDED), "XINFO STREAM");
+
+  /**
+   * Both fields are Redis 7.0, and `gone` is decided on them: a server that reports neither
+   * would have this Transport answer "nothing was lost" to every Cursor, which is silent loss
+   * rather than a Reset. It is refused instead, naming the floor.
+   */
+  if (firstEntryId === undefined || entriesAdded === undefined) {
+    throw new TransportError(
+      "This server does not report `recorded-first-entry-id` and `entries-added`: the Redis Transport needs Redis >= 7.0 or Valkey >= 8.",
+    );
+  }
 
   return {
     lastGeneratedId,
     oldestKeptId: length === 0 ? lastGeneratedId : firstEntryId,
-    everDropped: entriesAdded > length,
+    everDropped: numberOf(entriesAdded) > length,
   };
-}
-
-/** The id of the `first-entry` a server reports, for one that names no `recorded-first-entry-id`. */
-function firstEntryIdOf(entry: unknown): string | undefined {
-  return Array.isArray(entry) ? asString(entry[0], "XINFO STREAM") : undefined;
 }
 
 function numberOf(value: unknown): number {

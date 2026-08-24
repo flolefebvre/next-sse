@@ -96,3 +96,21 @@ test("the time window empties a log the App has stopped publishing to", async ()
   expect(await log.tail()).toBe(second);
   expect(await log.read(await log.tail(), 10)).toEqual({ entries: [], done: true });
 });
+
+/**
+ * A reader is always sitting inside a five-second `XREAD BLOCK`, and node-redis's `close()`
+ * waits for the commands in flight: draining that connection would make every `close()` take up
+ * to a whole block — on a Drain (ADR-0011), on a hot reload, and on every case of the contract
+ * suite. The reader connection is this Transport's own and is owed no graceful end, so it is
+ * torn down instead.
+ */
+test("closing a Transport with a live reader does not wait out its blocking read", async () => {
+  const log = transport(prefix());
+  await log.subscribe(() => undefined, { onGap: () => undefined });
+  await log.publish(message("something to have read"));
+
+  const startedAt = Date.now();
+  await log.close();
+
+  expect(Date.now() - startedAt).toBeLessThan(500);
+});

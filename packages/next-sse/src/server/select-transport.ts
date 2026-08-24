@@ -9,16 +9,12 @@ import type {
   Unsubscribe,
 } from "../transport/index.js";
 
-/** What loading the Redis Transport gives back: its factory, and nothing else. */
-type LoadRedis = () => Promise<{
-  createRedisTransport: (options: {
-    url: string;
-    prefix?: string;
-    retention?: { window?: number; cap?: number };
-    operationTimeout?: number;
-    debug?: boolean;
-  }) => Transport;
-}>;
+/**
+ * How the Redis Transport is loaded. It is the module's own type, so the factory's signature
+ * cannot drift from what this file expects; `typeof import(...)` is types only and loads
+ * nothing at runtime.
+ */
+type LoadRedis = () => Promise<typeof import("../transport/redis.js")>;
 
 const loadRedis: LoadRedis = () => import("../transport/redis.js");
 

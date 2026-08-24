@@ -29,7 +29,7 @@ Both `message` and `control` are documented (an admin service outside Next.js re
 | `NEXT_SSE_OPERATION_TIMEOUT` | `operationTimeout` (ms)     | `1000`                  |
 | `NEXT_SSE_DEBUG`             | `debug`                     | `false`                 |
 
-Retention applies to both Transports, so those names carry no `REDIS`. Only Redis 6.2/7.0 features are used (`MAXLEN ~`, `MINID ~`, `XINFO STREAM` 7.0 fields, `XRANGE (`); nothing Redis 8.x-only, so Valkey 8 is a first-class target.
+Retention applies to both Transports, so those names carry no `REDIS`. Only Redis 6.2/7.0 features are used (`MAXLEN ~`, `MINID ~`, `XINFO STREAM` 7.0 fields, `XRANGE (`); nothing Redis 8.x-only, so Valkey 8 is a first-class target. **7.0 is a floor, not a preference** (#40): `gone` is decided on `recorded-first-entry-id` and `entries-added`, so a server that reports neither is refused by name at the first `XINFO STREAM` rather than left answering "nothing was lost" to every Cursor.
 
 ## Considered Options
 

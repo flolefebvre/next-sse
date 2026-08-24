@@ -12,8 +12,8 @@ const message: Entry = {
   payload: { text: "one" },
 };
 
-/** A stand-in for the Redis Transport, so the selection can be tested without a server. */
-const fakeRedis = (): { load: () => Promise<{ createRedisTransport: () => Transport }> } => {
+/** A stand-in for the Redis module, so the selection can be tested without a server. */
+const fakeRedis = (): { load: () => Promise<typeof import("../transport/redis.js")> } => {
   const transport = {
     publish: vi.fn(async () => "1-0"),
     read: vi.fn(async () => ({ entries: [], done: true })),
@@ -22,7 +22,12 @@ const fakeRedis = (): { load: () => Promise<{ createRedisTransport: () => Transp
     close: vi.fn(async () => undefined),
   } as unknown as Transport;
 
-  return { load: vi.fn(async () => ({ createRedisTransport: () => transport })) };
+  return {
+    load: vi.fn(async () => ({
+      createRedisTransport: () => transport,
+      createRedisPublisher: () => transport,
+    })),
+  };
 };
 
 test("an environment with no REDIS_URL gets the Memory Transport, and loads nothing else", async () => {

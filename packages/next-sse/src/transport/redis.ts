@@ -27,6 +27,7 @@ import {
   DEFAULT_PREFIX,
   ENTRY_FIELD,
   isStreamId,
+  justBefore,
   logKeyOf,
   parseEntry,
   readRange,
@@ -239,6 +240,39 @@ function createRedisLog(options: RedisTransportOptions): Transport {
   };
 
   /**
+   * One page of the log, read strictly after a position, with the boundary that decides `gone`
+   * read alongside it.
+   *
+   * The range is asked for first and the boundary after it, in that order on the wire: a trim
+   * that lands between them then shows up in the boundary, and the page is answered `gone`
+   * rather than served with a hole in it. `done` is exact rather than one page late, since the
+   * boundary already says what the log's last position is.
+   */
+  const pageFrom = async (
+    after: Cursor | undefined,
+    count: number,
+  ): Promise<{ raw: RawEntry[]; info: StreamInfo; done: boolean }> => {
+    const { raw, info } = await bounded("read", async () => {
+      const range = link.send([
+        "XRANGE",
+        key,
+        after === undefined ? "-" : `(${after}`,
+        "+",
+        "COUNT",
+        String(count),
+      ]);
+      const boundary = streamInfo((args) => link.send(args));
+      const [rangeReply, read] = await Promise.all([range, boundary]);
+
+      return { raw: readRange(rangeReply, "XRANGE"), info: read };
+    });
+
+    const last = raw[raw.length - 1];
+
+    return { raw, info, done: raw.length < count || last?.id === info.lastGeneratedId };
+  };
+
+  /**
    * The blocking reader: one `XREAD BLOCK` at a time, from the last position it saw, for as
    * long as this Transport is open. It survives the client's own reconnect by reissuing from
    * that position, which is what makes an Instance's Redis reconnect cost nothing.
@@ -349,44 +383,25 @@ function createRedisLog(options: RedisTransportOptions): Transport {
       if (after !== undefined && !isStreamId(after)) return { gone: true };
 
       const count = Math.max(limit, 0);
-      const { raw, info } = await bounded("read", async () => {
-        /**
-         * The range is asked for first and the boundary read after it, in that order on the
-         * wire: a trim that lands between them then shows up in the boundary, and the page is
-         * answered `gone` rather than served with a hole in it.
-         */
-        const range = link.send([
-          "XRANGE",
-          key,
-          after === undefined ? "-" : `(${after}`,
-          "+",
-          "COUNT",
-          String(count),
-        ]);
-        const boundary = streamInfo((args) => link.send(args));
-        const [rangeReply, info] = await Promise.all([range, boundary]);
+      let from = after;
+      let page = await pageFrom(from, count);
 
-        return { raw: readRange(rangeReply, "XRANGE"), info };
-      });
+      if (after !== undefined && lost(page.info, after)) return { gone: true };
 
       /**
-       * Everything strictly after this Cursor is still in the log exactly when the Cursor is at
-       * or above the oldest Entry the log holds: a log only ever drops from its front. It is
-       * conservative by one Cursor — the newest dropped Entry answers `gone` although nothing
-       * after it was lost — and never the other way round, which is the direction gap-free
-       * delivery depends on (ADR-0006, corrected).
+       * A page whose every Entry this library could not read carries no Cursor for the caller to
+       * page on from, so the caller would ask for the very same page again, for ever. The
+       * Transport walks past it here instead: what it skipped it has already reported, and the
+       * position it walks to is the log's own.
        */
-      if (after !== undefined && lost(info, after)) return { gone: true };
+      let entries = entriesOf(page.raw, "read");
+      while (entries.length === 0 && !page.done) {
+        from = (page.raw[page.raw.length - 1] as RawEntry).id;
+        page = await pageFrom(from, count);
+        entries = entriesOf(page.raw, "read");
+      }
 
-      /**
-       * Caught up means there is nothing left after what came back, which a full page can be
-       * too: the boundary read alongside the range already says what the log's last position
-       * is, so the answer is exact rather than one page late.
-       */
-      const last = raw[raw.length - 1];
-      const done = raw.length < count || last?.id === info.lastGeneratedId;
-
-      return { entries: entriesOf(raw, "read"), done };
+      return { entries, done: page.done };
     },
 
     async tail(): Promise<Cursor> {
@@ -412,7 +427,19 @@ function createRedisLog(options: RedisTransportOptions): Transport {
          */
         feeding ??= (async () => {
           const info = await bounded("subscribe", () => streamInfo((args) => link.send(args)));
-          reader = await link.reader();
+          const connection = await link.reader();
+
+          /**
+           * `close()` may have run while this was being set up. What was opened in the meantime
+           * is closed here rather than left behind: a reader connection nobody holds and a trim
+           * timer on a closed link would outlive the Transport they belong to.
+           */
+          if (closed) {
+            await connection.close().catch(() => undefined);
+            throw new TransportClosedError("This Redis Transport has been closed.");
+          }
+
+          reader = connection;
           narrate(`the reader is following the log from ${info.lastGeneratedId}`);
           trimTimer ??= setInterval(() => void trimWindow(), trimIntervalMs).unref();
 
@@ -457,21 +484,6 @@ function createRedisLog(options: RedisTransportOptions): Transport {
 function lost(info: StreamInfo, position: Cursor): boolean {
   return info.everDropped && compareIds(position, info.oldestKeptId) < 0;
 }
-
-/** The position immediately below one: what a reader resumes from to be handed that Entry. */
-function justBefore(id: string): string {
-  const [ms, seq] = id.split("-");
-  const milliseconds = Number(ms);
-  const sequence = Number(seq);
-
-  if (sequence > 0) return `${String(milliseconds)}-${String(sequence - 1)}`;
-  if (milliseconds === 0) return BEFORE_ANYTHING;
-
-  return `${String(milliseconds - 1)}-${HIGHEST_SEQUENCE}`;
-}
-
-/** The highest sequence number one millisecond can hold: an unsigned 64-bit integer. */
-const HIGHEST_SEQUENCE = "18446744073709551615";
 
 /** The `TIME` reply, in milliseconds: seconds first, microseconds second. */
 function readRangeTime(reply: unknown): number {

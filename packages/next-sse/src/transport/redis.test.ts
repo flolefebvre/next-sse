@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 
 import { TransportClosedError, TransportError, type Entry } from "./index.js";
-import type { RedisClientLike } from "./redis-client.js";
+import type { RedisClientLike, RedisErrorHook } from "./redis-client.js";
 import { createRedisPublisher, createRedisTransport } from "./redis.js";
 
 const message: Entry = {
@@ -26,6 +26,8 @@ interface FakeServer {
   commands: string[][];
   info: { lastGeneratedId: string; firstEntryId: string; length: number; entriesAdded: number };
   entries: [string, string[]][];
+  /** What an `XRANGE` from a position answers, which is what a paging test drives. */
+  pageOf: (args: string[]) => [string, string[]][];
 }
 
 /**
@@ -40,6 +42,7 @@ function fakeServer(): FakeServer {
     commands: [],
     info: { lastGeneratedId: "7-0", firstEntryId: "3-0", length: 2, entriesAdded: 5 },
     entries: [],
+    pageOf: () => server.entries,
   };
 
   server.client = {
@@ -47,7 +50,7 @@ function fakeServer(): FakeServer {
       server.commands.push(args);
 
       if (args[0] === "XADD") return Promise.resolve("9-0");
-      if (args[0] === "XRANGE") return Promise.resolve(server.entries);
+      if (args[0] === "XRANGE") return Promise.resolve(server.pageOf(args));
       if (args[0] === "XINFO") {
         return Promise.resolve([
           "length",
@@ -72,6 +75,10 @@ function fakeServer(): FakeServer {
 
   return server;
 }
+
+/** A Transport on the fake server, hearing about every failure it meets. */
+const transportOf = (server: FakeServer, onError?: RedisErrorHook) =>
+  createRedisTransport({ client: server.client, ...(onError === undefined ? {} : { onError }) });
 
 /** The arguments of the one command of this name that was sent. */
 const commandOf = (server: FakeServer, name: string): string[] =>
@@ -176,6 +183,31 @@ test("an Entry the log cannot read is skipped, and reported once", async () => {
   expect(page).toEqual({ entries: [{ ...message, cursor: "5-0" }], done: true });
   expect(onError).toHaveBeenCalledTimes(1);
   expect(onError).toHaveBeenCalledWith(expect.any(TransportError), "read");
+});
+
+/**
+ * A page whose every Entry is unreadable carries no Cursor to page on from, so a caller would
+ * ask for the same page for ever. The Transport walks past it itself.
+ */
+test("a page of nothing but unreadable Entries is walked past, not answered", async () => {
+  const server = fakeServer();
+  const onError = vi.fn();
+  const unreadable: [string, string[]][] = [
+    ["4-0", ["entry", "{ not json"]],
+    ["5-0", ["entry", "{ not json either"]],
+  ];
+  server.info = { lastGeneratedId: "6-0", firstEntryId: "3-0", length: 4, entriesAdded: 4 };
+  server.pageOf = (args) =>
+    args[2] === "(3-0" ? unreadable : [["6-0", ["entry", JSON.stringify(message)]]];
+
+  const page = await transportOf(server, onError).read("3-0", 2);
+
+  expect(page).toEqual({ entries: [{ ...message, cursor: "6-0" }], done: true });
+  expect(onError).toHaveBeenCalledTimes(2);
+  expect(server.commands.filter((args) => args[0] === "XRANGE").map((args) => args[2])).toEqual([
+    "(3-0",
+    "(5-0",
+  ]);
 });
 
 test("a closed Transport answers nothing further, and closing twice is not an error", async () => {

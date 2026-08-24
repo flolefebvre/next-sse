@@ -5,6 +5,7 @@ import {
   assertPrefix,
   compareIds,
   isStreamId,
+  justBefore,
   logKeyOf,
   parseEntry,
   readRange,
@@ -53,6 +54,20 @@ test("stream IDs order by their two parts, not as strings", () => {
   expect(compareIds("10-2", "10-2")).toBe(0);
 });
 
+/**
+ * Both halves of a stream ID are unsigned 64-bit, and an external publisher may use the range:
+ * read as JavaScript numbers, two IDs past the safe integer would compare equal and a Cursor
+ * into what was dropped would read as a good one.
+ */
+test("stream IDs beyond the safe integer still order, and still have a predecessor", () => {
+  expect(compareIds("9007199254740993-0", "9007199254740994-0")).toBeLessThan(0);
+  expect(compareIds("1-9007199254740993", "1-9007199254740994")).toBeLessThan(0);
+  expect(justBefore("1-9007199254740994")).toBe("1-9007199254740993");
+  expect(justBefore("7-0")).toBe("6-18446744073709551615");
+  expect(justBefore("7-3")).toBe("7-2");
+  expect(justBefore("0-0")).toBe("0-0");
+});
+
 test("XINFO STREAM reads the same on a RESP2 array and a RESP3 map", () => {
   const expected = { lastGeneratedId: "5-0", oldestKeptId: "3-0", everDropped: true };
   const fields = {
@@ -67,25 +82,35 @@ test("XINFO STREAM reads the same on a RESP2 array and a RESP3 map", () => {
   expect(readStreamInfo(fields)).toEqual(expected);
 });
 
-/** A server that names no `recorded-first-entry-id` still shows its first Entry. */
-test("the oldest Entry is read from first-entry when the field is not there", () => {
-  const reply = [
-    "length",
-    2,
-    "entries-added",
-    5,
-    "last-generated-id",
-    "5-0",
-    "first-entry",
-    ["3-0", ["entry", "{}"]],
-  ];
-
-  expect(readStreamInfo(reply).oldestKeptId).toBe("3-0");
+/**
+ * Both fields `gone` is decided on are Redis 7.0. A server that reports neither would have this
+ * Transport answer "nothing was lost" to every Cursor, which is silent loss rather than a Reset,
+ * so it is refused by name instead.
+ */
+test("a server too old to say what it dropped is refused, naming the floor", () => {
+  expect(() => readStreamInfo(["length", 2, "last-generated-id", "5-0"])).toThrow(
+    /Redis >= 7.0 or Valkey >= 8/,
+  );
+  expect(() =>
+    readStreamInfo(["length", 2, "last-generated-id", "5-0", "entries-added", 5]),
+  ).toThrow(TransportError);
+  expect(() =>
+    readStreamInfo(["length", 2, "last-generated-id", "5-0", "recorded-first-entry-id", "3-0"]),
+  ).toThrow(TransportError);
 });
 
 /** A log that has dropped nothing can have lost nothing, whatever a Cursor points at. */
 test("a log that never dropped an Entry says so", () => {
-  const reply = ["length", 5, "entries-added", 5, "last-generated-id", "5-0"];
+  const reply = [
+    "length",
+    5,
+    "entries-added",
+    5,
+    "last-generated-id",
+    "5-0",
+    "recorded-first-entry-id",
+    "1-0",
+  ];
 
   expect(readStreamInfo(reply).everDropped).toBe(false);
 });
@@ -95,14 +120,25 @@ test("a log that never dropped an Entry says so", () => {
  * reached, or an old Cursor would read as one that lost nothing.
  */
 test("an empty log is read as having dropped everything up to where it stands", () => {
-  const emptied = ["length", 0, "entries-added", 9, "last-generated-id", "9-0"];
+  const emptied = [
+    "length",
+    0,
+    "entries-added",
+    9,
+    "last-generated-id",
+    "9-0",
+    "recorded-first-entry-id",
+    "0-0",
+  ];
 
   expect(readStreamInfo(emptied)).toEqual({
     lastGeneratedId: "9-0",
     oldestKeptId: "9-0",
     everDropped: true,
   });
-  expect(readStreamInfo(["length", 0])).toEqual({
+  expect(
+    readStreamInfo(["length", 0, "entries-added", 0, "recorded-first-entry-id", "0-0"]),
+  ).toEqual({
     lastGeneratedId: "0-0",
     oldestKeptId: "0-0",
     everDropped: false,

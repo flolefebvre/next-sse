@@ -225,7 +225,7 @@ const READER_OVERRIDES = { commandOptions: { timeout: undefined } };
  */
 function connecting(client: Connectable): {
   connected: (options?: { wait?: boolean }) => Promise<void>;
-  close: () => Promise<void>;
+  close: (options?: { drain?: boolean }) => Promise<void>;
 } {
   let attempt: Promise<void> | undefined;
   let waiting: { promise: Promise<void>; ready: () => void } | undefined;
@@ -267,12 +267,19 @@ function connecting(client: Connectable): {
 
       await untilReady();
     },
-    close: async (): Promise<void> => {
+    /**
+     * Let this connection go. `drain` is what node-redis's `close()` does — it waits for the
+     * commands in flight — which is right for the connection operations share and wrong for the
+     * reader's: a reader is always sitting inside a five-second `XREAD BLOCK`, and waiting that
+     * out would make every `close()` take up to a block, on a Drain (ADR-0011) and on every
+     * hot reload alike. Nothing on the reader's connection is owed a graceful end.
+     */
+    close: async ({ drain = true } = {}): Promise<void> => {
       const started = attempt;
       if (started === undefined) return;
       attempt = undefined;
 
-      if (client.isReady) await client.close();
+      if (client.isReady && drain) await client.close();
       else client.destroy();
 
       await started.catch(() => undefined);
@@ -300,7 +307,7 @@ async function openReader(
       return sendOn(duplicate, kind, key, args);
     },
     close: async () => {
-      await lifecycle.close();
+      await lifecycle.close({ drain: false });
     },
   };
 }
