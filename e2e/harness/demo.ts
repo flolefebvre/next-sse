@@ -41,3 +41,20 @@ export async function publish(url: string, text: string): Promise<void> {
     );
   }
 }
+
+/**
+ * One call of the demo's admin Kick route, as an admin unless the cookie says otherwise. What
+ * comes back is the answer itself: who the route refuses is as much of the demo as who it
+ * Kicks, and different scenarios read different halves of that.
+ */
+export function kick(
+  url: string,
+  body: { userId?: string },
+  cookie = "role=admin",
+): Promise<Response> {
+  return fetch(`${url}/api/kick`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookie },
+    body: JSON.stringify(body),
+  });
+}
