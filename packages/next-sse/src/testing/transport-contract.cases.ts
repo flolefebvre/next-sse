@@ -371,7 +371,8 @@ export const contractCases: readonly ContractCase[] = [
       const { published } = await publishUntilTrimmed(transport);
 
       await until(
-        () => seen.entries.some((entry) => entry.cursor === cursorAt(published, published.length - 1)),
+        () =>
+          seen.entries.some((entry) => entry.cursor === cursorAt(published, published.length - 1)),
         "the live feed delivered the last Entry published",
       );
       expect(seen.gaps).toBe(0);
@@ -411,7 +412,7 @@ export const contractCases: readonly ContractCase[] = [
       const transport = await context.transport();
       await transport.publish(message("before"));
 
-      await context.outage.begin();
+      await context.outage.begin(transport);
 
       await expect(
         promptly(transport.publish(message("during")), "publish"),
@@ -423,7 +424,7 @@ export const contractCases: readonly ContractCase[] = [
         TransportUnavailableError,
       );
 
-      await context.outage.end();
+      await context.outage.end(transport);
 
       const cursor = await transport.publish(message("after"));
       expect(cursorsOf(await readAll(transport))).toContain(cursor);
@@ -440,9 +441,9 @@ export const contractCases: readonly ContractCase[] = [
       await peer.publish(message("before the outage"));
       await until(() => seen.entries.length === 1, "the feed delivered the peer's first Entry");
 
-      await context.outage.begin();
+      await context.outage.begin(transport);
       const during = await peer.publish(message("during the outage"));
-      await context.outage.end();
+      await context.outage.end(transport);
 
       await until(
         () => seen.entries.some((entry) => entry.cursor === during),
@@ -463,9 +464,9 @@ export const contractCases: readonly ContractCase[] = [
       await peer.publish(message("before the outage"));
       await until(() => seen.entries.length === 1, "the feed delivered the peer's first Entry");
 
-      await context.outage.begin();
+      await context.outage.begin(transport);
       await publishUntilTrimmed(peer);
-      await context.outage.end();
+      await context.outage.end(transport);
 
       await until(() => seen.gaps === 1, "the subscription reported the gap", HEAL_TIMEOUT_MS);
 

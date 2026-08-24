@@ -3,6 +3,8 @@ import { describe, it } from "vitest";
 import type { Retention, Transport } from "../transport/index.js";
 import { contractCases } from "./transport-contract.cases.js";
 
+export { contractCases } from "./transport-contract.cases.js";
+
 /**
  * What a Transport can be asked to do beyond the interface itself, so that the obligations no
  * log can demonstrate on its own — an unreachable backend, a second Instance on the same log —
@@ -11,11 +13,17 @@ import { contractCases } from "./transport-contract.cases.js";
  */
 export interface TransportBackend {
   /**
-   * Cut this process off from the backend and let it back in. The outage is this Transport's,
-   * not the log's: another client — a `peer` — keeps publishing throughout, which is what makes
-   * a gap possible at all.
+   * Cut one Transport off from the backend and let it back in. The outage is that Transport's
+   * alone, never the whole backend's: a `peer` keeps publishing throughout, and the log goes on
+   * advancing and trimming past the position the cut Transport would resume from, which is the
+   * only way a gap can be staged at all. A backend that can only be stopped wholesale — a paused
+   * container — cannot supply this hook honestly; route each Transport through a path that can
+   * be cut on its own instead.
    */
-  outage?: { begin: () => Promise<void>; end: () => Promise<void> };
+  outage?: {
+    begin: (transport: Transport) => Promise<void>;
+    end: (transport: Transport) => Promise<void>;
+  };
   /**
    * Another Transport on the same log as the one given, standing for a second Instance of the
    * App. It is closed by the suite with the Transport it was made from.
@@ -44,8 +52,11 @@ export interface ContractContext {
   transport: (retention?: Retention) => Promise<Transport>;
   /** Another Transport on the same log. Only a case declaring `peer` may call it. */
   peer: (transport: Transport) => Promise<Transport>;
-  /** The outage this Transport sees. Only a case declaring `outage` may call it. */
-  outage: { begin: () => Promise<void>; end: () => Promise<void> };
+  /** The outage a Transport sees. Only a case declaring `outage` may call it. */
+  outage: {
+    begin: (transport: Transport) => Promise<void>;
+    end: (transport: Transport) => Promise<void>;
+  };
 }
 
 /** One obligation of ADR-0005, as a name and the run that proves it. */
@@ -81,7 +92,7 @@ export async function runContractCase(
   options: TransportContractOptions,
 ): Promise<void> {
   const opened: Transport[] = [];
-  let outageRunning = false;
+  const outaged = new Set<Transport>();
 
   const unsupported = (capability: Capability): never => {
     throw new Error(
@@ -104,15 +115,15 @@ export async function runContractCase(
       return peer;
     },
     outage: {
-      begin: async () => {
+      begin: async (transport) => {
         const outage = options.backend?.outage ?? unsupported("outage");
-        await outage.begin();
-        outageRunning = true;
+        await outage.begin(transport);
+        outaged.add(transport);
       },
-      end: async () => {
+      end: async (transport) => {
         const outage = options.backend?.outage ?? unsupported("outage");
-        await outage.end();
-        outageRunning = false;
+        await outage.end(transport);
+        outaged.delete(transport);
       },
     },
   };
@@ -120,7 +131,7 @@ export async function runContractCase(
   try {
     await contractCase.run(context);
   } finally {
-    if (outageRunning) await options.backend?.outage?.end();
+    for (const transport of outaged) await options.backend?.outage?.end(transport);
     for (const transport of opened) await transport.close().catch(() => undefined);
   }
 }
