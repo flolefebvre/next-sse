@@ -77,6 +77,17 @@ const liveConnection = async (sse: ChatApp, query: string): Promise<Frames> => {
   return frames;
 };
 
+/**
+ * The end of a Connection, as its client reads it: the `reconnect` Control event, the end of the
+ * stream, and nothing of it left in the Instance's table. Every ending goes through one primitive,
+ * so every test of one asserts the same three things.
+ */
+const endsWithReconnect = async (frames: Frames): Promise<void> => {
+  expect(await frames.next()).toEqual({ event: "reconnect", data: "{}" });
+  await expect(frames.next()).rejects.toThrow("the stream ended");
+  expect(getInstance().connections.size).toBe(0);
+};
+
 test("a Connection that names no Channel is refused before anything is opened", async () => {
   const sse = appWith();
 
@@ -610,9 +621,7 @@ test("a Connection that reaches its max lifetime is ended with reconnect", async
 
   await vi.advanceTimersByTimeAsync(1000);
 
-  expect(await frames.next()).toEqual({ event: "reconnect", data: "{}" });
-  await expect(frames.next()).rejects.toThrow("the stream ended");
-  expect(getInstance().connections.size).toBe(0);
+  await endsWithReconnect(frames);
 });
 
 /**
@@ -762,9 +771,7 @@ test("a Connection ended while it is still opening carries ready, the retry and 
   const frames = framesOf(await responding);
   expect((await frames.next()).event).toBe("ready");
   expect(await frames.next()).toEqual({ retry: "3000" });
-  expect(await frames.next()).toEqual({ event: "reconnect", data: "{}" });
-  await expect(frames.next()).rejects.toThrow("the stream ended");
-  expect(getInstance().connections.size).toBe(0);
+  await endsWithReconnect(frames);
 });
 
 test("ending a Connection twice ends it once", async () => {
@@ -775,9 +782,7 @@ test("ending a Connection twice ends it once", async () => {
   held?.reconnect();
   held?.reconnect();
 
-  expect(await frames.next()).toEqual({ event: "reconnect", data: "{}" });
-  await expect(frames.next()).rejects.toThrow("the stream ended");
-  expect(getInstance().connections.size).toBe(0);
+  await endsWithReconnect(frames);
 });
 
 test("ending a Connection whose client has already gone does nothing at all", async () => {
