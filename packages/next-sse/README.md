@@ -118,14 +118,14 @@ absorbed by `upsertBy("id")`.
 
 Six subpaths, and no root export.
 
-| Import from            | Holds                                                        | Docs                                     |
-| ---------------------- | ------------------------------------------------------------ | ---------------------------------------- |
-| `/server`              | `initSSE`, `SSEProvider`, `toClientChannels`, `asType`, `InvalidPayloadError` | [server.md](docs/server.md)  |
-| `/client`              | `createClient`, `SSEClientProvider`, `upsertBy`              | [client.md](docs/client.md)              |
-| `/transport`           | the `Transport` contract, its errors, `createPublisher`      | [transport.md](docs/transport.md)        |
-| `/transport/memory`    | `createMemoryTransport`                                      | [transport.md](docs/transport.md)        |
-| `/transport/redis`     | `createRedisTransport`, `createRedisPublisher`               | [transport.md](docs/transport.md)        |
-| `/testing`             | `transportContract`, `FakeEventSource`, `snapshotOf`         | [testing.md](docs/testing.md)            |
+| Import from         | Holds                                                                         | Docs                              |
+| ------------------- | ----------------------------------------------------------------------------- | --------------------------------- |
+| `/server`           | `initSSE`, `SSEProvider`, `toClientChannels`, `asType`, `InvalidPayloadError` | [server.md](docs/server.md)       |
+| `/client`           | `createClient`, `SSEClientProvider`, `upsertBy`                               | [client.md](docs/client.md)       |
+| `/transport`        | the `Transport` contract, its errors, `createPublisher`                       | [transport.md](docs/transport.md) |
+| `/transport/memory` | `createMemoryTransport`                                                       | [transport.md](docs/transport.md) |
+| `/transport/redis`  | `createRedisTransport`, `createRedisPublisher`                                | [transport.md](docs/transport.md) |
+| `/testing`          | `transportContract`, `FakeEventSource`, `snapshotOf`                          | [testing.md](docs/testing.md)     |
 
 `/server` resolves to the implementation only under the `react-server` condition; imported
 anywhere else it throws at module load, so a Client Component cannot pull the Registry — and

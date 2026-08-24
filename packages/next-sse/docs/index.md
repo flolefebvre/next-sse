@@ -10,31 +10,31 @@ it. Read the file for the job at hand.
 
 ## Which file for which job
 
-| Job                                                             | File                                                     |
-| --------------------------------------------------------------- | -------------------------------------------------------- |
-| Understand the words this library uses                          | [core-concepts.md](core-concepts.md)                     |
-| Install it and get the first Message on screen                  | [setup.md](setup.md)                                     |
-| Declare Channels, publish, kick, drain, hand data to the client | [server.md](server.md)                                   |
-| Subscribe from a component, own list state, handle Reset        | [client.md](client.md)                                   |
-| Choose or configure a Transport, or write one                   | [transport.md](transport.md)                             |
-| Test an App that uses this library                              | [testing.md](testing.md)                                 |
-| Publish from a service that does not have this library          | [wire-format.md](wire-format.md)                         |
-| Put it behind a proxy, run several Instances, redeploy          | [deployment.md](deployment.md)                           |
-| Decide whether SSE is the right tool at all                     | [when-not-to-use-sse.md](when-not-to-use-sse.md)         |
+| Job                                                             | File                                                      |
+| --------------------------------------------------------------- | --------------------------------------------------------- |
+| Understand the words this library uses                          | [core-concepts.md](core-concepts.md)                      |
+| Install it and get the first Message on screen                  | [setup.md](setup.md)                                      |
+| Declare Channels, publish, kick, drain, hand data to the client | [server.md](server.md)                                    |
+| Subscribe from a component, own list state, handle Reset        | [client.md](client.md)                                    |
+| Choose or configure a Transport, or write one                   | [transport.md](transport.md)                              |
+| Test an App that uses this library                              | [testing.md](testing.md)                                  |
+| Publish from a service that does not have this library          | [wire-format.md](wire-format.md)                          |
+| Put it behind a proxy, run several Instances, redeploy          | [deployment.md](deployment.md)                            |
+| Decide whether SSE is the right tool at all                     | [when-not-to-use-sse.md](when-not-to-use-sse.md)          |
 | Copy a working recipe                                           | [patterns/](patterns/) — ten of them, each standing alone |
 
 ## Import map
 
 Six subpaths, and no root export.
 
-| Import from                            | Holds                                                                                                                                              |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Import from                            | Holds                                                                                                                                                |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@flefebvre/next-sse/server`           | `initSSE`, `SSEProvider`, `toClientChannels`, `asType`, `InvalidPayloadError`, and the server types (`Registry`, `Handle`, `Authorize`, `JsonValue`) |
-| `@flefebvre/next-sse/client`           | `createClient`, `SSEClientProvider`, `upsertBy`, and the client types (`Snapshot`, `Status`, `ChannelState`)                                        |
-| `@flefebvre/next-sse/transport`        | the `Transport` and `Publisher` contracts, `createPublisher`, `TransportError`, `TransportUnavailableError`, `TransportClosedError`                 |
-| `@flefebvre/next-sse/transport/memory` | `createMemoryTransport`                                                                                                                            |
-| `@flefebvre/next-sse/transport/redis`  | `createRedisTransport`, `createRedisPublisher`                                                                                                     |
-| `@flefebvre/next-sse/testing`          | `transportContract`, `FakeEventSource`, `fakeEventSources`, `snapshotOf`                                                                           |
+| `@flefebvre/next-sse/client`           | `createClient`, `SSEClientProvider`, `upsertBy`, and the client types (`Snapshot`, `Status`, `ChannelState`)                                         |
+| `@flefebvre/next-sse/transport`        | the `Transport` and `Publisher` contracts, `createPublisher`, `TransportError`, `TransportUnavailableError`, `TransportClosedError`                  |
+| `@flefebvre/next-sse/transport/memory` | `createMemoryTransport`                                                                                                                              |
+| `@flefebvre/next-sse/transport/redis`  | `createRedisTransport`, `createRedisPublisher`                                                                                                       |
+| `@flefebvre/next-sse/testing`          | `transportContract`, `FakeEventSource`, `fakeEventSources`, `snapshotOf`                                                                             |
 
 ## Iron rules
 

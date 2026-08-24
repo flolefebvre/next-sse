@@ -188,10 +188,10 @@ replay, a reconnect's replay, and the echo of what this page just sent are the s
 
 Nothing above named a Transport. The App gets one from its environment:
 
-| `REDIS_URL`      | Transport      | Good for                                   |
-| ---------------- | -------------- | ------------------------------------------ |
-| unset            | Memory         | development, and single-Instance production |
-| `redis://…`      | Redis / Valkey | any deployment with more than one Instance |
+| `REDIS_URL` | Transport      | Good for                                    |
+| ----------- | -------------- | ------------------------------------------- |
+| unset       | Memory         | development, and single-Instance production |
+| `redis://…` | Redis / Valkey | any deployment with more than one Instance  |
 
 Pass one explicitly when the environment cannot say everything — an injected client, a
 per-App Prefix in code, custom retention:

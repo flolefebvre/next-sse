@@ -89,14 +89,14 @@ shared memory, no coordination.
 
 ## Environment
 
-| Variable                    | Default    | What it does                                                     |
-| --------------------------- | ---------- | ---------------------------------------------------------------- |
-| `REDIS_URL`                 | unset      | Set → the Redis Transport. Unset → the Memory Transport          |
-| `NEXT_SSE_PREFIX`           | `next-sse` | The per-App namespace, and the only isolation between Apps       |
-| `NEXT_SSE_RETENTION_WINDOW` | `300`      | How long an Entry stays replayable, in seconds                   |
-| `NEXT_SSE_RETENTION_CAP`    | `10000`    | How many Entries the log keeps at most                           |
-| `NEXT_SSE_OPERATION_TIMEOUT`| `1000`     | How long one Transport operation may take, in milliseconds       |
-| `NEXT_SSE_DEBUG`            | `false`    | Narrate what the Transport's reader is doing                     |
+| Variable                     | Default    | What it does                                               |
+| ---------------------------- | ---------- | ---------------------------------------------------------- |
+| `REDIS_URL`                  | unset      | Set → the Redis Transport. Unset → the Memory Transport    |
+| `NEXT_SSE_PREFIX`            | `next-sse` | The per-App namespace, and the only isolation between Apps |
+| `NEXT_SSE_RETENTION_WINDOW`  | `300`      | How long an Entry stays replayable, in seconds             |
+| `NEXT_SSE_RETENTION_CAP`     | `10000`    | How many Entries the log keeps at most                     |
+| `NEXT_SSE_OPERATION_TIMEOUT` | `1000`     | How long one Transport operation may take, in milliseconds |
+| `NEXT_SSE_DEBUG`             | `false`    | Narrate what the Transport's reader is doing               |
 
 The retention names carry no `REDIS` because they bind both shipped Transports. An unset or empty
 variable configures nothing; anything passed to a factory in code wins over the environment.
@@ -127,12 +127,12 @@ exit is prompt whether or not there is a proxy in between.
 mid-Drain and the remaining clients see a broken pipe instead of a `reconnect` — they still
 recover, from their Cursors, but through a retry rather than a clean handoff.
 
-| Where                             | Default grace | With a 3 s drain window          |
-| --------------------------------- | ------------- | -------------------------------- |
-| Kubernetes `terminationGracePeriodSeconds` | 30 s | fine as-is                       |
-| Traefik `graceTimeOut`            | 10 s          | fine; shorten the window before this |
-| Caddy                             | waits         | fine as-is                       |
-| Bare `docker stop`                | 10 s          | fine as-is                       |
+| Where                                      | Default grace | With a 3 s drain window              |
+| ------------------------------------------ | ------------- | ------------------------------------ |
+| Kubernetes `terminationGracePeriodSeconds` | 30 s          | fine as-is                           |
+| Traefik `graceTimeOut`                     | 10 s          | fine; shorten the window before this |
+| Caddy                                      | waits         | fine as-is                           |
+| Bare `docker stop`                         | 10 s          | fine as-is                           |
 
 Tune it on `initSSE`:
 
@@ -182,13 +182,13 @@ Lower it if something in the path idles out faster than 45 s.
 
 ## Debugging a deployment
 
-| Symptom                                     | First thing to check                                                    |
-| ------------------------------------------- | ------------------------------------------------------------------------ |
-| Page never leaves `connecting`              | proxy buffering; `curl -N` the route directly against an Instance        |
-| Connection drops every N seconds, N < 60    | a proxy idle timeout below the heartbeat interval                        |
-| Messages arrive on some tabs only           | two Apps sharing a Prefix, or one Instance without `REDIS_URL`           |
-| Every client Resets after a deploy          | the Memory Transport, or a retention window shorter than the deploy      |
-| `503` with `Retry-After` on every connect   | the Transport is unreachable, or the Instance is draining                |
-| The process does not exit on `SIGTERM`      | `drain: false` with nothing calling `sse.drain()`                        |
+| Symptom                                   | First thing to check                                                |
+| ----------------------------------------- | ------------------------------------------------------------------- |
+| Page never leaves `connecting`            | proxy buffering; `curl -N` the route directly against an Instance   |
+| Connection drops every N seconds, N < 60  | a proxy idle timeout below the heartbeat interval                   |
+| Messages arrive on some tabs only         | two Apps sharing a Prefix, or one Instance without `REDIS_URL`      |
+| Every client Resets after a deploy        | the Memory Transport, or a retention window shorter than the deploy |
+| `503` with `Retry-After` on every connect | the Transport is unreachable, or the Instance is draining           |
+| The process does not exit on `SIGTERM`    | `drain: false` with nothing calling `sse.drain()`                   |
 
 `NEXT_SSE_DEBUG=1` makes the Transport's reader narrate what it is doing.

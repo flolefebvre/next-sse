@@ -61,7 +61,7 @@ export async function notifyMe(text: string) {
 }
 ```
 
-A real App notifies somebody *else*, from wherever the event happens — an order shipped, a mention
+A real App notifies somebody _else_, from wherever the event happens — an order shipped, a mention
 posted, a job finished — and the only line that changes is where the user id comes from. It is
 never the caller's to name.
 

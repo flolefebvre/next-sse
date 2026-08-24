@@ -13,15 +13,15 @@ One JSON object per log Entry.
 { "v": 1, "type": "control", "control": "kick", "channel": "chat:42" }
 ```
 
-| Field     | Message                                         | Control                          |
-| --------- | ----------------------------------------------- | -------------------------------- |
-| `v`       | `1` — the envelope version                      | `1`                              |
-| `type`    | `"message"`                                     | `"control"`                      |
-| `channel` | the Channel **name**, params filled in          | the Channel to Kick, if by Channel |
-| `event`   | the event name the Channel declares             | —                                |
-| `payload` | anything JSON can carry                         | —                                |
-| `control` | —                                               | `"kick"`                         |
-| `key`     | —                                               | the Key to Kick, if by Key       |
+| Field     | Message                                | Control                            |
+| --------- | -------------------------------------- | ---------------------------------- |
+| `v`       | `1` — the envelope version             | `1`                                |
+| `type`    | `"message"`                            | `"control"`                        |
+| `channel` | the Channel **name**, params filled in | the Channel to Kick, if by Channel |
+| `event`   | the event name the Channel declares    | —                                  |
+| `payload` | anything JSON can carry                | —                                  |
+| `control` | —                                      | `"kick"`                           |
+| `key`     | —                                      | the Key to Kick, if by Key         |
 
 **Compatibility**: additions within `v: 1` are additive, and a reader ignores what it does not
 know. A breaking change would be `v: 2`. An Entry that cannot be parsed, or whose version or kind

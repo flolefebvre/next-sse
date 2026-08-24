@@ -9,8 +9,8 @@ what lets a worker outside Next.js hold one.
 
 ## Choosing one
 
-| `REDIS_URL` | What the App gets      |
-| ----------- | ---------------------- |
+| `REDIS_URL` | What the App gets       |
+| ----------- | ----------------------- |
 | unset       | `createMemoryTransport` |
 | set         | `createRedisTransport`  |
 
@@ -45,15 +45,15 @@ the Cursor is the stream entry id, `read` is `XRANGE` strictly after it, `tail` 
 and the live feed is one `XREAD BLOCK` loop per Instance on a connection of its own. No Pub/Sub,
 no Lua.
 
-| Option             | Type              | Default                                        |
-| ------------------ | ----------------- | ---------------------------------------------- |
-| `url`              | `string`          | `REDIS_URL`                                    |
-| `client`           | node-redis client | none — the Transport connects its own          |
-| `prefix`           | `string`          | `NEXT_SSE_PREFIX`, then `next-sse`             |
-| `retention`        | `{ window, cap }` | `NEXT_SSE_RETENTION_WINDOW` / `_CAP`, then 300 s and 10 000 |
-| `operationTimeout` | `number` (ms)     | `NEXT_SSE_OPERATION_TIMEOUT`, then 1000        |
-| `onError`          | `(error, operation) => void` | none — failures are still thrown to callers |
-| `debug`            | `boolean`         | `NEXT_SSE_DEBUG`                               |
+| Option             | Type                         | Default                                                     |
+| ------------------ | ---------------------------- | ----------------------------------------------------------- |
+| `url`              | `string`                     | `REDIS_URL`                                                 |
+| `client`           | node-redis client            | none — the Transport connects its own                       |
+| `prefix`           | `string`                     | `NEXT_SSE_PREFIX`, then `next-sse`                          |
+| `retention`        | `{ window, cap }`            | `NEXT_SSE_RETENTION_WINDOW` / `_CAP`, then 300 s and 10 000 |
+| `operationTimeout` | `number` (ms)                | `NEXT_SSE_OPERATION_TIMEOUT`, then 1000                     |
+| `onError`          | `(error, operation) => void` | none — failures are still thrown to callers                 |
+| `debug`            | `boolean`                    | `NEXT_SSE_DEBUG`                                            |
 
 `operation` in `onError` is one of `connect`, `publish`, `read`, `tail`, `subscribe`, `trim`.
 
@@ -101,11 +101,11 @@ against on every push. Treat Cluster and Sentinel as best effort until that gap 
 Nothing is retried by the Transport. Every operation settles within `operationTimeout` and
 rejects with one of:
 
-| Error                       | When                                                     |
-| --------------------------- | -------------------------------------------------------- |
-| `TransportUnavailableError` | the backend is unreachable, or did not answer in time    |
-| `TransportClosedError`      | the Transport has been closed                            |
-| `TransportError`            | the family; catch this to catch all three                |
+| Error                       | When                                                  |
+| --------------------------- | ----------------------------------------------------- |
+| `TransportUnavailableError` | the backend is unreachable, or did not answer in time |
+| `TransportClosedError`      | the Transport has been closed                         |
+| `TransportError`            | the family; catch this to catch all three             |
 
 A Transport outage mid-Connection does **not** drop clients: Connections are held open and
 heartbeated for as long as it lasts, and the Instance resumes from its last position on recovery

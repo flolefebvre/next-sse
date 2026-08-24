@@ -49,7 +49,7 @@ export async function POST(request: Request): Promise<Response> {
 ```
 
 Every Instance acts on it: the one holding that user's stream need not be the one that took the
-call. The guard is this route's own — Authorize decides who may *read* a Channel and is never
+call. The guard is this route's own — Authorize decides who may _read_ a Channel and is never
 asked about anything else.
 
 `await sse.kick(...)` resolves when the revocation is **in the log**, not when the Connections
@@ -108,7 +108,7 @@ response. If the reconnect wins, the client re-Authorizes against the session it
 out of, and nothing corrects it afterwards. Two calls, in order, make it deterministic — which is
 why this is a Client Component: a server `formAction` can only be one call.
 
-Kicking *another* user has no such race.
+Kicking _another_ user has no such race.
 
 ## Do not rotate the Key at the same time
 
@@ -129,8 +129,8 @@ const { status } = useChannelState(channels.admin(), snapshot, { notice: upsertB
 // "refused" once the reconnect has been re-Authorized
 ```
 
-Remember the other half: a re-render is what changes the *page*, and a Kick is what changes the
-*stream*. A role switch usually owes both.
+Remember the other half: a re-render is what changes the _page_, and a Kick is what changes the
+_stream_. A role switch usually owes both.
 
 ## Notes
 

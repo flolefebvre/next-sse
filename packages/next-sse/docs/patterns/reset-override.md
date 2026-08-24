@@ -73,7 +73,7 @@ export async function latestAnnouncements(): Promise<Snapshot<Message[]>> {
 }
 ```
 
-**Handing the hook a new Snapshot is what closes the loop.** It re-seeds the state *and* reopens
+**Handing the hook a new Snapshot is what closes the loop.** It re-seeds the state _and_ reopens
 the Channel from the position that read was taken at, so nothing published in between is missed.
 An `onReset` that only refetches data — without going through `sse.snapshot` — leaves the
 Connection resuming from a position that is still gone.

@@ -81,17 +81,17 @@ tests assert.
 
 ## `FakeEventSource`
 
-| Member                                        | What it does                                                         |
-| --------------------------------------------- | -------------------------------------------------------------------- |
-| `channels`                                    | the Channels this Connection asked for, read off its URL             |
-| `cursor`                                      | the Cursor it resumes from, or `null` when it opened live-only       |
-| `ready(data?)`                                | the Control event that opens every stream                            |
-| `caughtUp()`                                  | the Control event that ends the replay                               |
-| `message(channel, event, payload, cursor?)`   | one Message, framed the way the wire frames it                       |
-| `emit(type, data?, id?)`                      | any block, for the Control events the two helpers above do not cover |
-| `drop()`                                      | the pipe broke and the browser is retrying on its own                |
-| `fail()`                                      | the server answered something that is not a stream                   |
-| `close()`, `url`, `readyState`                | the `EventSource` interface itself                                   |
+| Member                                      | What it does                                                         |
+| ------------------------------------------- | -------------------------------------------------------------------- |
+| `channels`                                  | the Channels this Connection asked for, read off its URL             |
+| `cursor`                                    | the Cursor it resumes from, or `null` when it opened live-only       |
+| `ready(data?)`                              | the Control event that opens every stream                            |
+| `caughtUp()`                                | the Control event that ends the replay                               |
+| `message(channel, event, payload, cursor?)` | one Message, framed the way the wire frames it                       |
+| `emit(type, data?, id?)`                    | any block, for the Control events the two helpers above do not cover |
+| `drop()`                                    | the pipe broke and the browser is retrying on its own                |
+| `fail()`                                    | the server answered something that is not a stream                   |
+| `close()`, `url`, `readyState`              | the `EventSource` interface itself                                   |
 
 `ready()` defaults to `{ cursor: "cursor-0", refused: [] }`. Pass `{ refused: ["admin"], … }` to
 test a refused Channel, and a `heartbeat` to arm the watchdog.

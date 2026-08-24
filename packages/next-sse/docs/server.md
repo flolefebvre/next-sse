@@ -16,14 +16,14 @@ const { channel, createSSE } = initSSE({
 });
 ```
 
-| Option        | Type                                          | Default   | What it does                                                                    |
-| ------------- | --------------------------------------------- | --------- | ------------------------------------------------------------------------------- |
-| `context`     | `(request: Request) => Ctx \| Promise<Ctx>`    | none      | Built once per Connection; types every `authorize`. Omitted, `Ctx` is `undefined` |
-| `key`         | `(ctx: Ctx) => string \| undefined`            | none      | The Connection's Key — what `sse.kick({ key })` addresses                       |
-| `transport`   | `Transport`                                   | from env  | The log this App runs on. See [transport.md](transport.md)                       |
-| `heartbeat`   | `number` (ms)                                 | `15000`   | How often each Connection is sent a `heartbeat`. `0` turns it off                |
-| `maxLifetime` | `number` (ms)                                 | `1800000` | Longest a Connection lives before a gap-free reconnect, ±10 %. `0` disables       |
-| `drain`       | `number \| false` (ms)                        | `3000`    | The shutdown window. `false` installs no signal handlers, `0` closes at once      |
+| Option        | Type                                        | Default   | What it does                                                                      |
+| ------------- | ------------------------------------------- | --------- | --------------------------------------------------------------------------------- |
+| `context`     | `(request: Request) => Ctx \| Promise<Ctx>` | none      | Built once per Connection; types every `authorize`. Omitted, `Ctx` is `undefined` |
+| `key`         | `(ctx: Ctx) => string \| undefined`         | none      | The Connection's Key — what `sse.kick({ key })` addresses                         |
+| `transport`   | `Transport`                                 | from env  | The log this App runs on. See [transport.md](transport.md)                        |
+| `heartbeat`   | `number` (ms)                               | `15000`   | How often each Connection is sent a `heartbeat`. `0` turns it off                 |
+| `maxLifetime` | `number` (ms)                               | `1800000` | Longest a Connection lives before a gap-free reconnect, ±10 %. `0` disables       |
+| `drain`       | `number \| false` (ms)                      | `3000`    | The shutdown window. `false` installs no signal handlers, `0` closes at once      |
 
 `context` is handed the `Request`, not `next/headers` — the SSE route handler is not free to use
 those. Read the session from the request.
@@ -88,15 +88,15 @@ Two things it refuses, both at declaration time, both naming what to change:
 `createSSE` returns an object with the library's own members plus one Handle factory per
 declared Channel.
 
-| Member                   | What it is                                                                          |
-| ------------------------ | ----------------------------------------------------------------------------------- |
-| `sse.handlers`           | `{ GET }` — re-export it from `app/api/sse/route.ts`                                 |
-| `sse.channels`           | the declarations, as declared; what `<SSEProvider>` strips for the client           |
-| `sse.snapshot(read)`     | read data with the Cursor taken first, for the server-render handoff                |
-| `sse.cursor()`           | this request's Cursor, memoised per request. Rarely needed directly                 |
-| `sse.kick(target)`       | end Connections so they re-Authorize                                                |
-| `sse.drain()`            | shut this Instance down and resolve when it is done                                 |
-| `sse.<channel>(params?)` | a bound Handle                                                                      |
+| Member                   | What it is                                                                |
+| ------------------------ | ------------------------------------------------------------------------- |
+| `sse.handlers`           | `{ GET }` — re-export it from `app/api/sse/route.ts`                      |
+| `sse.channels`           | the declarations, as declared; what `<SSEProvider>` strips for the client |
+| `sse.snapshot(read)`     | read data with the Cursor taken first, for the server-render handoff      |
+| `sse.cursor()`           | this request's Cursor, memoised per request. Rarely needed directly       |
+| `sse.kick(target)`       | end Connections so they re-Authorize                                      |
+| `sse.drain()`            | shut this Instance down and resolve when it is done                       |
+| `sse.<channel>(params?)` | a bound Handle                                                            |
 
 ## Handles and publishing
 
@@ -175,7 +175,7 @@ Channel first, which arrives gap-free.
 request, not the same one.** Setting cookies and Kicking your own Key in one server action is a
 race between the `reconnect` on the open stream and the cookies in the action's response: if the
 reconnect wins, the client re-Authorizes against the session it was just taken out of.
-Kicking *another* user has no such race. See
+Kicking _another_ user has no such race. See
 [patterns/kick.md](patterns/kick.md).
 
 ## `sse.drain()`

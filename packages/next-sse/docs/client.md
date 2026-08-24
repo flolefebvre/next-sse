@@ -56,15 +56,15 @@ Subscribing with a Snapshot makes the shared Connection reopen from the position
 at, so nothing published in between is lost. The cost is one reconnect per server render that
 carries a Snapshot.
 
-| Returns    | Type                                                          |                                                                       |
-| ---------- | ------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `state`    | `Data`                                                        | what the Snapshot and the reducers have made of it                    |
-| `status`   | `Status`                                                      | see below                                                             |
-| `channel`  | `string`                                                      | the resolved Channel name                                             |
-| `apply`    | `(event, payload) => void`                                    | run an event's reducer on a payload that did not come off the wire    |
-| `act`      | `(event, optimistic \| null, action) => void`                  | the whole optimistic round in one call                                |
-| `pending`  | `{ [event]: Payload[] }`                                      | optimistic payloads still in flight, per event, empty lists included  |
-| `inFlight` | `boolean`                                                     | whether an `act` is still running                                     |
+| Returns    | Type                                          |                                                                      |
+| ---------- | --------------------------------------------- | -------------------------------------------------------------------- |
+| `state`    | `Data`                                        | what the Snapshot and the reducers have made of it                   |
+| `status`   | `Status`                                      | see below                                                            |
+| `channel`  | `string`                                      | the resolved Channel name                                            |
+| `apply`    | `(event, payload) => void`                    | run an event's reducer on a payload that did not come off the wire   |
+| `act`      | `(event, optimistic \| null, action) => void` | the whole optimistic round in one call                               |
+| `pending`  | `{ [event]: Payload[] }`                      | optimistic payloads still in flight, per event, empty lists included |
+| `inFlight` | `boolean`                                     | whether an `act` is still running                                    |
 
 `options` is `{ onReset? }`.
 
@@ -120,8 +120,12 @@ Reset is **not** a status: the Connection was live throughout.
 The keyed-merge reducer: replace the item with the same key, or append it.
 
 ```ts
-{ message: upsertBy("id") }
-{ message: upsertBy((item) => `${item.roomId}/${item.id}`) }
+{
+  message: upsertBy("id");
+}
+{
+  message: upsertBy((item) => `${item.roomId}/${item.id}`);
+}
 ```
 
 One reducer covers every duplicate the library can hand a page — the Snapshot/replay overlap, a
@@ -139,11 +143,11 @@ keeps the ordering rule an API rather than a paragraph. Tests mint one with `sna
 
 What `<SSEProvider>` renders, exported for Apps that compose it themselves.
 
-| Prop       | Type             | Default      |                                                             |
-| ---------- | ---------------- | ------------ | ----------------------------------------------------------- |
-| `channels` | `ClientChannels` | required     | as `toClientChannels(sse)` produces it                      |
-| `url`      | `string`         | `"/api/sse"` | where this App serves the SSE route                         |
-| `onReset`  | `() => void`     | `router.refresh()` | what a Reset means App-wide                          |
+| Prop       | Type             | Default            |                                        |
+| ---------- | ---------------- | ------------------ | -------------------------------------- |
+| `channels` | `ClientChannels` | required           | as `toClientChannels(sse)` produces it |
+| `url`      | `string`         | `"/api/sse"`       | where this App serves the SSE route    |
+| `onReset`  | `() => void`     | `router.refresh()` | what a Reset means App-wide            |
 
 Passing `onReset` is also what keeps `next/navigation` out of the tree — which is what lets a
 component test render the provider with no App Router above it.

@@ -60,7 +60,7 @@ Two guards worth copying:
 - **`:` is refused before the write.** It is the one character a param may not carry, so the
   Handle would throw on it — after the row had been stored. Whatever lets a caller name a Channel
   validates the name first.
-- **Authorize does not guard this.** It decides who may *read* a Channel and is never asked about
+- **Authorize does not guard this.** It decides who may _read_ a Channel and is never asked about
   a Publish. A route that anyone can reach checks the session itself.
 
 ## Subscribe
