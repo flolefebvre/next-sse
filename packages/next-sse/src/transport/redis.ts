@@ -243,10 +243,10 @@ function createRedisLog(options: RedisTransportOptions): Transport {
    * long as this Transport is open. It survives the client's own reconnect by reissuing from
    * that position, which is what makes an Instance's Redis reconnect cost nothing.
    *
-   * The gap is checked where a gap can appear: on the position the loop *resumes* from — before
-   * the first read, and after any read that failed — never per batch. Between two successful
-   * reads there is nothing to check: the loop holds the position the server last handed it, and
-   * an `XINFO` per batch would be a round trip on the hot path for it (ADR-0006).
+   * The gap is checked where a gap can appear: on the position the loop *resumes* from, after a
+   * read that failed, and never per batch. Between two successful reads there is nothing to
+   * check — the loop holds the position the server last handed it — and an `XINFO` per batch
+   * would be a round trip on the hot path for it (ADR-0006).
    */
   const feed = async (from: Cursor): Promise<void> => {
     let position = from;
