@@ -38,8 +38,36 @@ const POLL_MS = 150;
  */
 export const TURN_WAIT_MS = 90_000;
 
-/** What Docker says when the host port a container asks for was taken between reserve and run. */
-const PORT_TAKEN = "port is already allocated";
+/**
+ * What a start is taken from the top for, and nothing else. Both are Docker's own words about
+ * the host ports, and both are the same accident — the ports this run picked are not this run's
+ * to bind by the time it asks. The first is the refusal; the second is testcontainers giving up
+ * on the publishing it asked for, on a bound of ten seconds it hardcodes and takes no argument
+ * for. Any other failure to start is this project's to see, immediately.
+ */
+const RETRIED_ON = [
+  "port is already allocated",
+  "waiting for container ports to be bound to the host",
+];
+
+/** The label a topology's container carries, so that the one an attempt left can be found. */
+export const TOPOLOGY_LABEL = "next-sse.topology";
+
+/** What removing that container needs of Docker: what carries a label, and its removal. */
+export interface Containers {
+  labelled(label: string): Promise<string[]>;
+  remove(id: string): Promise<void>;
+}
+
+/** Where the turn is taken, and what a start that failed under it leaves behind. */
+export interface StartTurn {
+  /** Docker, as removing what a failed attempt left needs it. */
+  containers: Containers;
+  /** The file the turn is written in. The run's own unless a test says otherwise. */
+  lock?: string;
+  /** How long to wait for the turn before starting without it. */
+  waitMs?: number;
+}
 
 /**
  * Where the turn is written. Under `node_modules`, so it is per checkout, never committed, and
@@ -195,28 +223,39 @@ async function give(lock: string): Promise<void> {
  *
  * The retry is the remainder: the run's other port takers — the standalone container Docker
  * maps itself, the proxies a case puts in front of a node — take no turn, so a collision is
- * unlikely rather than impossible. It is keyed on Docker's own words and on nothing else: any
- * other failure to start is this project's to see, immediately, and the last thing Docker said
- * is what is thrown when the attempts run out.
+ * unlikely rather than impossible, and the ten seconds testcontainers gives Docker to publish
+ * the ports can run out on a busy machine with nobody to blame at all. What it is keyed on is
+ * `RETRIED_ON` and nothing looser, and the last thing Docker said is what is thrown when the
+ * attempts run out.
  *
  * `start` is re-run whole, which is the point: the ports it reserved are reserved again, so an
- * attempt never asks for the number it just lost.
+ * attempt never asks for the number it just lost. It is handed the label its container must
+ * carry, because an attempt that failed can have left one running on the ports it lost — Docker
+ * refuses the binding before the container starts, but a publishing that timed out has it up —
+ * and nothing else would ever take it down: the caller never got a handle on it, and Ryuk only
+ * sweeps when the run ends. So every attempt that fails, retried or not, is swept here first.
  */
 export async function takingHostPorts<T>(
-  start: () => Promise<T>,
-  lock: string = LOCK_FILE,
-  waitMs: number = TURN_WAIT_MS,
+  start: (label: string) => Promise<T>,
+  turn: StartTurn,
 ): Promise<T> {
+  const { containers, lock = LOCK_FILE, waitMs = TURN_WAIT_MS } = turn;
+
   for (let attempt = 1; ; attempt++) {
+    const label = randomUUID();
+
     try {
       const took = await take(lock, waitMs);
       try {
-        return await start();
+        return await start(label);
       } finally {
         if (took) await give(lock);
       }
     } catch (error) {
-      if (attempt >= START_ATTEMPTS || !String(error).includes(PORT_TAKEN)) throw error;
+      for (const id of await containers.labelled(label)) await containers.remove(id);
+      if (attempt >= START_ATTEMPTS || !RETRIED_ON.some((said) => String(error).includes(said))) {
+        throw error;
+      }
     }
   }
 }

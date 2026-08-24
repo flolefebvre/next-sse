@@ -1,9 +1,15 @@
 import { createServer } from "node:net";
 
 import { createClient } from "redis";
-import { GenericContainer, type StartedTestContainer, type WaitStrategy } from "testcontainers";
+import {
+  GenericContainer,
+  getContainerRuntimeClient,
+  StartupCheckStrategy,
+  type StartedTestContainer,
+  type StartupStatus,
+} from "testcontainers";
 
-import { takingHostPorts } from "./topology-start.js";
+import { takingHostPorts, TOPOLOGY_LABEL, type Containers } from "./topology-start.js";
 import { testImage } from "./valkey-container.js";
 
 /** The master a Sentinel topology monitors, as both the sentinel and the client name it. */
@@ -66,16 +72,44 @@ interface Started<T> {
 }
 
 /**
+ * Docker, as sweeping up after a start that failed needs it: everything carrying that label,
+ * whatever state it is in, and gone for good.
+ *
+ * Listed through dockerode itself rather than testcontainers' `fetchByLabel`, which lists only
+ * what is running — and the container a refused port binding leaves behind was never started.
+ */
+const containers: Containers = {
+  labelled: async (label) => {
+    const { dockerode } = (await getContainerRuntimeClient()).container;
+    const found = await dockerode.listContainers({
+      all: true,
+      filters: { label: [`${TOPOLOGY_LABEL}=${label}`] },
+    });
+
+    return found.map((container) => container.Id);
+  },
+  remove: async (id) => {
+    const { dockerode } = (await getContainerRuntimeClient()).container;
+    await dockerode.getContainer(id).remove({ force: true, v: true });
+  },
+};
+
+/**
  * The readiness testcontainers is given: none of its own. Being up with its ports bound is all
  * this container is waited for under the turn; what the servers inside it are doing is waited
  * for in `settled`, where waiting costs nobody else their turn.
+ *
+ * It extends the strategy testcontainers exports rather than restating the `WaitStrategy`
+ * interface, so that an interface this project does not own changing under it is a compile
+ * error here and not a shape that silently no longer fits.
  */
-const AS_SOON_AS_IT_IS_UP: WaitStrategy = {
-  waitUntilReady: () => Promise.resolve(),
-  withStartupTimeout: () => AS_SOON_AS_IT_IS_UP,
-  isStartupTimeoutSet: () => true,
-  getStartupTimeout: () => STARTUP_TIMEOUT_MS,
-};
+class UpIsReadyEnough extends StartupCheckStrategy {
+  checkStartupState(): Promise<StartupStatus> {
+    return Promise.resolve("SUCCESS");
+  }
+}
+
+const AS_SOON_AS_IT_IS_UP = new UpIsReadyEnough().withStartupTimeout(STARTUP_TIMEOUT_MS);
 
 /**
  * Wait for the container to print the one line its script ends with, on the same bound and with
@@ -258,16 +292,20 @@ async function clusterNodes(count: number): Promise<{ client: number; bus: numbe
  * both cells of the CI matrix.
  */
 async function startTopology<T>(plan: () => Promise<Planned<T>>): Promise<Started<T>> {
-  const { ports, container, of } = await takingHostPorts(async () => {
-    const planned = await plan();
-    const container: StartedTestContainer = await new GenericContainer(testImage())
-      .withExposedPorts(...planned.ports.map((port) => ({ container: port, host: port })))
-      .withCommand(["sh", "-c", planned.script])
-      .withWaitStrategy(AS_SOON_AS_IT_IS_UP)
-      .start();
+  const { ports, container, of } = await takingHostPorts(
+    async (label) => {
+      const planned = await plan();
+      const container: StartedTestContainer = await new GenericContainer(testImage())
+        .withExposedPorts(...planned.ports.map((port) => ({ container: port, host: port })))
+        .withCommand(["sh", "-c", planned.script])
+        .withLabels({ [TOPOLOGY_LABEL]: label })
+        .withWaitStrategy(AS_SOON_AS_IT_IS_UP)
+        .start();
 
-    return { ...planned, container };
-  });
+      return { ...planned, container };
+    },
+    { containers },
+  );
 
   try {
     await settled(container);
