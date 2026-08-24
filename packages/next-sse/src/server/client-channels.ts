@@ -1,6 +1,6 @@
 import type { ClientChannels } from "../client/index.js";
 
-import type { Registry } from "./registry.js";
+import type { RegistryLike } from "./registry.js";
 
 /**
  * The Registry, stripped to what a browser may know: each Channel's key, its name pattern and
@@ -12,7 +12,7 @@ import type { Registry } from "./registry.js";
  * copied that is not named here. The result is plain data, which is what lets a Server
  * Component pass it as a prop.
  */
-export function toClientChannels(sse: Registry): ClientChannels {
+export function toClientChannels(sse: RegistryLike): ClientChannels {
   const channels: Record<string, { pattern: string; events: string[] }> = {};
   for (const [key, declaration] of Object.entries(sse.channels)) {
     channels[key] = { pattern: declaration.pattern, events: Object.keys(declaration.events) };

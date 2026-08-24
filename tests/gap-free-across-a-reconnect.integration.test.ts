@@ -1,7 +1,7 @@
 import { beforeEach, expect, test } from "vitest";
 
 import { framesOf, type Frames } from "../packages/next-sse/src/server/frames.testkit.js";
-import { initSSE } from "../packages/next-sse/src/server/index.js";
+import { asType, initSSE } from "../packages/next-sse/src/server/index.js";
 import type { Cursor } from "../packages/next-sse/src/transport/index.js";
 import { createMemoryTransport } from "../packages/next-sse/src/transport/memory.js";
 
@@ -37,7 +37,7 @@ const anApp = (): ChatApp => {
   const { channel, createSSE } = initSSE({ transport: createMemoryTransport() });
 
   return createSSE({
-    chat: channel({ pattern: "chat:{roomId}", events: { message: undefined } }),
+    chat: channel({ pattern: "chat:{roomId}", events: { message: asType<{ text: string }>() } }),
   }) as unknown as ChatApp;
 };
 
@@ -186,7 +186,7 @@ test("a Connection whose Cursor the log has dropped is reset in band, and goes o
     transport: createMemoryTransport({ retention: { cap: 4 } }),
   });
   const sse = createSSE({
-    chat: channel({ pattern: "chat:{roomId}", events: { message: undefined } }),
+    chat: channel({ pattern: "chat:{roomId}", events: { message: asType<{ text: string }>() } }),
   }) as unknown as ChatApp;
 
   const first = await connect(sse);
