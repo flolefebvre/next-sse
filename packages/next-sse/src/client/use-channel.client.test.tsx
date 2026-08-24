@@ -96,6 +96,7 @@ test("a Message on the Channel reaches the component, and one on another does no
   const connection = only();
 
   await act(() => {
+    connection.caughtUp();
     connection.message("chat:42", "message", { text: "hello" });
     connection.message("chat:7", "message", { text: "elsewhere" });
     connection.message("chat:42", "message", { text: "again" });
@@ -111,6 +112,7 @@ test("an event with no handler is ignored rather than an error", async () => {
   await flush();
 
   await act(() => {
+    only().caughtUp();
     only().message("chat:42", "typing", { who: "ada" });
   });
 
@@ -177,6 +179,7 @@ test("a Strict Mode setup, cleanup and setup burst opens exactly one Connection"
   expect(only().channels).toEqual(["chat:42"]);
 
   await act(() => {
+    only().caughtUp();
     only().message("chat:42", "message", { text: "once" });
   });
 

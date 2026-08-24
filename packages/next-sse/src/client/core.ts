@@ -29,8 +29,20 @@ export type EventSourceConstructor = new (url: string) => EventSourceLike;
 export interface Subscription {
   /** The Channel name, already resolved from the Registry data the provider carries. */
   readonly channel: string;
+  /**
+   * Where this subscriber resumes from, when it brought a Snapshot. Subscribing with one makes
+   * the shared Connection reopen from it (ADR-0007); without one the subscriber is live-only
+   * and is told nothing of a replay until the first `caught-up` after it arrived.
+   */
+  readonly cursor?: string;
   /** One Message on that Channel: the declared event name, and the payload as published. */
   onMessage(event: string, payload: unknown): void;
+  /**
+   * This Connection's Cursor was unusable and the log moved on: refetch before going on. A
+   * subscriber that gives none falls back to the Connection's own handler, which is the
+   * provider's `router.refresh()` unless the App said otherwise (ADR-0007).
+   */
+  onReset?(): void;
   /**
    * Called whenever this subscriber's view of the Connection changes, and only then. Every
    * subscriber starts at `connecting`, which is therefore never reported: a hook that holds
@@ -44,6 +56,8 @@ export interface CoreOptions {
   url: string;
   /** Defaults to the browser's `EventSource`. */
   eventSource?: EventSourceConstructor;
+  /** What a Reset means for subscribers that brought no handler of their own. */
+  onReset?: () => void;
 }
 
 /**
@@ -63,6 +77,13 @@ const MAX_RETRY_MS = 30_000;
 
 interface Subscriber extends Subscription {
   status: Status;
+  /**
+   * True until the first `caught-up` this subscriber lives through. A subscriber that brought
+   * no Cursor has no way to tell a replayed Entry from one it already has, so it is told
+   * nothing until the Connection is live (ADR-0007); one that brought a Cursor asked for that
+   * replay and gets it.
+   */
+  liveOnly: boolean;
 }
 
 /**
@@ -84,10 +105,19 @@ interface Subscriber extends Subscription {
  * (ADR-0001) and the exactly-once cut stays the Instance's (ADR-0005). A native `EventSource`
  * reconnect does the same thing for free through `Last-Event-ID`.
  *
+ * **A subscriber that brings a Cursor makes the Connection reopen from it** (ADR-0007), which
+ * is how a server render's Snapshot becomes live with no gap. It is a reason to call
+ * `openSource`, not a second way to open a Connection: the Cursor is parked as the pending one
+ * and the same reconcile that follows a Channel-set change spends it. Two subscribers bringing
+ * two different Cursors on one tick is decided by fiat — the last one parked wins — because the
+ * core cannot compare Cursors and must not learn how (ADR-0001). In practice they are the same
+ * Cursor, since one render's Snapshots share one request-cached one; and a Cursor that is older
+ * than another costs a longer replay, which the reducers absorb, and never a gap.
+ *
  * The heartbeat watchdog, the max lifetime and the page-lifecycle handling of ADR-0004 belong
  * to the Connection-lifecycle ticket and are not here.
  */
-export function createCore({ url, eventSource }: CoreOptions): Core {
+export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
   const Connection = eventSource ?? globalThis.EventSource;
   const subscribers = new Set<Subscriber>();
 
@@ -95,6 +125,8 @@ export function createCore({ url, eventSource }: CoreOptions): Core {
   let open: ReadonlySet<string> = new Set();
   let live = false;
   let scheduled = false;
+  /** A Cursor a subscriber brought, waiting for the reconcile that will open a Connection on it. */
+  let pending: string | undefined;
   let attempt = 0;
   let retry: ReturnType<typeof setTimeout> | undefined;
   /**
@@ -135,9 +167,17 @@ export function createCore({ url, eventSource }: CoreOptions): Core {
     open = channels;
     live = false;
 
+    /**
+     * A Cursor a subscriber brought outranks the one this client happens to hold: it is the
+     * position a server render read its data at, and resuming from it is what closes the
+     * handoff window. It is spent here, whichever reason brought the Connection down.
+     */
+    const resumeFrom = pending ?? lastEventId;
+    pending = undefined;
+
     const query = new URLSearchParams();
     for (const channel of channels) query.append("channel", channel);
-    if (lastEventId !== undefined) query.set("cursor", lastEventId);
+    if (resumeFrom !== undefined) query.set("cursor", resumeFrom);
     const opened = new Connection(`${url}?${query.toString()}`);
     source = opened;
     setAll(attempt === 0 ? "connecting" : "reconnecting");
@@ -154,6 +194,7 @@ export function createCore({ url, eventSource }: CoreOptions): Core {
       attempt = 0;
       const { cursor } = JSON.parse(event.data) as { cursor?: unknown };
       if (typeof cursor === "string" && cursor !== "") lastEventId = cursor;
+      if (resumeFrom !== undefined) setAll("replaying");
     });
 
     /**
@@ -164,13 +205,33 @@ export function createCore({ url, eventSource }: CoreOptions): Core {
       if (event.lastEventId !== "") lastEventId = event.lastEventId;
       const { channel, event: name, payload } = JSON.parse(event.data) as Envelope;
       for (const subscriber of subscribers) {
-        if (subscriber.channel === channel) subscriber.onMessage(name, payload);
+        if (subscriber.channel !== channel) continue;
+        if (!live && subscriber.liveOnly) continue;
+        subscriber.onMessage(name, payload);
       }
     });
 
     opened.addEventListener("caught-up", () => {
       live = true;
+      for (const subscriber of subscribers) subscriber.liveOnly = false;
       setAll("live");
+    });
+
+    /**
+     * The Instance could not serve the Cursor this Connection brought, so whatever the App
+     * holds is behind a gap it cannot describe: the only honest answer is to fetch the state
+     * again. A subscriber that brought its own handler is the one told; the Connection's
+     * handler — the provider's `router.refresh()` by default — is called once for all the
+     * others, so a page of hooks that said nothing costs one refetch rather than one each.
+     * Reset is not a status (ADR-0007): the Connection is live and stays live.
+     */
+    opened.addEventListener("reset", () => {
+      let anyDefault = false;
+      for (const subscriber of [...subscribers]) {
+        if (subscriber.onReset === undefined) anyDefault = true;
+        else subscriber.onReset();
+      }
+      if (anyDefault) onReset?.();
     });
 
     opened.addEventListener("error", () => {
@@ -210,15 +271,18 @@ export function createCore({ url, eventSource }: CoreOptions): Core {
   /**
    * Bring the Connection in line with what the subscribers now want. A Channel set that has
    * not changed keeps the Connection it has: this is what makes an unsubscribe followed by the
-   * same subscribe — Strict Mode, a re-render with the same Handle — cost nothing.
+   * same subscribe — Strict Mode, a re-render with the same Handle — cost nothing. A Cursor
+   * parked by a subscriber is the other reason to reopen, and the only one that does not come
+   * from the Channel set; leaving is never one, so an unsubscribe alone reopens nothing.
    */
   function reconcile(): void {
     const channels = wanted();
-    if (source !== undefined && sameSet(channels, open)) return;
+    if (source !== undefined && pending === undefined && sameSet(channels, open)) return;
 
     closeSource();
     if (channels.size === 0) {
       open = new Set();
+      pending = undefined;
 
       return;
     }
@@ -237,14 +301,23 @@ export function createCore({ url, eventSource }: CoreOptions): Core {
 
   return {
     subscribe(subscription) {
-      const subscriber: Subscriber = { ...subscription, status: "connecting" };
+      const subscriber: Subscriber = {
+        ...subscription,
+        status: "connecting",
+        liveOnly: subscription.cursor === undefined,
+      };
       subscribers.add(subscriber);
+      if (subscription.cursor !== undefined) pending = subscription.cursor;
 
       /**
        * A hook mounting onto a Connection that already carries its Channel is live at once:
-       * nothing will reopen for it, so nothing else would ever tell it so.
+       * nothing will reopen for it, so nothing else would ever tell it so. One that brought a
+       * Cursor is not: a Connection is about to reopen on its behalf, and it starts where every
+       * subscriber of that Connection starts.
        */
-      if (live && open.has(subscriber.channel)) setStatus(subscriber, "live");
+      if (live && open.has(subscriber.channel) && subscription.cursor === undefined) {
+        setStatus(subscriber, "live");
+      }
       schedule();
 
       return () => {

@@ -16,8 +16,14 @@ const tick = async (): Promise<void> => {
   await vi.advanceTimersByTimeAsync(0);
 };
 
-/** One subscriber, with everything it was told recorded in the order it was told. */
-function recorder(channel: string): Subscription & {
+/**
+ * One subscriber, with everything it was told recorded in the order it was told. `cursor` is
+ * the Snapshot a hook brought, and `onReset` the handler it brought instead of the App-wide one.
+ */
+function recorder(
+  channel: string,
+  { cursor, onReset }: { cursor?: string; onReset?: () => void } = {},
+): Subscription & {
   messages: { event: string; payload: unknown }[];
   statuses: Status[];
 } {
@@ -26,17 +32,35 @@ function recorder(channel: string): Subscription & {
 
   return {
     channel,
+    cursor,
     messages,
     statuses,
     onMessage: (event, payload) => messages.push({ event, payload }),
     onStatus: (status) => statuses.push(status),
+    ...(onReset === undefined ? {} : { onReset }),
   };
 }
 
-const setup = () => {
+const setup = (onReset?: () => void) => {
   const { EventSource, opened } = fakeEventSources();
 
-  return { core: createCore({ url: "/api/sse", eventSource: EventSource }), opened };
+  return {
+    core: createCore({ url: "/api/sse", eventSource: EventSource, onReset }),
+    opened,
+  };
+};
+
+/**
+ * One subscriber on its Connection, with the tick the core coalesces on already past: where
+ * most of these tests actually begin.
+ */
+const subscribed = async (options: { cursor?: string } = {}) => {
+  const { core, opened } = setup();
+  const subscriber = recorder("chat:42", options);
+  core.subscribe(subscriber);
+  await tick();
+
+  return { core, opened, subscriber };
 };
 
 /** The one Connection there should be, refused if there is any other number of them. */
@@ -106,6 +130,7 @@ test("a Message reaches the subscribers of its Channel, and only those", async (
   core.subscribe(alsoHere);
   core.subscribe(elsewhere);
   await tick();
+  only(opened).caughtUp();
 
   only(opened).message("chat:42", "message", { text: "hello" }, "cursor-1");
 
@@ -115,10 +140,8 @@ test("a Message reaches the subscribers of its Channel, and only those", async (
 });
 
 test("a Message carries whatever event name it was published on", async () => {
-  const { core, opened } = setup();
-  const subscriber = recorder("chat:42");
-  core.subscribe(subscriber);
-  await tick();
+  const { opened, subscriber } = await subscribed();
+  only(opened).caughtUp();
 
   only(opened).message("chat:42", "typing", { who: "ada" });
 
@@ -146,10 +169,7 @@ test("an unsubscribed hook is fed nothing, and the last one out closes the Conne
  * hook hears about is a change.
  */
 test("a Connection reaches live on caught-up, and says so once", async () => {
-  const { core, opened } = setup();
-  const subscriber = recorder("chat:42");
-  core.subscribe(subscriber);
-  await tick();
+  const { opened, subscriber } = await subscribed();
 
   only(opened).ready();
   only(opened).caughtUp();
@@ -159,9 +179,7 @@ test("a Connection reaches live on caught-up, and says so once", async () => {
 });
 
 test("a hook mounting onto a live Connection that already carries its Channel is live at once", async () => {
-  const { core, opened } = setup();
-  core.subscribe(recorder("chat:42"));
-  await tick();
+  const { core, opened } = await subscribed();
   only(opened).caughtUp();
 
   const late = recorder("chat:42");
@@ -195,10 +213,7 @@ test("a Channel nobody was subscribed to reopens the Connection with both", asyn
  * the unthrottled native retry for nothing (ADR-0004).
  */
 test("a dropped pipe is the browser's to retry: the core reports it and opens nothing", async () => {
-  const { core, opened } = setup();
-  const subscriber = recorder("chat:42");
-  core.subscribe(subscriber);
-  await tick();
+  const { opened, subscriber } = await subscribed();
   only(opened).caughtUp();
 
   only(opened).drop();
@@ -387,8 +402,8 @@ test("the core carries the Cursor it was last given, without comparing it to the
 
 /**
  * Control events are not positions (ADR-0004): they carry no `id:`, so none of them moves the
- * Cursor — and `reset`, which the App's own handling belongs to another ticket, leaves the
- * Connection exactly where it was.
+ * Cursor — and `reset`, whatever refetch it sets off above, leaves the Connection exactly where
+ * it was.
  */
 test("no Control event moves the Cursor, reset included", async () => {
   const { opened, subscriber } = await positioned();
@@ -401,4 +416,186 @@ test("no Control event moves the Cursor, reset included", async () => {
 
   expect(opened[1]?.cursor).toBe("cursor-8");
   expect(subscriber.statuses).toEqual(["live", "reconnecting"]);
+});
+
+/**
+ * The Snapshot handoff, at the level the core sees it: a subscriber arrives holding the
+ * position a server component read its data at, and the Connection it lands on resumes from
+ * there. On a first mount that is the only Connection there ever was — the handoff costs no
+ * reconnect at all when the page had none open.
+ */
+test("a subscription that brings a Cursor opens its Connection from it", async () => {
+  const { core, opened } = setup();
+
+  core.subscribe(recorder("chat:42", { cursor: "snapshot-1" }));
+  await tick();
+
+  expect(only(opened).cursor).toBe("snapshot-1");
+});
+
+/**
+ * The reconnect ADR-0007 pays for: the Channel set has not changed, so nothing in the
+ * Channel-set rule would reopen anything, and the Cursor alone does it.
+ */
+test("a Cursor arriving on a live Connection reopens it, Channel set unchanged", async () => {
+  const { core, opened } = setup();
+  core.subscribe(recorder("chat:42"));
+  await tick();
+  only(opened).ready({ cursor: "tail", refused: [] });
+  only(opened).caughtUp();
+
+  core.subscribe(recorder("chat:42", { cursor: "snapshot-1" }));
+  await tick();
+
+  expect(opened).toHaveLength(2);
+  expect(opened[0]?.readyState).toBe(2);
+  expect(opened[1]?.cursor).toBe("snapshot-1");
+  expect(opened[1]?.channels).toEqual(["chat:42"]);
+});
+
+/**
+ * Strict Mode with a Snapshot in hand: setup → cleanup → setup, all inside one tick, all
+ * carrying the same Cursor. The tick the core coalesces on is what makes that one Connection;
+ * there is no second reopen to be found, and no development branch that avoids one.
+ */
+test("re-subscribing with the same Cursor inside one tick opens one Connection", async () => {
+  const { core, opened } = setup();
+
+  const leave = core.subscribe(recorder("chat:42", { cursor: "snapshot-1" }));
+  leave();
+  core.subscribe(recorder("chat:42", { cursor: "snapshot-1" }));
+  await tick();
+
+  expect(only(opened).cursor).toBe("snapshot-1");
+});
+
+/**
+ * Two Snapshots, two different Cursors, one tick. The core cannot order them — it must never
+ * learn how (ADR-0001) — so the rule is stated rather than computed: the last one parked wins.
+ * One render's Snapshots share one request-cached Cursor, so this is the case where a page
+ * mixes a fresh render with an older one, and its cost is a replay the reducers absorb.
+ */
+test("two Cursors parked on one tick: the last one wins, and there is one Connection", async () => {
+  const { core, opened } = setup();
+
+  core.subscribe(recorder("chat:42", { cursor: "older" }));
+  core.subscribe(recorder("chat:7", { cursor: "newer" }));
+  await tick();
+
+  expect(only(opened).cursor).toBe("newer");
+  expect(only(opened).channels).toEqual(["chat:42", "chat:7"]);
+});
+
+/** Leaving is never a reason to reopen: the Channel-set rule alone decides what a departure costs. */
+test("a subscriber that brought a Cursor reopens nothing when it leaves", async () => {
+  const { core, opened } = setup();
+  core.subscribe(recorder("chat:42"));
+  const leave = core.subscribe(recorder("chat:42", { cursor: "snapshot-1" }));
+  await tick();
+
+  leave();
+  await tick();
+
+  expect(only(opened).cursor).toBe("snapshot-1");
+});
+
+/**
+ * The statuses of ADR-0007. `replaying` is what a Connection that brought a position is doing
+ * between `ready` and `caught-up`; a live-only Connection has nothing to replay and never
+ * claims to.
+ */
+test("a Connection that carried a Cursor is replaying on ready and live on caught-up", async () => {
+  const { opened, subscriber } = await subscribed({ cursor: "snapshot-1" });
+
+  only(opened).ready({ cursor: "snapshot-1", refused: [] });
+
+  expect(subscriber.statuses).toEqual(["replaying"]);
+
+  only(opened).caughtUp();
+
+  expect(subscriber.statuses).toEqual(["replaying", "live"]);
+});
+
+test("a live-only Connection never says replaying", async () => {
+  const { opened, subscriber } = await subscribed();
+
+  only(opened).ready();
+  only(opened).caughtUp();
+
+  expect(subscriber.statuses).toEqual(["live"]);
+});
+
+/**
+ * A replay is answering somebody's Cursor, and it is a duplicate to everybody else: a
+ * subscriber that brought none cannot tell a replayed Message from one it already has, so it
+ * is told nothing until the Connection is live (ADR-0007). After that first `caught-up` it is
+ * an ordinary subscriber, and a later replay reaches it like any other Message — which is the
+ * duplicate the App's reducers are there to absorb.
+ */
+test("a replay reaches the subscriber that asked for it, and no live-only one", async () => {
+  const { core, opened } = setup();
+  const resuming = recorder("chat:42", { cursor: "snapshot-1" });
+  const liveOnly = recorder("chat:42");
+  core.subscribe(resuming);
+  core.subscribe(liveOnly);
+  await tick();
+
+  only(opened).ready({ cursor: "snapshot-1", refused: [] });
+  only(opened).message("chat:42", "message", { text: "replayed" }, "cursor-1");
+  only(opened).caughtUp();
+  only(opened).message("chat:42", "message", { text: "live" }, "cursor-2");
+
+  expect(resuming.messages.map((message) => message.payload)).toEqual([
+    { text: "replayed" },
+    { text: "live" },
+  ]);
+  expect(liveOnly.messages.map((message) => message.payload)).toEqual([{ text: "live" }]);
+});
+
+test("a subscriber that lived through a caught-up is fed the next Connection's replay", async () => {
+  const { core, opened, subscriber: liveOnly } = await subscribed();
+  only(opened).ready();
+  only(opened).caughtUp();
+
+  core.subscribe(recorder("chat:42", { cursor: "snapshot-1" }));
+  await tick();
+  opened[1]?.ready({ cursor: "snapshot-1", refused: [] });
+  opened[1]?.message("chat:42", "message", { text: "replayed" }, "cursor-1");
+
+  expect(liveOnly.messages.map((message) => message.payload)).toEqual([{ text: "replayed" }]);
+});
+
+/**
+ * Reset is a refetch, not a status (ADR-0007). A subscriber that brought its own handler is
+ * the one told; every subscriber that brought none is covered by the Connection's handler —
+ * the provider's `router.refresh()` in an ordinary App — called once, so a page of ten hooks
+ * that said nothing costs one refetch rather than ten.
+ */
+test("a reset calls each subscriber's own handler, and the Connection's once for the rest", async () => {
+  const appWide = vi.fn();
+  const { core, opened } = setup(appWide);
+  const own = vi.fn();
+  const subscriber = recorder("chat:42", { cursor: "snapshot-1", onReset: own });
+  core.subscribe(subscriber);
+  core.subscribe(recorder("chat:7"));
+  core.subscribe(recorder("presence:42"));
+  await tick();
+
+  only(opened).emit("reset");
+
+  expect(own).toHaveBeenCalledTimes(1);
+  expect(appWide).toHaveBeenCalledTimes(1);
+  expect(subscriber.statuses).toEqual([]);
+});
+
+test("a reset every subscriber handles itself never reaches the Connection's handler", async () => {
+  const appWide = vi.fn();
+  const { core, opened } = setup(appWide);
+  core.subscribe(recorder("chat:42", { onReset: vi.fn() }));
+  core.subscribe(recorder("chat:7", { onReset: vi.fn() }));
+  await tick();
+
+  only(opened).emit("reset");
+
+  expect(appWide).not.toHaveBeenCalled();
 });
