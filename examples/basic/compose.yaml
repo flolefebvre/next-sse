@@ -1,0 +1,55 @@
+# The manual two-Instance run: two containers of this App, one Valkey, and Caddy in front of
+# them. It is the deployment the library exists for, small enough to hold on one screen.
+#
+# Nothing in CI runs this file. The e2e suite already covers two Instances automatically
+# (ADR-0009); what this is for is seeing it — open two browser tabs on http://localhost:8080,
+# publish in one, watch the other, then `docker compose stop app-a` and watch that tab carry on
+# without losing a Message.
+name: next-sse-example
+
+# What both Instances of the App share: the same image, the same log, the same Prefix. That is
+# the whole of what makes them one App — no sticky sessions, no shared memory, no coordination.
+x-app: &app
+  build:
+    context: ../..
+    dockerfile: examples/basic/Dockerfile
+  environment:
+    REDIS_URL: redis://valkey:6379
+    NEXT_SSE_PREFIX: next-sse-example
+  depends_on:
+    valkey:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  # Valkey 8 is what this runs on by default; Redis 8 is the alternative, and the library uses
+  # nothing past Redis 7.0 (ADR-0006), so the two are interchangeable here. To run on Redis,
+  # comment the two Valkey lines and uncomment the two below them.
+  valkey:
+    image: valkey/valkey:8
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    # image: redis:8
+    # command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      # Either client, so that swapping the image above is the only edit Redis costs.
+      test: ["CMD-SHELL", "valkey-cli ping || redis-cli ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  app-a:
+    <<: *app
+
+  app-b:
+    <<: *app
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - app-a
+      - app-b
+    restart: unless-stopped

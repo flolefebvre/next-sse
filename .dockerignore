@@ -1,0 +1,13 @@
+# What never belongs in the build context of `examples/basic/Dockerfile`, whose context is this
+# directory: installed trees (pnpm's are symlink farms that mean nothing in another filesystem),
+# build outputs the image builds for itself, and the repository's own history.
+node_modules
+**/node_modules
+**/dist
+**/.next
+**/.next-*
+**/*.tsbuildinfo
+.git
+.github
+.claude
+coverage
