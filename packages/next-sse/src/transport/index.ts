@@ -1,4 +1,5 @@
-import { notImplemented } from "../internal/not-implemented.js";
+import type { ChannelRecord, EventsOf, PatternOf } from "../internal/channel.js";
+import type { InferOutput } from "../internal/standard-schema.js";
 
 /**
  * The opaque, Transport-minted position in an App's Message flow. Its format belongs to the
@@ -71,11 +72,89 @@ export class TransportUnavailableError extends TransportError {}
 export class TransportClosedError extends TransportError {}
 
 /**
- * The typed publish surface of a worker outside Next.js: an `import type` of the App's
- * Registry over a Publisher, with no runtime Channel data.
+ * An App's Registry as a worker is allowed to know it: its Channel declarations, and nothing
+ * else. `typeof sse` satisfies it, which is the only way a process outside Next.js ever names
+ * an App — the Registry module itself pulls the App's Authorize, and so its session and
+ * database code, into a process that has no business loading any of it (ADR-0008).
  */
-export function createPublisher(publisher?: Publisher): never {
-  void publisher;
+export interface PublishableApp {
+  channels: ChannelRecord;
+}
 
-  return notImplemented("createPublisher");
+/**
+ * The Channel names a pattern can make, as a type: every `{param}` becomes `${string}`, so
+ * `chat:{roomId}` is `` `chat:${string}` `` and a pattern with no param is the one name it
+ * already is.
+ *
+ * This is the whole of what a worker gets in place of a Handle. It is looser than the filler
+ * (ADR-0008): `${string}` also accepts a value carrying a `:`, which `fillPattern` refuses.
+ * Narrowing it is not possible in the type system, and it is the price of a publish surface
+ * that carries no runtime Channel data at all.
+ */
+export type ChannelNameOf<Pattern extends string> =
+  Pattern extends `${infer Head}{${string}}${infer Rest}`
+    ? `${Head}${string}${ChannelNameOf<Rest>}`
+    : Pattern;
+
+/** Every Channel name this App's patterns can make. */
+export type ChannelNames<App extends PublishableApp> = {
+  [Key in keyof App["channels"]]: ChannelNameOf<PatternOf<App["channels"][Key]>>;
+}[keyof App["channels"]];
+
+/**
+ * The events carried by every declared Channel whose pattern could have made this name.
+ *
+ * Patterns are matched, not resolved: `chat:42` picks the declaration that could have produced
+ * it. Where two patterns overlap the answer is the union of their event maps, and `keyof` on a
+ * union is the events they agree on — the honest answer when the name alone cannot say which
+ * declaration a worker meant.
+ */
+export type EventsFor<App extends PublishableApp, Channel extends string> = {
+  [Key in keyof App["channels"]]: Channel extends ChannelNameOf<PatternOf<App["channels"][Key]>>
+    ? EventsOf<App["channels"][Key]>
+    : never;
+}[keyof App["channels"]];
+
+/**
+ * The typed publish surface of a process outside Next.js: one call, Messages only.
+ *
+ * A payload here is the schema's **Output**, where a server Handle takes its Input. Nothing on
+ * this path validates — the Registry, and so the schemas, never reach this process — and the
+ * wire carries Output (ADR-0006). So what a worker writes is what the client will receive,
+ * and the type says exactly that.
+ */
+export interface TypedPublisher<App extends PublishableApp> {
+  publish<Channel extends ChannelNames<App>, Event extends keyof EventsFor<App, Channel> & string>(
+    channel: Channel,
+    event: Event,
+    payload: InferOutput<EventsFor<App, Channel>[Event]>,
+  ): Promise<Cursor>;
+}
+
+/**
+ * The typed publish surface of a worker outside Next.js: an `import type` of the App's Registry
+ * over a Publisher, with no runtime Channel data.
+ *
+ * ```ts
+ * import type { sse } from "../app/lib/sse";
+ *
+ * const publisher = createRedisPublisher({ url: process.env.REDIS_URL });
+ * const sse = createPublisher<typeof sse>(publisher);
+ * await sse.publish("chat:42", "message", { id: "1", text: "from the worker" });
+ * ```
+ *
+ * The type argument is erased with the import it came from: this function reads nothing off the
+ * App at runtime, holds no patterns and no schemas, and does no validation. What it adds over
+ * `publisher.publish` is the envelope and the types — which is why it covers Messages and
+ * nothing else. A worker that must Kick writes the control entry of ADR-0006 on the Publisher
+ * itself, and a worker that needs `tail` or `close` already holds the Publisher it made: there
+ * is no second door to either (ADR-0008).
+ */
+export function createPublisher<App extends PublishableApp>(
+  publisher: Publisher,
+): TypedPublisher<App> {
+  return {
+    publish: (channel: string, event: string, payload: unknown) =>
+      publisher.publish({ v: 1, type: "message", channel, event, payload }),
+  };
 }
