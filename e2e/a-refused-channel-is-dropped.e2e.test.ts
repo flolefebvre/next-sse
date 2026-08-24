@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 
+import { openDemoStream, publish } from "./harness/demo.js";
 import { startInstance } from "./harness/example.js";
-import { openStream } from "./harness/stream.js";
 
 /**
  * Per-Channel refusal end to end, on the built example app: a reader with no session asks for
@@ -13,7 +13,7 @@ import { openStream } from "./harness/stream.js";
  */
 test("a refused Channel is dropped while the others stream", async () => {
   const instance = await startInstance();
-  const stream = openStream(`${instance.url}/api/sse?channel=chat:42&channel=admin`);
+  const stream = openDemoStream(instance.url);
 
   try {
     const ready = await stream.next("ready");
@@ -47,17 +47,6 @@ test("a refused Channel is dropped while the others stream", async () => {
 interface Envelope {
   channel: string;
   payload: { text: string };
-}
-
-/** One Message into the room, through the demo's own webhook. */
-async function publish(url: string, text: string): Promise<void> {
-  const published = await fetch(`${url}/api/webhook`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
-  });
-
-  expect(published.status).toBe(200);
 }
 
 /**
