@@ -26,6 +26,15 @@ const READY = "TOPOLOGY READY";
  * gives up. A `CLUSTER FAILOVER` or a `SENTINEL FAILOVER` is a coordinated handover, not a
  * failure detection: it takes a round of gossip, not a node timeout. Well above that, and
  * bounded, because a promotion that never lands must fail the test rather than hang it.
+ *
+ * On Sentinel the last of the three things `promoteInSentinel` waits for — the old master
+ * reconfigured into a connected replica — is the one that sets this bound, and it is not on the
+ * handover's clock at all (#86). The sentinel only reconfigures it on an INFO round, and only
+ * once it has been reporting the role it reports for longer than four publish periods, so the
+ * derivation is: the handover itself (`failover-timeout`, 5 s) + 4 × publish period + one INFO
+ * period + the resync the demoted server then runs. With the periods shortened below that is
+ * 5 s + 2 s + 0.5 s + a resync of a log a test just wrote, and this ceiling is many times it —
+ * which is the margin a loaded host eats into, and left generous on purpose.
  */
 const PROMOTION_TIMEOUT_MS = 30_000;
 
@@ -42,6 +51,26 @@ const PROMOTION_POLL_MS = 100;
  */
 export const SENTINEL_DOWN_AFTER_MS = 1_000;
 export const SENTINEL_FAILOVER_TIMEOUT_MS = 5_000;
+
+/**
+ * How often the sentinel re-reads each server's `INFO`, and how often it publishes its hello —
+ * both far below their defaults (10 s and 2 s), which is what makes a promotion observable on
+ * this topology in seconds rather than on a ten-second grid (#86).
+ *
+ * The two are not decoration and they are not a sleep being widened: a sentinel reconfigures
+ * the *old* master into a replica of the promoted one from an `INFO` round, and only once that
+ * server has been reporting `master` for longer than four publish periods. Measured on a loaded
+ * host with the defaults, `+convert-to-slave` came 10.3 s after `+switch-master`, and one
+ * missed round would have cost ten more; with these values it came 2.2 s after it. The
+ * observable is unchanged — the sentinel is asked the same three questions, and what they prove
+ * is the same — only how often it looks.
+ *
+ * They are set through `SENTINEL DEBUG`, the only way to reach them: they are internal periods
+ * rather than configuration file directives. Redis has carried the command since 6.2 and Valkey
+ * inherits it, so both cells of the CI matrix take it.
+ */
+const SENTINEL_INFO_PERIOD_MS = 500;
+const SENTINEL_PUBLISH_PERIOD_MS = 500;
 
 /**
  * How long the replica is given to acknowledge everything the master holds before that master
@@ -444,6 +473,7 @@ sentinel failover-timeout ${SENTINEL_MASTER_NAME} ${String(SENTINEL_FAILOVER_TIM
 EOF
     redis-sentinel /tmp/sentinel.conf &
     until redis-cli -p ${String(sentinel)} sentinel get-master-addr-by-name ${SENTINEL_MASTER_NAME} 2>/dev/null | grep -q 127.0.0.1; do sleep 0.1; done
+    redis-cli -p ${String(sentinel)} sentinel debug info-period ${String(SENTINEL_INFO_PERIOD_MS)} publish-period ${String(SENTINEL_PUBLISH_PERIOD_MS)} | grep -q OK
     ${discovered}
     echo "${READY}"
     wait
@@ -648,6 +678,10 @@ async function namedMaster(ask: Ask, sentinel: number): Promise<number> {
  * A caller that Published in that window could have it accepted by a node that is about to be
  * told to replicate from someone else — and to throw away what it holds of its own — which is a
  * case passing on a Message the canonical log never received.
+ *
+ * The last of the three is the slow one, and what it waits for is the sentinel's own `INFO`
+ * round rather than the handover (#86) — which is why this topology shortens that round (see
+ * `SENTINEL_INFO_PERIOD_MS`) instead of giving the wait a larger number.
  */
 async function promoteInSentinel(sentinel: number): Promise<void> {
   await onNodes(async (ask) => {
