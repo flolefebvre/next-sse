@@ -513,8 +513,8 @@ test.each([
 });
 
 /**
- * The Key is what a Kick will address Connections by (#37), so the Connection table has to carry
- * it from the first Connection onwards. Nothing reads it yet.
+ * The Key is what a Kick addresses Connections by (ADR-0003), so the Connection table carries it
+ * from the first Connection onwards.
  */
 test("the Key this App derives lands on the Connection", async () => {
   const sse = guardedApp(() => true, { key: (ctx) => `user:${ctx.role}` });
@@ -522,6 +522,20 @@ test("the Key this App derives lands on the Connection", async () => {
   await frames.next();
 
   expect([...getInstance().connections][0]?.key).toBe("user:ada");
+  await frames.cancel();
+});
+
+/**
+ * An empty Key is no Key: it is what a `key` reading a missing session header returns without
+ * meaning to, and a Connection holding one could never be Kicked — `sse.kick({ key: "" })` names
+ * nothing and is refused. The two ends have to agree, so it lands as no Key at all.
+ */
+test("a Key that comes out empty lands on the Connection as no Key", async () => {
+  const sse = guardedApp(() => true, { key: () => "" });
+  const frames = framesOf(await connect(sse, "?channel=chat:42", { headers: { "x-role": "ada" } }));
+  await frames.next();
+
+  expect([...getInstance().connections][0]?.key).toBeUndefined();
   await frames.cancel();
 });
 

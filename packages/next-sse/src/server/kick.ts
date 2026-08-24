@@ -65,7 +65,10 @@ export function createKick(instance: Instance): Kick {
  *
  * An App that configured no `key` has no Connection carrying one, so the Entry would be written,
  * fan out to every Instance and match nothing at all — a revocation that silently did not happen,
- * which is the one outcome ADR-0003 rules out. An empty Key is the same failure by another route.
+ * which is the one outcome ADR-0003 rules out.
+ *
+ * An empty Key is the same failure by another route, and no Connection can be hiding behind it:
+ * the handler folds a `key` that comes out empty into no Key at all, so the two ends agree.
  */
 function keyOf(instance: Instance, key: string): string {
   if (instance.key === undefined) {

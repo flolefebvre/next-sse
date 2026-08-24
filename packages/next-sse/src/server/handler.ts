@@ -161,7 +161,13 @@ async function decide(
 ): Promise<Decision> {
   const declarations = instance.registry ?? {};
   const ctx = await instance.context?.(request);
-  const key = instance.key?.(ctx as never);
+  /**
+   * An empty Key is no Key. It is what a `key` reading a missing session header returns without
+   * meaning to, and a Connection holding one could never be Kicked — `sse.kick({ key: "" })`
+   * names nothing and is refused there (ADR-0003). Folding it into `undefined` here is what
+   * keeps the two ends of that agreeing.
+   */
+  const key = instance.key?.(ctx as never) || undefined;
 
   const decisions = await Promise.all(
     [...channels].map(async (name) => [name, await allows(declarations, name, ctx)] as const),
