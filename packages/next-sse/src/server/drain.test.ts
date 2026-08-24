@@ -311,15 +311,15 @@ test("a Drain writes nothing to the log", async () => {
  *
  * It is refused with the same answer the check a moment earlier would have given it, down to the
  * socket: this refusal closes its connection too, or the one request that slipped through the
- * window would be the one holding the process open (#74). That header is also what names the
- * refusal — a Transport that is away answers the same `503` without it — so this is the place
+ * window would be the one holding the process open (#74). The whole shape of that answer is the
+ * handler suite's to assert; what is read here is the header that names *which* refusal this is
+ * — a Transport that is away answers the same `503` without it, and this test is the one place
  * the Drain's own refusal is told apart from the log's.
  */
 test("a Connection still opening when the Drain starts is refused, and never enters the table", async () => {
   const { response, drained } = await drainMidOpen("subscribe");
 
   expect(response.status).toBe(503);
-  expect(response.headers.get("Retry-After")).toBe("5");
   expect(response.headers.get("Connection")).toBe("close");
   expect(held()).toBe(0);
   await drained;
