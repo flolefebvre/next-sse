@@ -1,8 +1,15 @@
 import { createServer } from "node:net";
 
 import { createClient } from "redis";
-import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers";
+import {
+  GenericContainer,
+  getContainerRuntimeClient,
+  StartupCheckStrategy,
+  type StartedTestContainer,
+  type StartupStatus,
+} from "testcontainers";
 
+import { takingHostPorts, TOPOLOGY_LABEL, type Containers } from "./topology-start.js";
 import { testImage } from "./valkey-container.js";
 
 /** The master a Sentinel topology monitors, as both the sentinel and the client name it. */
@@ -45,6 +52,112 @@ const REPLICATION_CATCHUP_MS = 10_000;
 
 /** The one key the kill writes itself, so that its `WAIT` covers what the case published. */
 const REPLICATION_PROBE_KEY = "next-sse-test-replication-probe";
+
+/**
+ * What a topology's start comes to: the ports it takes, the script its container runs on them,
+ * and whatever the caller has to remember of the ports it just picked — the sentinel's, when
+ * there is one. It is planned in a function rather than passed in, because a start that loses
+ * its ports is run again from here, and the ports it picks the second time must be new ones.
+ */
+interface Planned<T> {
+  ports: number[];
+  script: string;
+  of: T;
+}
+
+/** A topology that is up and settled, beside what its plan remembered of its ports. */
+interface Started<T> {
+  topology: RunningTopology;
+  of: T;
+}
+
+/**
+ * Docker, as sweeping up after a start that failed needs it: everything carrying that label,
+ * whatever state it is in, and gone for good.
+ *
+ * Listed through dockerode itself rather than testcontainers' `fetchByLabel`, which lists only
+ * what is running — and the container a refused port binding leaves behind was never started.
+ */
+const containers: Containers = {
+  labelled: async (label) => {
+    const { dockerode } = (await getContainerRuntimeClient()).container;
+    const found = await dockerode.listContainers({
+      all: true,
+      filters: { label: [`${TOPOLOGY_LABEL}=${label}`] },
+    });
+
+    return found.map((container) => container.Id);
+  },
+  remove: async (id) => {
+    const { dockerode } = (await getContainerRuntimeClient()).container;
+    await dockerode.getContainer(id).remove({ force: true, v: true });
+  },
+};
+
+/**
+ * The readiness testcontainers is given: none of its own. Being up with its ports bound is all
+ * this container is waited for under the turn; what the servers inside it are doing is waited
+ * for in `settled`, where waiting costs nobody else their turn.
+ *
+ * It extends the strategy testcontainers exports rather than restating the `WaitStrategy`
+ * interface, so that an interface this project does not own changing under it is a compile
+ * error here and not a shape that silently no longer fits.
+ */
+class UpIsReadyEnough extends StartupCheckStrategy {
+  checkStartupState(): Promise<StartupStatus> {
+    return Promise.resolve("SUCCESS");
+  }
+}
+
+const AS_SOON_AS_IT_IS_UP = new UpIsReadyEnough().withStartupTimeout(STARTUP_TIMEOUT_MS);
+
+/**
+ * Wait for the container to print the one line its script ends with, on the same bound and with
+ * the same meaning testcontainers' own log wait had: the topology is up, every server answers,
+ * and a cluster has agreed on its slots. The log is read from the container's first line, so a
+ * topology that settled while this was being set up is not waited for anyway.
+ *
+ * What is thrown says what happened — the line never came, or the log ended before it did, which
+ * is a container whose script died — because a topology that never settles has to be a readable
+ * failure rather than a hook that times out.
+ */
+async function settled(container: StartedTestContainer): Promise<void> {
+  const logs = await container.logs({ since: 0 });
+  let tail = "";
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const giveUp = setTimeout(() => {
+        reject(
+          new Error(
+            `the topology did not print "${READY}" within ${String(STARTUP_TIMEOUT_MS)}ms; ` +
+              `its log ends with: ${tail}`,
+          ),
+        );
+      }, STARTUP_TIMEOUT_MS);
+      const done = (settle: () => void) => {
+        clearTimeout(giveUp);
+        settle();
+      };
+      const read = (chunk: unknown) => {
+        tail = (tail + String(chunk)).slice(-1_000);
+        if (tail.includes(READY)) done(resolve);
+      };
+
+      logs
+        .on("data", read)
+        .on("err", read)
+        .on("error", (error: Error) => done(() => reject(error)))
+        .on("end", () =>
+          done(() =>
+            reject(new Error(`the topology's log ended before "${READY}"; it ends with: ${tail}`)),
+          ),
+        );
+    });
+  } finally {
+    logs.destroy();
+  }
+}
 
 /** One running topology, and the way to stop it. */
 export interface RunningTopology {
@@ -159,23 +272,57 @@ async function clusterNodes(count: number): Promise<{ client: number; bus: numbe
  * a fixed host binding per port. The ports are taken free at runtime, so two runs on one machine
  * still do not collide.
  *
+ * Nothing about that identity can be handed to Docker to choose: `cluster-announce-*` and the
+ * sentinel's `announce-*` change the address a server publishes **to everyone**, and the peers
+ * that follow it are inside this container, where a host-published port is not bound and
+ * `127.0.0.1` is the container's own loopback. One address has to mean the same server on both
+ * sides of the boundary, so the numbers are picked here — and what picking them costs, a window
+ * in which another worker can take one and a queue of containers hitting Docker's port
+ * publishing at once, is what the turn `takingHostPorts` grants covers (#83).
+ *
+ * The turn is given back the moment Docker has the ports bound, and the topology is then waited
+ * for outside it. That line is where the cost is: binding the ports is a second, while settling
+ * a cluster is tens of them, and five files that must settle one after another run past the
+ * budget their `beforeAll` has. So testcontainers is told the container is ready as soon as it
+ * is up, and `READY` — the same line, on the same bound — is waited for here instead. A wait
+ * that ends any other way stops the container: nothing else would, since nobody holds it yet.
+ *
  * The image is whatever `testImage()` names, unchanged: the official Valkey image ships
  * `redis-server`, `redis-cli` and `redis-sentinel` compatibility names, so one script drives
  * both cells of the CI matrix.
  */
-async function startTopology(ports: number[], script: string): Promise<RunningTopology> {
-  const container: StartedTestContainer = await new GenericContainer(testImage())
-    .withExposedPorts(...ports.map((port) => ({ container: port, host: port })))
-    .withCommand(["sh", "-c", script])
-    .withWaitStrategy(Wait.forLogMessage(READY))
-    .withStartupTimeout(STARTUP_TIMEOUT_MS)
-    .start();
+async function startTopology<T>(plan: () => Promise<Planned<T>>): Promise<Started<T>> {
+  const { ports, container, of } = await takingHostPorts(
+    async (label) => {
+      const planned = await plan();
+      const container: StartedTestContainer = await new GenericContainer(testImage())
+        .withExposedPorts(...planned.ports.map((port) => ({ container: port, host: port })))
+        .withCommand(["sh", "-c", planned.script])
+        .withLabels({ [TOPOLOGY_LABEL]: label })
+        .withWaitStrategy(AS_SOON_AS_IT_IS_UP)
+        .start();
+
+      return { ...planned, container };
+    },
+    { containers },
+  );
+
+  try {
+    await settled(container);
+  } catch (error) {
+    await container.stop().catch(() => undefined);
+
+    throw error;
+  }
 
   return {
-    nodes: ports.map((port) => ({ host: "127.0.0.1", port })),
-    stop: async () => {
-      await container.stop();
+    topology: {
+      nodes: ports.map((port) => ({ host: "127.0.0.1", port })),
+      stop: async () => {
+        await container.stop();
+      },
     },
+    of,
   };
 }
 
@@ -185,19 +332,21 @@ async function startTopology(ports: number[], script: string): Promise<RunningTo
  * slot's master can move on.
  */
 async function startCluster(replicas: number): Promise<RunningTopology> {
-  const nodes = await clusterNodes(3 * (1 + replicas));
-  const ports = nodes.map((node) => node.client);
-  const addresses = ports.map((port) => `127.0.0.1:${String(port)}`).join(" ");
-  const servers = nodes
-    .map(
-      ({ client, bus }) =>
-        `redis-server --port ${String(client)} --cluster-port ${String(bus)} --cluster-enabled yes --cluster-config-file "/tmp/node-${String(client)}.conf" --cluster-node-timeout 5000 --appendonly no --save '' --dir /tmp &`,
-    )
-    .join("\n    ");
+  const { topology } = await startTopology(async () => {
+    const nodes = await clusterNodes(3 * (1 + replicas));
+    const ports = nodes.map((node) => node.client);
+    const addresses = ports.map((port) => `127.0.0.1:${String(port)}`).join(" ");
+    const servers = nodes
+      .map(
+        ({ client, bus }) =>
+          `redis-server --port ${String(client)} --cluster-port ${String(bus)} --cluster-enabled yes --cluster-config-file "/tmp/node-${String(client)}.conf" --cluster-node-timeout 5000 --appendonly no --save '' --dir /tmp &`,
+      )
+      .join("\n    ");
 
-  return startTopology(
-    ports,
-    `
+    return {
+      ports,
+      of: undefined,
+      script: `
     set -e
     ${servers}
     for port in ${ports.join(" ")}; do
@@ -211,7 +360,10 @@ async function startCluster(replicas: number): Promise<RunningTopology> {
     echo "${READY}"
     wait
   `,
-  );
+    };
+  });
+
+  return topology;
 }
 
 /**
@@ -250,30 +402,32 @@ async function startSentinel(replicas: number): Promise<{
   topology: RunningTopology;
   sentinel: number;
 }> {
-  const ports = await freePorts(2 + replicas);
-  const [master, sentinel, ...rest] = ports;
-  if (master === undefined || sentinel === undefined) throw new Error("no free port to take");
+  const { topology, of: sentinel } = await startTopology(async () => {
+    const ports = await freePorts(2 + replicas);
+    const [master, sentinel, ...rest] = ports;
+    if (master === undefined || sentinel === undefined) throw new Error("no free port to take");
 
-  const followers = rest
-    .map(
-      (port) =>
-        `redis-server --port ${String(port)} --replicaof 127.0.0.1 ${String(master)} --appendonly no --save '' --dir /tmp &`,
-    )
-    .join("\n    ");
+    const followers = rest
+      .map(
+        (port) =>
+          `redis-server --port ${String(port)} --replicaof 127.0.0.1 ${String(master)} --appendonly no --save '' --dir /tmp &`,
+      )
+      .join("\n    ");
 
-  /**
-   * The sentinel is only ready for a forced failover once it has discovered the replica through
-   * the master's `INFO`: asked before that, `SENTINEL FAILOVER` answers `NOGOODSLAVE`. So the
-   * script waits for the replica to be counted rather than for a duration.
-   */
-  const discovered =
-    replicas === 0
-      ? ""
-      : `until [ "$(redis-cli -p ${String(sentinel)} sentinel master ${SENTINEL_MASTER_NAME} | grep -A1 '^num-slaves$' | tail -n1 | tr -d '\\r')" = "${String(replicas)}" ]; do sleep 0.1; done`;
+    /**
+     * The sentinel is only ready for a forced failover once it has discovered the replica through
+     * the master's `INFO`: asked before that, `SENTINEL FAILOVER` answers `NOGOODSLAVE`. So the
+     * script waits for the replica to be counted rather than for a duration.
+     */
+    const discovered =
+      replicas === 0
+        ? ""
+        : `until [ "$(redis-cli -p ${String(sentinel)} sentinel master ${SENTINEL_MASTER_NAME} | grep -A1 '^num-slaves$' | tail -n1 | tr -d '\\r')" = "${String(replicas)}" ]; do sleep 0.1; done`;
 
-  const topology = await startTopology(
-    ports,
-    `
+    return {
+      ports,
+      of: sentinel,
+      script: `
     set -e
     redis-server --port ${String(master)} --appendonly no --save '' --dir /tmp &
     until redis-cli -p ${String(master)} ping 2>/dev/null | grep -q PONG; do sleep 0.1; done
@@ -294,7 +448,8 @@ EOF
     echo "${READY}"
     wait
   `,
-  );
+    };
+  });
 
   return {
     topology: { ...topology, nodes: topology.nodes.filter((node) => node.port === sentinel) },
