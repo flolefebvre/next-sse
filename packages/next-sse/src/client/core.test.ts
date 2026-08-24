@@ -787,3 +787,133 @@ test("a Reset on a partly refused Connection leaves the refused subscribers alon
   expect(own).toHaveBeenCalledTimes(1);
   expect(appWide).not.toHaveBeenCalled();
 });
+
+/**
+ * The liveness watchdog, which is the whole reason the heartbeat is a Control event rather than
+ * an SSE comment: a comment keeps a proxy happy but is invisible to JavaScript, so a pipe that
+ * died without saying so — a proxy idling it out, the iOS `EventSource` stuck at `OPEN` — would
+ * never be noticed by anything (ADR-0004).
+ */
+test("a Connection silent for three heartbeats is reopened, carrying its Cursor", async () => {
+  const { opened, subscriber } = await subscribed();
+  only(opened).ready({ cursor: "cursor-0", refused: [], heartbeat: 1000 });
+  only(opened).caughtUp();
+
+  await vi.advanceTimersByTimeAsync(2999);
+  expect(opened).toHaveLength(1);
+
+  await vi.advanceTimersByTimeAsync(1);
+
+  expect(opened).toHaveLength(2);
+  expect(opened[1]?.cursor).toBe("cursor-0");
+  expect(opened[0]?.readyState).toBe(2);
+  expect(subscriber.statuses).toEqual(["live", "reconnecting"]);
+});
+
+test("a heartbeat is a block like any other: the watchdog starts again on it", async () => {
+  const { opened } = await subscribed();
+  only(opened).ready({ cursor: "cursor-0", refused: [], heartbeat: 1000 });
+
+  for (let beat = 0; beat < 20; beat += 1) {
+    await vi.advanceTimersByTimeAsync(1000);
+    only(opened).emit("heartbeat");
+  }
+
+  expect(opened).toHaveLength(1);
+});
+
+test("a Connection that was promised no heartbeat is not watched", async () => {
+  const { opened } = await subscribed();
+  only(opened).ready({ cursor: "cursor-0", refused: [], heartbeat: 0 });
+
+  await vi.advanceTimersByTimeAsync(60 * 60_000);
+
+  expect(opened).toHaveLength(1);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test("a watchdog the last hook left behind is cancelled, not fired at nobody", async () => {
+  const { core, opened } = setup();
+  const leave = core.subscribe(recorder("chat:42"));
+  await tick();
+  only(opened).ready({ cursor: "cursor-0", refused: [], heartbeat: 1000 });
+
+  leave();
+  await tick();
+
+  expect(vi.getTimerCount()).toBe(0);
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(opened).toHaveLength(1);
+});
+
+/**
+ * The Instance ending a Connection on purpose — its max lifetime, a Kick, a Drain — says so
+ * first, and the core comes straight back with its Cursor instead of waiting out the browser's
+ * own retry. That is what makes the cut cost a round trip and never a Message.
+ */
+test("a reconnect brings the Connection back at once, with the Cursor", async () => {
+  const { opened, subscriber } = await subscribed();
+  only(opened).ready();
+  only(opened).caughtUp();
+  opened[0]?.message("chat:42", "message", { text: "one" }, "cursor-7");
+
+  opened[0]?.emit("reconnect");
+
+  expect(opened).toHaveLength(2);
+  expect(opened[0]?.readyState).toBe(2);
+  expect(opened[1]?.cursor).toBe("cursor-7");
+  expect(subscriber.statuses).toEqual(["live", "reconnecting"]);
+});
+
+test("a reconnect the last hook left behind reopens nothing", async () => {
+  const { core, opened } = setup();
+  const leave = core.subscribe(recorder("chat:42"));
+  await tick();
+  only(opened).ready();
+
+  leave();
+  await tick();
+  opened[0]?.emit("reconnect");
+
+  expect(opened).toHaveLength(1);
+});
+
+/**
+ * The one case the core could not report before: the browser reconnected the stream by itself,
+ * with the last event id it was holding, so a replay is on its way and nothing the core did
+ * says so. `ready` arrives stamped with that id — the SSE last event ID buffer is on every
+ * event a source dispatches — and its presence is the whole of what is read (ADR-0001).
+ */
+test("a replay a native retry brings back is reported as replaying", async () => {
+  const { opened, subscriber } = await subscribed();
+  only(opened).ready();
+  only(opened).caughtUp();
+  only(opened).message("chat:42", "message", { text: "one" }, "cursor-7");
+
+  only(opened).drop();
+  only(opened).ready();
+
+  expect(subscriber.statuses).toEqual(["live", "reconnecting", "replaying"]);
+
+  only(opened).caughtUp();
+
+  expect(subscriber.statuses).toEqual(["live", "reconnecting", "replaying", "live"]);
+  expect(opened).toHaveLength(1);
+});
+
+/**
+ * The same retry on a Connection that never received a Message: the browser has no last event
+ * id to send, the Instance replays nothing, and saying `replaying` would be a guess. The core
+ * makes none.
+ */
+test("a native retry on a Connection that received nothing is no replay", async () => {
+  const { opened, subscriber } = await subscribed();
+  only(opened).ready();
+  only(opened).caughtUp();
+
+  only(opened).drop();
+  only(opened).ready();
+  only(opened).caughtUp();
+
+  expect(subscriber.statuses).toEqual(["live", "reconnecting", "live"]);
+});

@@ -21,6 +21,13 @@ export class FakeEventSource implements EventSourceLike {
   readonly url: string;
   readyState: number = CONNECTING;
   private readonly listeners = new Map<string, Set<Listener>>();
+  /**
+   * The last event ID buffer of the SSE grammar, modelled the way the browser holds it: any
+   * block carrying an `id:` sets it, every event dispatched afterwards is stamped with it, and
+   * it survives the reconnects the source makes on its own — which is precisely what makes the
+   * `ready` of a resumed stream tell the client core that a replay is on its way.
+   */
+  private lastEventId = "";
 
   constructor(url: string) {
     this.url = url;
@@ -51,9 +58,16 @@ export class FakeEventSource implements EventSourceLike {
     this.readyState = CLOSED;
   }
 
-  /** Deliver one block of the given type, the way the browser dispatches it. */
-  emit(type: string, data: unknown = {}, lastEventId = ""): void {
-    const event: MessageEventLike = { data: JSON.stringify(data), lastEventId };
+  /**
+   * Deliver one block of the given type, the way the browser dispatches it: a block with an
+   * `id:` moves the last event ID buffer, and every event carries whatever the buffer holds.
+   */
+  emit(type: string, data: unknown = {}, id = ""): void {
+    if (id !== "") this.lastEventId = id;
+    const event: MessageEventLike = {
+      data: JSON.stringify(data),
+      lastEventId: this.lastEventId,
+    };
     for (const listener of this.listeners.get(type) ?? []) listener(event);
   }
 
@@ -77,7 +91,9 @@ export class FakeEventSource implements EventSourceLike {
 
   /**
    * The pipe broke and the browser is retrying on its own — the ordinary transient drop, which
-   * the core watches rather than owns.
+   * the core watches rather than owns. The last event ID buffer is untouched: it is what the
+   * browser puts in the `Last-Event-ID` of the request it makes by itself, and what the blocks
+   * of the resumed stream are stamped with.
    */
   drop(): void {
     this.readyState = CONNECTING;

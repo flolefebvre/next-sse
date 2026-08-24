@@ -76,6 +76,12 @@ const CLOSED = 2;
 const FIRST_RETRY_MS = 1000;
 const MAX_RETRY_MS = 30_000;
 
+/**
+ * How many heartbeats may go missing before the core stops believing the pipe (ADR-0004). Three
+ * is one lost block plus the round trip of the next, which no proxy and no scheduler explains.
+ */
+const WATCHDOG_BEATS = 3;
+
 interface Subscriber extends Subscription {
   status: Status;
   /**
@@ -143,6 +149,13 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
   let attempt = 0;
   let retry: ReturnType<typeof setTimeout> | undefined;
   /**
+   * How often this Connection said it would be heartbeated, and the timer watching for it. The
+   * interval is the Instance's, read off `ready`: the two sides cannot be configured apart, and
+   * a Connection that is not heartbeated at all (`0`) is one the core does not watch.
+   */
+  let heartbeat = 0;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  /**
    * The last event id this client saw, and the only thing it stores about position. It travels
    * back untouched: a Connection carries it in the URL, and the Instance decides what it means.
    */
@@ -193,12 +206,48 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
   function closeSource(): void {
     clearTimeout(retry);
     retry = undefined;
+    clearTimeout(watchdog);
+    watchdog = undefined;
+    heartbeat = 0;
     source?.close();
     source = undefined;
     live = false;
   }
 
-  function openSource(channels: ReadonlySet<string>): void {
+  /**
+   * Something came off the wire, so the pipe is alive and the watchdog starts again. Every block
+   * counts, `heartbeat` included and Messages just as much: what is watched is bytes, not
+   * heartbeats — a busy Connection proves itself without one.
+   *
+   * A pipe that has gone quiet is an error nowhere: the browser is holding a socket that will
+   * never speak again — a proxy that idled it out, the iOS `EventSource` stuck at `OPEN` — and
+   * nothing but this timer will ever say so.
+   */
+  function touch(): void {
+    clearTimeout(watchdog);
+    watchdog = undefined;
+    if (heartbeat <= 0) return;
+    watchdog = setTimeout(() => {
+      watchdog = undefined;
+      reopen();
+    }, heartbeat * WATCHDOG_BEATS);
+  }
+
+  /**
+   * Bring the Connection back at once, from wherever this client stands: through the same two
+   * doors as every other reopen, so the Cursor, the Channel set and the status all come from the
+   * one place that knows them. A `reconnect` from the Instance, a watchdog expiry and a page
+   * coming back all do this, and not one of them opens a Connection any other way.
+   */
+  function reopen(): void {
+    closeSource();
+    const channels = wanted();
+    if (channels.size === 0) return;
+
+    openSource(channels, "reconnecting");
+  }
+
+  function openSource(channels: ReadonlySet<string>, as?: Status): void {
     open = channels;
     live = false;
     refused = new Set();
@@ -216,7 +265,20 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
     if (resumeFrom !== undefined) query.set("cursor", resumeFrom);
     const opened = new Connection(`${url}?${query.toString()}`);
     source = opened;
-    setAll(attempt === 0 ? "connecting" : "reconnecting");
+    setAll(as ?? (attempt === 0 ? "connecting" : "reconnecting"));
+
+    /**
+     * Every block of this Connection, with the watchdog rearmed before the block is read. A
+     * block from a Connection this core has already replaced is nobody's news: it neither feeds
+     * a subscriber nor keeps a timer alive.
+     */
+    const on = (type: string, listener: (event: MessageEventLike) => void): void => {
+      opened.addEventListener(type, (event) => {
+        if (opened !== source) return;
+        touch();
+        listener(event);
+      });
+    };
 
     /**
      * `ready` is the Instance saying it accepted this Connection, which is what ends a retry
@@ -235,13 +297,20 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
      * was refused everything is closed here — the browser would reconnect to it by itself the
      * moment the server ended the stream, and would be told the same thing forever.
      */
-    opened.addEventListener("ready", (event) => {
+    on("ready", (event) => {
       attempt = 0;
-      const { cursor, refused: names } = JSON.parse(event.data) as {
+      const {
+        cursor,
+        refused: names,
+        heartbeat: beat,
+      } = JSON.parse(event.data) as {
         cursor?: unknown;
         refused?: unknown;
+        heartbeat?: unknown;
       };
       if (typeof cursor === "string" && cursor !== "") lastEventId = cursor;
+      heartbeat = typeof beat === "number" && beat > 0 ? beat : 0;
+      touch();
 
       refused = new Set(Array.isArray(names) ? names.filter(isString) : []);
       for (const subscriber of subscribers) {
@@ -261,14 +330,42 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
         return;
       }
 
-      if (resumeFrom !== undefined) setAll("replaying");
+      /**
+       * A replay is coming when this Connection asked to resume, and the two ways of asking are
+       * both here. Either the core put the Cursor in the URL — which is every Connection it
+       * opens once it holds one — or the browser reconnected this stream by itself and sent the
+       * last event id it was holding, which is what `ready` arrives stamped with: the SSE last
+       * event ID buffer is on every event a source dispatches.
+       *
+       * Presence is all that is read of it, never its value and never against the one this
+       * client holds: what a Cursor means belongs to the Transport that minted it (ADR-0001).
+       */
+      if (resumeFrom !== undefined || event.lastEventId !== "") setAll("replaying");
+    });
+
+    /**
+     * The heartbeat is listened for and read no further: what it carries is nothing, and what it
+     * means is entirely that it arrived. Registering it is what makes a quiet Connection keep
+     * itself alive in the core's eyes — `on` rearms the watchdog on every block, and on a
+     * Connection whose Channels have nothing to say this is the only block there is.
+     */
+    on("heartbeat", () => undefined);
+
+    /**
+     * The Instance is ending this Connection on purpose — its max lifetime, a Kick, a Drain —
+     * and says so before it goes, which is what makes the cut cost a round trip and never a
+     * Message: the core comes straight back with its Cursor rather than waiting out the
+     * browser's own retry (ADR-0004).
+     */
+    on("reconnect", () => {
+      reopen();
     });
 
     /**
      * A Message is the unnamed block (ADR-0004): one listener carries every event name a
      * Channel declares, including the ones a Handle publishes dynamically.
      */
-    opened.addEventListener("message", (event) => {
+    on("message", (event) => {
       if (event.lastEventId !== "") lastEventId = event.lastEventId;
       const { channel, event: name, payload } = JSON.parse(event.data) as Envelope;
       for (const subscriber of subscribers) {
@@ -278,7 +375,7 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
       }
     });
 
-    opened.addEventListener("caught-up", () => {
+    on("caught-up", () => {
       live = true;
       for (const subscriber of subscribers) subscriber.liveOnly = false;
       setAll("live");
@@ -295,7 +392,7 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
      * its behalf would refresh a route because of a stream it is not on.
      * Reset is not a status (ADR-0007): the Connection is live and stays live.
      */
-    opened.addEventListener("reset", () => {
+    on("reset", () => {
       let anyDefault = false;
       for (const subscriber of [...subscribers]) {
         if (refused.has(subscriber.channel)) continue;
