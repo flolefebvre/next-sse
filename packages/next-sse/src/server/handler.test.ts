@@ -749,6 +749,12 @@ test("a connect while the Transport is away is a 503 saying when to come back", 
 
   expect(response.status).toBe(503);
   expect(response.headers.get("Retry-After")).toBe("5");
+  /**
+   * And the socket stays: this Instance is staying too, the blip is over in a moment, and
+   * closing the connection of every retry would cost each client a fresh one and buy nothing.
+   * It is the single way this refusal differs from the draining one below (#74).
+   */
+  expect(response.headers.get("Connection")).toBeNull();
   expect(getInstance().connections.size).toBe(0);
 });
 
@@ -760,6 +766,12 @@ test("a connect while the Transport is away is a 503 saying when to come back", 
  *
  * It is answered before the App is asked anything at all: no context is built and no Authorize
  * runs, because there is no decision to take about a Connection that is not being opened.
+ *
+ * It also ends the connection it went out on, which is what lets the process exit at all: a
+ * client with nothing in front of it reconnects over the pooled keep-alive socket its ended
+ * Connection was on, and a refusal handed back to that pool keeps the socket busy for as long as
+ * the client retries — the HTTP server never sees it idle and its `close()` sits out the whole
+ * termination grace window (#74).
  */
 test("a connect while this Instance is draining is a 503, taken before Authorize", async () => {
   const context = vi.fn(() => ({ role: "admin" }));
@@ -771,6 +783,7 @@ test("a connect while this Instance is draining is a 503, taken before Authorize
 
   expect(response.status).toBe(503);
   expect(response.headers.get("Retry-After")).toBe("5");
+  expect(response.headers.get("Connection")).toBe("close");
   expect(context).not.toHaveBeenCalled();
   expect(authorize).not.toHaveBeenCalled();
 });

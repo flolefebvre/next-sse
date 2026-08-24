@@ -123,18 +123,38 @@ function aGate(): Gate {
  * One connect held inside `open()` — the `gated` Transport call does not answer until the Drain
  * has started — which is the window between passing the handler's check and being registered,
  * made observable. What comes back is what the client saw, and the Drain to wait on.
+ *
+ * The log finishes what it started before it closes: the Drain's `transport.close()` waits for
+ * the held call to have been served. Without that, the two land in whichever order the microtask
+ * queue gives them, and a call served after the close fails as a Transport that is away — the
+ * same `503` from the outside, so the refusal under test here would be the wrong one half the
+ * time and neither would be named.
  */
 async function drainMidOpen(
   gated: "subscribe" | "tail",
 ): Promise<{ response: Response; drained: Promise<void> }> {
   const transport = createMemoryTransport();
   const original = transport[gated].bind(transport) as (...args: never[]) => Promise<never>;
+  const closing = transport.close.bind(transport);
   const { gate, opened: entered, reached, release } = aGate();
+  let served = (): void => {};
+  const answered = new Promise<void>((resolve) => {
+    served = resolve;
+  });
   (transport as unknown as Record<string, unknown>)[gated] = async (...args: never[]) => {
     reached();
     await gate;
 
-    return original(...args);
+    try {
+      return await original(...args);
+    } finally {
+      served();
+    }
+  };
+  transport.close = async () => {
+    await answered;
+
+    return closing();
   };
   const sse = anApp({ transport, drain: 0 });
 
@@ -288,12 +308,19 @@ test("a Drain writes nothing to the log", async () => {
  * The race the Drain would otherwise lose: a request that passed the handler's own check and is
  * inside `open()`, waiting on the log, when the flag flips. It is refused where it would have
  * been registered, so the table the Drain walked is the whole of what it has to empty.
+ *
+ * It is refused with the same answer the check a moment earlier would have given it, down to the
+ * socket: this refusal closes its connection too, or the one request that slipped through the
+ * window would be the one holding the process open (#74). That header is also what names the
+ * refusal — a Transport that is away answers the same `503` without it — so this is the place
+ * the Drain's own refusal is told apart from the log's.
  */
 test("a Connection still opening when the Drain starts is refused, and never enters the table", async () => {
   const { response, drained } = await drainMidOpen("subscribe");
 
   expect(response.status).toBe(503);
   expect(response.headers.get("Retry-After")).toBe("5");
+  expect(response.headers.get("Connection")).toBe("close");
   expect(held()).toBe(0);
   await drained;
 });

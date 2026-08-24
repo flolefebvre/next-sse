@@ -26,12 +26,22 @@ const RETRY_AFTER_SECONDS = 5;
  * off — reads the same status and the same header whether the log is unreachable or the process
  * is on its way out, which is the whole point of answering a status rather than breaking a
  * stream after its headers (ADR-0004, ADR-0011).
+ *
+ * `closing` is the one thing the two do not share, and unifying it back would undo the fix it
+ * exists for. A draining Instance wants its sockets back: a client pointed straight at it —
+ * no load balancer in between — reconnects over the pooled keep-alive socket its ended
+ * Connection was on, and every refusal answered on that socket hands it back to the pool, so
+ * the HTTP server never sees it idle and its `close()` sits out the orchestrator's grace window
+ * instead of resolving. `Connection: close` ends the socket with the refusal, which is what
+ * lets the process go. A Transport that is away is the opposite case: this Instance is staying,
+ * the blip is over in a moment, and closing the socket of every retry would cost each client a
+ * fresh connect and buy nothing.
  */
-function notNow(reason: string): Response {
-  return new Response(reason, {
-    status: 503,
-    headers: { "Retry-After": String(RETRY_AFTER_SECONDS) },
-  });
+function notNow(reason: string, { closing = false }: { closing?: boolean } = {}): Response {
+  const headers: Record<string, string> = { "Retry-After": String(RETRY_AFTER_SECONDS) };
+  if (closing) headers.Connection = "close";
+
+  return new Response(reason, { status: 503, headers });
 }
 
 const TRANSPORT_AWAY = "This Instance cannot reach its Transport right now. Try again.";
@@ -100,7 +110,7 @@ export function createGetHandler(instance: Instance): (request: Request) => Prom
      * for a second cut inside the orchestrator's grace window (ADR-0011). Sending it away with
      * the status a load balancer already reads is what moves it to a surviving Instance.
      */
-    if (instance.draining) return notNow(DRAINING);
+    if (instance.draining) return notNow(DRAINING, { closing: true });
 
     /**
      * Authorize runs here: after the one failure that has nothing to name, and before the
@@ -152,7 +162,7 @@ export function createGetHandler(instance: Instance): (request: Request) => Prom
        * Connection was refused where it would have been registered, and this is the same answer
        * the check above would have given it a moment earlier.
        */
-      if (error instanceof DrainingError) return notNow(DRAINING);
+      if (error instanceof DrainingError) return notNow(DRAINING, { closing: true });
       if (!(error instanceof TransportError)) throw error;
 
       return notNow(TRANSPORT_AWAY);
