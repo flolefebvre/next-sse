@@ -9,7 +9,7 @@ import { createMemoryTransport } from "../transport/memory.js";
 import { chatApp, type ChatApp } from "./chat-app.testkit.js";
 import { framesOf, type Frames } from "./frames.testkit.js";
 import { asType, initSSE } from "./index.js";
-import { getInstance } from "./instance.js";
+import { currentInstance, type Connection } from "./instance.js";
 
 beforeEach(() => {
   const globals = globalThis as unknown as { [key: symbol]: unknown };
@@ -23,6 +23,14 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
 });
+
+/**
+ * The Connections this Instance is holding right now. It goes through `currentInstance`, the
+ * reading door: `getInstance()` would re-apply the defaults for `context`, `key`, both durations
+ * and the drain window as it read (ADR-0004), which is configuring, not looking. A process with
+ * no Instance holds no Connections, which is what the empty set says.
+ */
+const connections = (): ReadonlySet<Connection> => currentInstance()?.connections ?? new Set();
 
 /** The App of these tests, as every suite about Connections builds it. */
 const appWith = (
@@ -86,7 +94,7 @@ const liveConnection = async (sse: ChatApp, query: string): Promise<Frames> => {
 const endsWithReconnect = async (frames: Frames): Promise<void> => {
   expect(await frames.next()).toEqual({ event: "reconnect", data: "{}" });
   await expect(frames.next()).rejects.toThrow("the stream ended");
-  expect(getInstance().connections.size).toBe(0);
+  expect(connections().size).toBe(0);
 };
 
 test("a Connection that names no Channel is refused before anything is opened", async () => {
@@ -95,14 +103,14 @@ test("a Connection that names no Channel is refused before anything is opened", 
   const response = await connect(sse, "");
 
   expect(response.status).toBe(400);
-  expect(getInstance().connections.size).toBe(0);
+  expect(connections().size).toBe(0);
 });
 
 test("a Channel with no name is no Channel at all", async () => {
   const sse = appWith();
 
   expect((await connect(sse, "?channel=")).status).toBe(400);
-  expect(getInstance().connections.size).toBe(0);
+  expect(connections().size).toBe(0);
 });
 
 test("an empty Channel among named ones is dropped, and the rest are honoured", async () => {
@@ -195,10 +203,10 @@ test("a client that goes away leaves no Connection behind and no listener on the
   const frames = framesOf(response);
   await frames.next();
 
-  expect(getInstance().connections.size).toBe(1);
+  expect(connections().size).toBe(1);
   client.abort();
 
-  expect(getInstance().connections.size).toBe(0);
+  expect(connections().size).toBe(0);
   expect(getEventListeners(client.signal, "abort")).toHaveLength(0);
 });
 
@@ -209,7 +217,7 @@ test("a cancelled stream leaves no Connection behind either", async () => {
 
   await frames.cancel();
 
-  expect(getInstance().connections.size).toBe(0);
+  expect(connections().size).toBe(0);
 });
 
 /**
@@ -433,7 +441,7 @@ test("a refused Channel is dropped from the Connection, and the others stream", 
   });
   await frames.next();
   expect(await frames.next()).toEqual({ event: "caught-up", data: "{}" });
-  expect([...getInstance().connections][0]?.channels).toEqual(new Set(["chat:42"]));
+  expect([...connections()][0]?.channels).toEqual(new Set(["chat:42"]));
 
   await sse.chat({ roomId: "secret" }).message({ text: "not for you" });
   const mine = await sse.chat({ roomId: "42" }).message({ text: "for me" });
@@ -459,7 +467,7 @@ test("a Connection refused every Channel is told so, and the stream ends", async
     data: JSON.stringify({ refused: ["chat:42", "chat:7"] }),
   });
   await expect(frames.next()).rejects.toThrow(/ended/);
-  expect(getInstance().connections.size).toBe(0);
+  expect(connections().size).toBe(0);
 });
 
 /**
@@ -554,7 +562,7 @@ test.each([
 
   expect(response.status).toBe(500);
   expect(response.headers.get("content-type")).not.toContain("text/event-stream");
-  expect(getInstance().connections.size).toBe(0);
+  expect(connections().size).toBe(0);
   expect(failed).toHaveBeenCalledTimes(1);
 });
 
@@ -567,7 +575,7 @@ test("the Key this App derives lands on the Connection", async () => {
   const frames = framesOf(await connect(sse, "?channel=chat:42", { headers: { "x-role": "ada" } }));
   await frames.next();
 
-  expect([...getInstance().connections][0]?.key).toBe("user:ada");
+  expect([...connections()][0]?.key).toBe("user:ada");
   await frames.cancel();
 });
 
@@ -581,7 +589,7 @@ test("a Key that comes out empty lands on the Connection as no Key", async () =>
   const frames = framesOf(await connect(sse, "?channel=chat:42", { headers: { "x-role": "ada" } }));
   await frames.next();
 
-  expect([...getInstance().connections][0]?.key).toBeUndefined();
+  expect([...connections()][0]?.key).toBeUndefined();
   await frames.cancel();
 });
 
@@ -595,7 +603,7 @@ test("an App that derives no Key opens Connections without one", async () => {
   );
   await frames.next();
 
-  expect([...getInstance().connections][0]?.key).toBeUndefined();
+  expect([...connections()][0]?.key).toBeUndefined();
   await frames.cancel();
 });
 
@@ -698,10 +706,10 @@ test.each([
   await liveConnection(sse, "?channel=chat:42");
 
   await vi.advanceTimersByTimeAsync(expected - 1);
-  expect(getInstance().connections.size).toBe(1);
+  expect(connections().size).toBe(1);
 
   await vi.advanceTimersByTimeAsync(1);
-  expect(getInstance().connections.size).toBe(0);
+  expect(connections().size).toBe(0);
 });
 
 test("a maxLifetime of 0 is a Connection nothing brings to an end", async () => {
@@ -711,7 +719,7 @@ test("a maxLifetime of 0 is a Connection nothing brings to an end", async () => 
 
   await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
 
-  expect(getInstance().connections.size).toBe(1);
+  expect(connections().size).toBe(1);
   expect(vi.getTimerCount()).toBe(0);
   const live = await sse.chat({ roomId: "42" }).message({ text: "a day later" });
   expect((await frames.next()).id).toBe(live);
@@ -755,7 +763,7 @@ test("a connect while the Transport is away is a 503 saying when to come back", 
    * It is the single way this refusal differs from the draining one below (#74).
    */
   expect(response.headers.get("Connection")).toBeNull();
-  expect(getInstance().connections.size).toBe(0);
+  expect(connections().size).toBe(0);
 });
 
 /**
@@ -804,7 +812,7 @@ test("a Connection whose client is not reading is ended with reconnect, not left
     await sse.chat({ roomId: "42" }).message({ text });
   }
 
-  expect(getInstance().connections.size).toBe(0);
+  expect(connections().size).toBe(0);
 
   const frames = framesOf(response);
   const seen: string[] = [];
@@ -858,9 +866,9 @@ test("a Connection ended while it is still opening carries ready, the retry and 
   const { transport, release } = holdingTheTail();
   const sse = appWith(transport, { heartbeat: 0, maxLifetime: 0 });
   const responding = connect(sse, "?channel=chat:42");
-  await vi.waitFor(() => expect(getInstance().connections.size).toBe(1));
+  await vi.waitFor(() => expect(connections().size).toBe(1));
 
-  const [held] = [...getInstance().connections];
+  const [held] = [...connections()];
   held?.reconnect();
   release();
 
@@ -873,7 +881,7 @@ test("a Connection ended while it is still opening carries ready, the retry and 
 test("ending a Connection twice ends it once", async () => {
   const sse = appWith(createMemoryTransport(), { heartbeat: 0, maxLifetime: 0 });
   const frames = await liveConnection(sse, "?channel=chat:42");
-  const [held] = [...getInstance().connections];
+  const [held] = [...connections()];
 
   held?.reconnect();
   held?.reconnect();
@@ -885,10 +893,10 @@ test("ending a Connection whose client has already gone does nothing at all", as
   const sse = appWith(createMemoryTransport(), { heartbeat: 0, maxLifetime: 0 });
   const client = new AbortController();
   await connect(sse, "?channel=chat:42", { signal: client.signal });
-  const [held] = [...getInstance().connections];
+  const [held] = [...connections()];
 
   client.abort();
 
   expect(() => held?.reconnect()).not.toThrow();
-  expect(getInstance().connections.size).toBe(0);
+  expect(connections().size).toBe(0);
 });
