@@ -6,7 +6,7 @@ import {
   type ChatAppOptions,
 } from "../packages/next-sse/src/server/chat-app.testkit.js";
 import type { Transport } from "../packages/next-sse/src/transport/index.js";
-import { framesOf, type Frame } from "../packages/next-sse/src/server/frames.testkit.js";
+import { framesOf, messageOf, type Frame } from "../packages/next-sse/src/server/frames.testkit.js";
 import type { Cursor } from "../packages/next-sse/src/transport/index.js";
 import { createRedisTransport } from "../packages/next-sse/src/transport/redis.js";
 
@@ -119,14 +119,9 @@ export async function connect(
     next: () => frames.next(),
     message: async () => {
       const frame = await frames.next();
-      if (frame.event !== undefined) throw new Error(`a Control event arrived: ${frame.event}`);
-      const { channel, payload } = JSON.parse(frame.data ?? "{}") as {
-        channel: string;
-        payload: { text: string };
-      };
       state.cursor = frame.id ?? state.cursor;
 
-      return { channel, text: payload.text };
+      return messageOf(frame);
     },
     leave: () => {
       client.abort();

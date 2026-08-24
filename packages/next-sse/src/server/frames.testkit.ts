@@ -61,3 +61,18 @@ function parse(block: string): Frame {
 
   return frame;
 }
+
+/**
+ * One Message off the wire: the Channel it named and the text it carried. A Control event is
+ * refused rather than read — a scenario that asked for a Message and got `reconnect` should
+ * say so, not fail on whatever `undefined` parsed to.
+ */
+export function messageOf(frame: Frame): { channel: string; text: string } {
+  if (frame.event !== undefined) throw new Error(`a Control event arrived: ${frame.event}`);
+  const { channel, payload } = JSON.parse(frame.data ?? "{}") as {
+    channel: string;
+    payload: { text: string };
+  };
+
+  return { channel, text: payload.text };
+}

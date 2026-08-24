@@ -1,7 +1,11 @@
 import { beforeEach, expect, test } from "vitest";
 
 import { chatApp, type ChatApp } from "../packages/next-sse/src/server/chat-app.testkit.js";
-import { framesOf, type Frames } from "../packages/next-sse/src/server/frames.testkit.js";
+import {
+  framesOf,
+  messageOf,
+  type Frames,
+} from "../packages/next-sse/src/server/frames.testkit.js";
 import type { Cursor } from "../packages/next-sse/src/transport/index.js";
 
 /**
@@ -87,17 +91,12 @@ async function connect(sse: ChatApp, user: string, after?: Cursor): Promise<Clie
   };
 }
 
-/** One Message off the wire: the Channel it named and the text it carried, with its Cursor. */
+/** One Message off the wire, its Cursor kept on the client that read it. */
 async function nextMessage(client: Client): Promise<{ channel: string; text: string }> {
   const frame = await client.frames.next();
-  if (frame.event !== undefined) throw new Error(`a Control event arrived: ${frame.event}`);
-  const { channel, payload } = JSON.parse(frame.data ?? "{}") as {
-    channel: string;
-    payload: { text: string };
-  };
   client.cursor = frame.id ?? client.cursor;
 
-  return { channel, text: payload.text };
+  return messageOf(frame);
 }
 
 const say = (sse: ChatApp, room: string, text: string): Promise<Cursor> =>

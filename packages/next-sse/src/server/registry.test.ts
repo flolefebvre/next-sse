@@ -182,15 +182,7 @@ test("a Channel named after one of the Registry's own keys is refused", () => {
  * handlers call.
  */
 test("the Registry carries this Instance's Drain", async () => {
-  const transport = createMemoryTransport();
-  const { channel, createSSE } = initSSE({ drain: false, transport });
-  const sse = createSSE({
-    chat: channel({
-      pattern: "chat:{roomId}",
-      events: { message: messageSchema },
-      authorize: () => true,
-    }),
-  });
+  const { transport, sse } = aChatApp();
   const close = vi.spyOn(transport, "close");
 
   await sse.drain();
@@ -201,7 +193,7 @@ test("the Registry carries this Instance's Drain", async () => {
   );
 });
 
-/** One Channel and the log under it, for the two tests that watch what a Publish writes. */
+/** One Channel and the log under it, for the tests that need an App on a log of its own. */
 const aChatApp = () => {
   const transport = createMemoryTransport();
   const { channel, createSSE } = initSSE({ drain: false, transport });

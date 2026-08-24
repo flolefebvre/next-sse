@@ -65,15 +65,20 @@ const anApp = (options: { drain?: number | false; transport?: Transport } = {}):
 
 /** One Connection past its opening sequence, as a client holds it. */
 async function connect(sse: ChatApp): Promise<Frames> {
-  const response = await sse.handlers.GET(
-    new Request("http://example.test/api/sse?channel=chat:42"),
+  const frames = await opened(
+    await sse.handlers.GET(new Request("http://example.test/api/sse?channel=chat:42")),
   );
-  expect(response.status).toBe(200);
+  expect((await frames.next()).event).toBe("caught-up");
 
+  return frames;
+}
+
+/** The opening every stream shares: a `200`, then `ready` and the retry hint. */
+async function opened(response: Response): Promise<Frames> {
+  expect(response.status).toBe(200);
   const frames = framesOf(response);
   expect((await frames.next()).event).toBe("ready");
   expect((await frames.next()).retry).toBe("3000");
-  expect((await frames.next()).event).toBe("caught-up");
 
   return frames;
 }
@@ -112,6 +117,33 @@ function aGate(): Gate {
   });
 
   return { gate, opened, reached: () => reached(), release: () => release() };
+}
+
+/**
+ * One connect held inside `open()` — the `gated` Transport call does not answer until the Drain
+ * has started — which is the window between passing the handler's check and being registered,
+ * made observable. What comes back is what the client saw, and the Drain to wait on.
+ */
+async function drainMidOpen(
+  gated: "subscribe" | "tail",
+): Promise<{ response: Response; drained: Promise<void> }> {
+  const transport = createMemoryTransport();
+  const original = transport[gated].bind(transport) as (...args: never[]) => Promise<never>;
+  const { gate, opened: entered, reached, release } = aGate();
+  (transport as unknown as Record<string, unknown>)[gated] = async (...args: never[]) => {
+    reached();
+    await gate;
+
+    return original(...args);
+  };
+  const sse = anApp({ transport, drain: 0 });
+
+  const connecting = sse.handlers.GET(new Request("http://example.test/api/sse?channel=chat:42"));
+  await entered;
+  const drained = sse.drain();
+  release();
+
+  return { response: await connecting, drained };
 }
 
 test("a Drain ends every Connection with reconnect, then closes the Transport", async () => {
@@ -258,23 +290,8 @@ test("a Drain writes nothing to the log", async () => {
  * been registered, so the table the Drain walked is the whole of what it has to empty.
  */
 test("a Connection still opening when the Drain starts is refused, and never enters the table", async () => {
-  const transport = createMemoryTransport();
-  const subscribe = transport.subscribe.bind(transport);
-  const { gate, opened, reached, release } = aGate();
-  vi.spyOn(transport, "subscribe").mockImplementation(async (listener, options) => {
-    reached();
-    await gate;
+  const { response, drained } = await drainMidOpen("subscribe");
 
-    return subscribe(listener, options);
-  });
-  const sse = anApp({ transport, drain: 0 });
-
-  const connecting = sse.handlers.GET(new Request("http://example.test/api/sse?channel=chat:42"));
-  await opened;
-  const drained = sse.drain();
-  release();
-
-  const response = await connecting;
   expect(response.status).toBe(503);
   expect(response.headers.get("Retry-After")).toBe("5");
   expect(held()).toBe(0);
@@ -289,27 +306,9 @@ test("a Connection still opening when the Drain starts is refused, and never ent
  * on the table rather than on a timer.
  */
 test("a Connection awaiting the log when the Drain starts is ended, not cut by the close", async () => {
-  const transport = createMemoryTransport();
-  const tail = transport.tail.bind(transport);
-  const { gate, opened, reached, release } = aGate();
-  vi.spyOn(transport, "tail").mockImplementation(async () => {
-    reached();
-    await gate;
+  const { response, drained } = await drainMidOpen("tail");
 
-    return tail();
-  });
-  const sse = anApp({ transport, drain: 0 });
-
-  const connecting = sse.handlers.GET(new Request("http://example.test/api/sse?channel=chat:42"));
-  await opened;
-  const drained = sse.drain();
-  release();
-
-  const response = await connecting;
-  expect(response.status).toBe(200);
-  const frames = framesOf(response);
-  expect((await frames.next()).event).toBe("ready");
-  expect((await frames.next()).retry).toBe("3000");
+  const frames = await opened(response);
   expect((await frames.next()).event).toBe("reconnect");
   await expect(frames.next()).rejects.toThrow(/stream ended/);
   await drained;
