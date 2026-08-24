@@ -14,13 +14,18 @@ const SOCKET_TIMEOUT = 15_000;
 /** One `PING` on this period keeps a healthy but quiet connection from timing out. */
 const PING_INTERVAL = 10_000;
 
-const RECONNECT_CAP = 2_000;
-const RECONNECT_JITTER = 200;
+/**
+ * The longest this Transport waits between two reconnection attempts. It is well under the
+ * operation timeout on purpose: every operation is deadline-bounded, so a backend that came
+ * back has to be reconnected to inside one operation's own bound, or a healed backend would go
+ * on failing operations for as long as the backoff lasted.
+ */
+const RECONNECT_CAP = 250;
+const RECONNECT_JITTER = 100;
 
 /**
- * How long to wait before the next reconnection attempt: 50·2ⁿ ms, capped at 2 s, plus up to
- * 200 ms of jitter so that every Instance of a deployment does not come back on the same
- * millisecond.
+ * How long to wait before the next reconnection attempt: 50·2ⁿ ms, capped, plus a little jitter
+ * so that every Instance of a deployment does not come back on the same millisecond.
  *
  * It is a delay for every attempt count, however large, and never `false` nor an `Error`:
  * node-redis reads either of those as "give up", which closes the client for good and turns an
@@ -44,8 +49,8 @@ export type RedisClientKind = "standalone" | "cluster" | "sentinel";
  * operation, which the process crashes without a listener for.
  */
 interface Emitter {
-  on(event: "error", listener: (...payload: unknown[]) => void): unknown;
-  off(event: "error", listener: (...payload: unknown[]) => void): unknown;
+  on(event: "error" | "ready", listener: (...payload: unknown[]) => void): unknown;
+  off(event: "error" | "ready", listener: (...payload: unknown[]) => void): unknown;
 }
 
 /**
@@ -88,7 +93,7 @@ interface Connectable {
   destroy(): unknown;
   isReady: boolean;
   unref?: () => void;
-  on(event: "error", listener: (...payload: unknown[]) => void): unknown;
+  on(event: "error" | "ready", listener: (...payload: unknown[]) => void): unknown;
 }
 
 /** A node-redis client of any of the three kinds, as this Transport uses it. */
@@ -208,29 +213,40 @@ const READER_OVERRIDES = { commandOptions: { timeout: undefined } };
 
 /**
  * A connection of our own: connected on first use, and reconnected by node-redis for as long as
- * it lives. The first caller is the one that waits for the connection; a later one, while the
- * client is not ready and has already been seen failing, is handed the failure at once instead
- * of waiting out its deadline — a connection attempt against a server that is down never
- * settles at all, since the reconnect strategy never gives up.
+ * it lives. Nothing is latched — the moment the client is ready again it is handed over as
+ * before, which is how one Transport comes back from an outage without being rebuilt.
  *
- * Nothing is latched: the moment the client is ready again it is handed over as before, which
- * is how one Transport comes back from an outage without being rebuilt.
+ * A caller that finds the client down either waits for it to come back or is handed the failure
+ * at once, and which of the two it is depends on who is asking. An operation waits: it is
+ * already under the Transport's deadline, so a backend that is really gone still fails it inside
+ * a bounded time, while a backend that comes back a moment later is used rather than refused.
+ * The reader does not wait: its loop has to learn that the connection was lost, so that it looks
+ * for a gap before it resumes, and a `send` that quietly waited would hide that from it.
  */
 function connecting(client: Connectable): {
-  connected: () => Promise<void>;
+  connected: (options?: { wait?: boolean }) => Promise<void>;
   close: () => Promise<void>;
 } {
   let attempt: Promise<void> | undefined;
-  let failed = false;
+  let waiting: { promise: Promise<void>; ready: () => void } | undefined;
 
-  client.on("error", () => {
-    failed = !client.isReady;
+  client.on("ready", () => {
+    waiting?.ready();
+    waiting = undefined;
   });
 
+  /** One promise for every caller waiting on the same reconnection, and one listener for all. */
+  const untilReady = (): Promise<void> => {
+    if (client.isReady) return Promise.resolve();
+
+    waiting ??= deferred();
+
+    return waiting.promise;
+  };
+
   return {
-    connected: (): Promise<void> => {
-      if (client.isReady) return Promise.resolve();
-      if (attempt !== undefined && failed) return Promise.reject(new Error(NOT_CONNECTED));
+    connected: async ({ wait = true } = {}): Promise<void> => {
+      if (client.isReady) return;
 
       attempt ??= client.connect().then(
         () => {
@@ -242,7 +258,14 @@ function connecting(client: Connectable): {
         },
       );
 
-      return attempt;
+      await attempt.catch((error: unknown) => {
+        if (!wait) throw error;
+      });
+
+      if (client.isReady) return;
+      if (!wait) throw new Error(NOT_CONNECTED);
+
+      await untilReady();
     },
     close: async (): Promise<void> => {
       const started = attempt;
@@ -272,7 +295,7 @@ async function openReader(
 
   return {
     send: async (args) => {
-      await lifecycle.connected();
+      await lifecycle.connected({ wait: false });
 
       return sendOn(duplicate, kind, key, args);
     },
@@ -323,4 +346,14 @@ function injectedLink(
       client.off("error", report);
     },
   };
+}
+
+/** One promise with its resolution kept aside, for the callers waiting on a reconnection. */
+function deferred(): { promise: Promise<void>; ready: () => void } {
+  let ready!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+
+  return { promise, ready };
 }

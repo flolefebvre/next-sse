@@ -54,29 +54,59 @@ test("stream IDs order by their two parts, not as strings", () => {
 });
 
 test("XINFO STREAM reads the same on a RESP2 array and a RESP3 map", () => {
-  const expected = { lastGeneratedId: "5-0", maxDeletedEntryId: "3-0" };
+  const expected = { lastGeneratedId: "5-0", oldestKeptId: "3-0", everDropped: true };
+  const fields = {
+    length: 2,
+    "entries-added": 5,
+    "last-generated-id": "5-0",
+    "recorded-first-entry-id": "3-0",
+  };
 
-  expect(
-    readStreamInfo(["length", 2, "last-generated-id", "5-0", "max-deleted-entry-id", "3-0"]),
-  ).toEqual(expected);
-  expect(
-    readStreamInfo(
-      new Map<string, unknown>([
-        ["length", 2],
-        ["last-generated-id", "5-0"],
-        ["max-deleted-entry-id", "3-0"],
-      ]),
-    ),
-  ).toEqual(expected);
-  expect(
-    readStreamInfo({ length: 2, "last-generated-id": "5-0", "max-deleted-entry-id": "3-0" }),
-  ).toEqual(expected);
+  expect(readStreamInfo(Object.entries(fields).flat())).toEqual(expected);
+  expect(readStreamInfo(new Map<string, unknown>(Object.entries(fields)))).toEqual(expected);
+  expect(readStreamInfo(fields)).toEqual(expected);
 });
 
-/** A stream that never lost an Entry says so by having nothing below its first position. */
-test("a stream that reports no deletion is read as having dropped nothing", () => {
-  expect(readStreamInfo(["length", 0]).maxDeletedEntryId).toBe("0-0");
-  expect(readStreamInfo(["length", 0]).lastGeneratedId).toBe("0-0");
+/** A server that names no `recorded-first-entry-id` still shows its first Entry. */
+test("the oldest Entry is read from first-entry when the field is not there", () => {
+  const reply = [
+    "length",
+    2,
+    "entries-added",
+    5,
+    "last-generated-id",
+    "5-0",
+    "first-entry",
+    ["3-0", ["entry", "{}"]],
+  ];
+
+  expect(readStreamInfo(reply).oldestKeptId).toBe("3-0");
+});
+
+/** A log that has dropped nothing can have lost nothing, whatever a Cursor points at. */
+test("a log that never dropped an Entry says so", () => {
+  const reply = ["length", 5, "entries-added", 5, "last-generated-id", "5-0"];
+
+  expect(readStreamInfo(reply).everDropped).toBe(false);
+});
+
+/**
+ * A log the retention emptied has dropped everything: its oldest served position is the one it
+ * reached, or an old Cursor would read as one that lost nothing.
+ */
+test("an empty log is read as having dropped everything up to where it stands", () => {
+  const emptied = ["length", 0, "entries-added", 9, "last-generated-id", "9-0"];
+
+  expect(readStreamInfo(emptied)).toEqual({
+    lastGeneratedId: "9-0",
+    oldestKeptId: "9-0",
+    everDropped: true,
+  });
+  expect(readStreamInfo(["length", 0])).toEqual({
+    lastGeneratedId: "0-0",
+    oldestKeptId: "0-0",
+    everDropped: false,
+  });
 });
 
 test("XRANGE is read into Entries with the position they were minted at", () => {

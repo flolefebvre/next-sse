@@ -49,7 +49,7 @@ test("the reconnect delay always answers a delay, however many attempts have fai
     const delay = reconnectDelay(retries);
     expect(typeof delay).toBe("number");
     expect(delay).toBeGreaterThanOrEqual(0);
-    expect(delay).toBeLessThanOrEqual(2200);
+    expect(delay).toBeLessThanOrEqual(350);
   }
   expect(reconnectDelay(0)).toBeLessThan(reconnectDelay(6));
 });

@@ -68,27 +68,64 @@ function parseId(id: string): [number, number] {
   return [Number(ms), Number(seq)];
 }
 
-/** What `XINFO STREAM` is read for: the tail, and the boundary that makes `gone` exact. */
+/** What `XINFO STREAM` is read for: the tail, and the boundary `gone` is decided on. */
 export interface StreamInfo {
+  /** The position the log has reached, which survives the log going empty. */
   lastGeneratedId: string;
-  maxDeletedEntryId: string;
+  /**
+   * The oldest position the log still serves: the oldest Entry it holds, or — once retention has
+   * emptied it — the position it had reached, since everything up to there is gone. Read
+   * together with `everDropped`, this is what makes `gone` honest: a log only ever drops from
+   * its front, so everything strictly after a Cursor is still there exactly when the log has
+   * dropped nothing, or the Cursor is at or above this.
+   *
+   * ADR-0006 wrote that rule on `max-deleted-entry-id`, which measurement showed to be updated
+   * by `XDEL` alone: trimming — `MAXLEN ~`, exact `MAXLEN` and `XTRIM MINID` alike — leaves it
+   * at `0-0` on both Redis 8 and Valkey 8, so a log that only ever trims would never answer
+   * `gone` at all. The ADR carries the correction.
+   */
+  oldestKeptId: string;
+  /** Whether this log has ever dropped an Entry, which is the only way a Cursor can be gone. */
+  everDropped: boolean;
 }
 
 const LAST_GENERATED_ID = "last-generated-id";
-const MAX_DELETED_ENTRY_ID = "max-deleted-entry-id";
+const RECORDED_FIRST_ENTRY_ID = "recorded-first-entry-id";
+const FIRST_ENTRY = "first-entry";
+const ENTRIES_ADDED = "entries-added";
+const LENGTH = "length";
 
 /**
  * `XINFO STREAM`, whichever RESP version answered it: a flat field/value array on RESP2, a map
- * on RESP3. A stream that never had an Entry deleted reports `0-0`, which nothing is below.
+ * on RESP3. A stream that holds nothing reports the position before its first Entry, which
+ * nothing is below.
  */
 export function readStreamInfo(reply: unknown): StreamInfo {
   const fields = readMap(reply, "XINFO STREAM");
+  const lastGeneratedId =
+    asString(fields.get(LAST_GENERATED_ID), "XINFO STREAM") ?? BEFORE_ANYTHING;
+  const length = numberOf(fields.get(LENGTH));
+  const entriesAdded = numberOf(fields.get(ENTRIES_ADDED));
+
+  const firstEntryId =
+    asString(fields.get(RECORDED_FIRST_ENTRY_ID), "XINFO STREAM") ??
+    firstEntryIdOf(fields.get(FIRST_ENTRY)) ??
+    BEFORE_ANYTHING;
 
   return {
-    lastGeneratedId: asString(fields.get(LAST_GENERATED_ID), "XINFO STREAM") ?? BEFORE_ANYTHING,
-    maxDeletedEntryId:
-      asString(fields.get(MAX_DELETED_ENTRY_ID), "XINFO STREAM") ?? BEFORE_ANYTHING,
+    lastGeneratedId,
+    oldestKeptId: length === 0 ? lastGeneratedId : firstEntryId,
+    everDropped: entriesAdded > length,
   };
+}
+
+/** The id of the `first-entry` a server reports, for one that names no `recorded-first-entry-id`. */
+function firstEntryIdOf(entry: unknown): string | undefined {
+  return Array.isArray(entry) ? asString(entry[0], "XINFO STREAM") : undefined;
+}
+
+function numberOf(value: unknown): number {
+  return typeof value === "bigint" ? Number(value) : Number(value ?? 0);
 }
 
 /** One stream Entry as it comes off the wire: its ID, and the fields it was written with. */

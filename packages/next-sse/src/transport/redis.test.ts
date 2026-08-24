@@ -24,7 +24,7 @@ afterEach(() => {
 interface FakeServer {
   client: RedisClientLike;
   commands: string[][];
-  info: { lastGeneratedId: string; maxDeletedEntryId: string };
+  info: { lastGeneratedId: string; firstEntryId: string; length: number; entriesAdded: number };
   entries: [string, string[]][];
 }
 
@@ -38,7 +38,7 @@ function fakeServer(): FakeServer {
   const server: FakeServer = {
     client: undefined as unknown as RedisClientLike,
     commands: [],
-    info: { lastGeneratedId: "7-0", maxDeletedEntryId: "3-0" },
+    info: { lastGeneratedId: "7-0", firstEntryId: "3-0", length: 2, entriesAdded: 5 },
     entries: [],
   };
 
@@ -50,10 +50,14 @@ function fakeServer(): FakeServer {
       if (args[0] === "XRANGE") return Promise.resolve(server.entries);
       if (args[0] === "XINFO") {
         return Promise.resolve([
+          "length",
+          String(server.info.length),
+          "entries-added",
+          String(server.info.entriesAdded),
           "last-generated-id",
           server.info.lastGeneratedId,
-          "max-deleted-entry-id",
-          server.info.maxDeletedEntryId,
+          "recorded-first-entry-id",
+          server.info.firstEntryId,
         ]);
       }
 
@@ -119,8 +123,12 @@ test("a read without a Cursor asks the log for its start", async () => {
   expect(commandOf(server, "XRANGE")[2]).toBe("-");
 });
 
-/** `gone` is exact: at or above the highest ID ever deleted, nothing was lost (ADR-0006). */
-test("gone is decided by the boundary the server reports, not by what came back", async () => {
+/**
+ * A log only ever drops from its front, so a Cursor at or above the oldest Entry it still holds
+ * has lost nothing after it, and one below it has (ADR-0006, corrected: `max-deleted-entry-id`
+ * is not maintained by trimming on either Redis 8 or Valkey 8).
+ */
+test("gone is decided by the oldest Entry the log holds, not by what came back", async () => {
   const server = fakeServer();
   const transport = createRedisTransport({ client: server.client });
 

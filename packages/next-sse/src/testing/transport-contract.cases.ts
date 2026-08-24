@@ -371,17 +371,29 @@ export const contractCases: readonly ContractCase[] = [
     },
   },
   {
-    name: "gone is exact: the Cursor of the newest dropped Entry still reads",
+    /**
+     * `gone` is bounded on both sides, one Entry apart: what the log still holds must read, and
+     * what it dropped must not. The Cursor of the newest dropped Entry — the one position where
+     * "gone" and "kept" meet — is deliberately left unspecified: a log may answer either there.
+     *
+     * The Memory Transport is exact at that boundary, and the Redis Transport cannot be: Redis
+     * maintains `max-deleted-entry-id` for `XDEL` alone, so a trimmed log's own record of what
+     * it lost is the oldest Entry it kept, and a Cursor one below that is indistinguishable from
+     * one long dropped. Answering `gone` there costs a Connection one Reset; the reverse — a log
+     * claiming a Cursor is good when Entries after it are gone — would cost silent loss, and
+     * that direction is what this case pins.
+     */
+    name: "gone is honest: the oldest retained Entry reads, and what was dropped is gone",
     run: async (context) => {
       const transport = await context.transport({ cap: 2 });
 
       const { published, retained } = await publishUntilTrimmed(transport);
-      const boundary = published.length - retained.length - 1;
+      const oldestKept = published.length - retained.length;
 
-      const page = await transport.read(cursorAt(published, boundary), retained.length);
-      expect(cursorsOf(entriesOf(page))).toEqual(cursorsOf(retained));
+      const page = await transport.read(cursorAt(published, oldestKept), retained.length);
+      expect(cursorsOf(entriesOf(page))).toEqual(cursorsOf(retained).slice(1));
       expect("done" in page && page.done).toBe(true);
-      expect(await transport.read(cursorAt(published, boundary - 1), retained.length)).toEqual({
+      expect(await transport.read(cursorAt(published, oldestKept - 2), retained.length)).toEqual({
         gone: true,
       });
     },

@@ -188,7 +188,11 @@ function createRedisLog(options: RedisTransportOptions): Transport {
     } catch (error) {
       if (!isMissingKey(error)) throw error;
 
-      return { lastGeneratedId: BEFORE_ANYTHING, maxDeletedEntryId: BEFORE_ANYTHING };
+      return {
+        lastGeneratedId: BEFORE_ANYTHING,
+        oldestKeptId: BEFORE_ANYTHING,
+        everDropped: false,
+      };
     }
   };
 
@@ -246,7 +250,13 @@ function createRedisLog(options: RedisTransportOptions): Transport {
    */
   const feed = async (from: Cursor): Promise<void> => {
     let position = from;
-    let resuming = true;
+    /**
+     * The loop starts at the tail this Transport read itself, so there is nothing to check
+     * before the first block: no Cursor of a caller's is in play, and a position the log has
+     * just handed out cannot be one it has already dropped. The check belongs to the resume
+     * path, where the connection was lost and the log went on without the reader.
+     */
+    let resuming = false;
 
     while (!closed) {
       try {
@@ -298,12 +308,16 @@ function createRedisLog(options: RedisTransportOptions): Transport {
    */
   const resumeFrom = async (connection: RedisReader, position: Cursor): Promise<Cursor> => {
     const info = await streamInfo((args) => connection.send(args));
-    if (compareIds(position, info.maxDeletedEntryId) >= 0) return position;
+    if (!lost(info, position)) return position;
 
     narrate(`the log dropped ${position}, which the reader was resuming from`);
     for (const { onGap } of feeds) onGap();
 
-    return info.maxDeletedEntryId;
+    /**
+     * The loop resumes just below the oldest Entry the log still holds, so that Entry is
+     * delivered and the same gap can never be reported twice.
+     */
+    return justBefore(info.oldestKeptId);
   };
 
   return {
@@ -355,11 +369,24 @@ function createRedisLog(options: RedisTransportOptions): Transport {
         return { raw: readRange(rangeReply, "XRANGE"), info };
       });
 
-      if (after !== undefined && compareIds(after, info.maxDeletedEntryId) < 0) {
-        return { gone: true };
-      }
+      /**
+       * Everything strictly after this Cursor is still in the log exactly when the Cursor is at
+       * or above the oldest Entry the log holds: a log only ever drops from its front. It is
+       * conservative by one Cursor — the newest dropped Entry answers `gone` although nothing
+       * after it was lost — and never the other way round, which is the direction gap-free
+       * delivery depends on (ADR-0006, corrected).
+       */
+      if (after !== undefined && lost(info, after)) return { gone: true };
 
-      return { entries: entriesOf(raw, "read"), done: raw.length < count };
+      /**
+       * Caught up means there is nothing left after what came back, which a full page can be
+       * too: the boundary read alongside the range already says what the log's last position
+       * is, so the answer is exact rather than one page late.
+       */
+      const last = raw[raw.length - 1];
+      const done = raw.length < count || last?.id === info.lastGeneratedId;
+
+      return { entries: entriesOf(raw, "read"), done };
     },
 
     async tail(): Promise<Cursor> {
@@ -418,6 +445,33 @@ function createRedisLog(options: RedisTransportOptions): Transport {
     },
   };
 }
+
+/**
+ * Whether the log has lost anything that came after this position: it has dropped Entries at
+ * all, and this position is below the oldest it still serves.
+ *
+ * It is conservative by one Cursor — the newest dropped Entry answers `gone` although nothing
+ * after it was lost — and never the other way round, which is the direction gap-free delivery
+ * depends on (ADR-0006, corrected).
+ */
+function lost(info: StreamInfo, position: Cursor): boolean {
+  return info.everDropped && compareIds(position, info.oldestKeptId) < 0;
+}
+
+/** The position immediately below one: what a reader resumes from to be handed that Entry. */
+function justBefore(id: string): string {
+  const [ms, seq] = id.split("-");
+  const milliseconds = Number(ms);
+  const sequence = Number(seq);
+
+  if (sequence > 0) return `${String(milliseconds)}-${String(sequence - 1)}`;
+  if (milliseconds === 0) return BEFORE_ANYTHING;
+
+  return `${String(milliseconds - 1)}-${HIGHEST_SEQUENCE}`;
+}
+
+/** The highest sequence number one millisecond can hold: an unsigned 64-bit integer. */
+const HIGHEST_SEQUENCE = "18446744073709551615";
 
 /** The `TIME` reply, in milliseconds: seconds first, microseconds second. */
 function readRangeTime(reply: unknown): number {
