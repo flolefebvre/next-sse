@@ -1,6 +1,8 @@
 import type {
+  Authorize,
   ChannelDeclaration,
   ChannelRecord,
+  DeclaredAuthorize,
   EventMap,
   EventsOf,
   JsonOutputs,
@@ -74,7 +76,24 @@ export interface RegistryLike {
 }
 
 /**
- * Declare one Channel: the name pattern its Handles fill in, and the events it carries.
+ * Declare one Channel, as the App's own `initSSE` hands it back: the name pattern its Handles
+ * fill in, the events it carries, and the Authorize that guards it.
+ *
+ * The factory is bound to the App's Ctx, which is the reason `initSSE` returns it rather than
+ * the package exporting one: whatever the App's `context` builds is what its Authorize is
+ * handed, and an App that configures no `context` gets `undefined` (ADR-0008).
+ */
+export interface ChannelFactory<Ctx> {
+  <const Pattern extends string, Events extends EventMap>(declaration: {
+    pattern: Pattern;
+    events: Events & JsonOutputs<Events> & NoReservedEvents<Events>;
+    authorize: Authorize<Pattern, Ctx>;
+  }): ChannelDeclaration<Pattern, Events>;
+}
+
+/**
+ * Declare one Channel: the name pattern its Handles fill in, the events it carries, and the
+ * decision that guards it.
  *
  * Every event is a Standard Schema, so a zod 4, valibot or arktype schema is taken as it is
  * and no schema library is a dependency of this one (ADR-0008); `asType<T>()` covers an event
@@ -82,11 +101,23 @@ export interface RegistryLike {
  * carry is a compile error here, at the declaration, rather than a lie the client discovers
  * (ADR-0006) — and so is an event named after something a Handle already has.
  *
- * Authorize joins this declaration with its own ticket, next to the events it guards.
+ * `authorize` is required, and it sits here rather than in a table of its own so that a Channel
+ * and the rule that guards it are read together and cannot drift apart (ADR-0002). A public
+ * Channel writes `() => true`, which is a decision an App takes on purpose rather than one it
+ * forgets to take. This module is server-only, so Authorize may import session or database code
+ * freely: what crosses to the client is the allowlist of `toClientChannels`, and Authorize is
+ * not on it.
+ *
+ * The Ctx is `never` here and the App's own where it matters: `initSSE` hands back this same
+ * function typed as its `ChannelFactory<Ctx>`, which is where an App's Authorize gets its
+ * context type.
  */
-export function channel<const Pattern extends string, Events extends EventMap>(declaration: {
+export const channel: ChannelFactory<never> = declareChannel;
+
+function declareChannel<const Pattern extends string, Events extends EventMap>(declaration: {
   pattern: Pattern;
   events: Events & JsonOutputs<Events> & NoReservedEvents<Events>;
+  authorize: DeclaredAuthorize;
 }): ChannelDeclaration<Pattern, Events> {
   assertFillablePattern(declaration.pattern);
 
@@ -101,7 +132,7 @@ export function channel<const Pattern extends string, Events extends EventMap>(d
     }
   }
 
-  return { pattern: declaration.pattern, events };
+  return { pattern: declaration.pattern, events, authorize: declaration.authorize };
 }
 
 /**

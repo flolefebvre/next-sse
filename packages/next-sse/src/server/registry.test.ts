@@ -29,14 +29,17 @@ const anApp = () => {
     chat: channel({
       pattern: "chat:{roomId}",
       events: { message: messageSchema, typing: typingSchema },
+      authorize: () => true,
     }),
     announcements: channel({
       pattern: "announcements",
       events: { announcement: type({ title: "string" }) },
+      authorize: () => true,
     }),
     inbox: channel({
       pattern: "user:{userId}:inbox",
       events: { mail: asType<{ id: string; unread?: boolean }>() },
+      authorize: () => true,
     }),
   });
 };
@@ -115,17 +118,19 @@ test("what a Channel declares is what the Registry carries", () => {
 test("an event whose schema produces what JSON cannot carry is refused", () => {
   const { channel } = initSSE({ transport: createMemoryTransport() });
 
-  channel({ pattern: "audit", events: { at: z.iso.datetime() } });
+  channel({ pattern: "audit", events: { at: z.iso.datetime() }, authorize: () => true });
 
   channel({
     pattern: "audit",
     // @ts-expect-error a Date does not survive the wire: z.iso.datetime() is the fix
     events: { at: z.date() },
+    authorize: () => true,
   });
   channel({
     pattern: "audit",
     // @ts-expect-error a Map does not survive the wire either
     events: { seen: z.map(z.string(), z.string()) },
+    authorize: () => true,
   });
 });
 
@@ -137,6 +142,7 @@ test("an event named after something a Handle already has is refused", () => {
       pattern: "chat:{roomId}",
       // @ts-expect-error "publish" is a reserved event name
       events: { publish: asType<{ text: string }>() },
+      authorize: () => true,
     }),
   ).toThrow(/"publish".*is reserved/);
 
@@ -145,13 +151,18 @@ test("an event named after something a Handle already has is refused", () => {
       pattern: "chat:{roomId}",
       // @ts-expect-error "name" is a reserved event name
       events: { name: asType<{ text: string }>() },
+      authorize: () => true,
     }),
   ).toThrow(/"name".*is reserved/);
 });
 
 test("a Channel named after one of the Registry's own keys is refused", () => {
   const { channel, createSSE } = initSSE({ transport: createMemoryTransport() });
-  const declaration = channel({ pattern: "x:{id}", events: { ping: asType<null>() } });
+  const declaration = channel({
+    pattern: "x:{id}",
+    events: { ping: asType<null>() },
+    authorize: () => true,
+  });
 
   expect(() =>
     // @ts-expect-error "handlers" is a reserved Registry key
@@ -169,7 +180,11 @@ const aChatApp = () => {
   const transport = createMemoryTransport();
   const { channel, createSSE } = initSSE({ transport });
   const sse = createSSE({
-    chat: channel({ pattern: "chat:{roomId}", events: { message: messageSchema } }),
+    chat: channel({
+      pattern: "chat:{roomId}",
+      events: { message: messageSchema },
+      authorize: () => true,
+    }),
   });
 
   return { transport, sse };
@@ -203,7 +218,9 @@ test("a payload the schema refuses rejects the Publish, and reaches no log", asy
 test("a Channel whose pattern has a placeholder the filler cannot fill is refused", () => {
   const { channel } = initSSE({ transport: createMemoryTransport() });
 
-  expect(() => channel({ pattern: "chat:{room-id}", events: {} })).toThrow(/placeholder/);
+  expect(() => channel({ pattern: "chat:{room-id}", events: {}, authorize: () => true })).toThrow(
+    /placeholder/,
+  );
 });
 
 /** A `:` in a param value would forge a Channel name another pattern could have made. */
@@ -219,4 +236,87 @@ test("a Handle is the Handle of its Channel's events", () => {
   expectTypeOf(sse.chat({ roomId: "1" })).toExtend<
     Handle<EventsOf<(typeof sse.channels)["chat"]>>
   >();
+});
+
+/**
+ * The whole reason `initSSE` hands back `channel` rather than the package exporting one: the
+ * factory is bound to the App's Ctx, so every Authorize this App declares is typed with the very
+ * thing this App's `context` builds — and with the params its own pattern names.
+ */
+test("Authorize is handed the params of its pattern and the context this App builds", () => {
+  const { channel } = initSSE({
+    transport: createMemoryTransport(),
+    context: (request: Request) => ({ role: request.headers.get("x-role") ?? "guest" }),
+  });
+
+  const declared = channel({
+    pattern: "chat:{roomId}",
+    events: { message: messageSchema },
+    authorize: (params, ctx) => {
+      expectTypeOf(params).toEqualTypeOf<{ roomId: string }>();
+      expectTypeOf(ctx).toEqualTypeOf<{ role: string }>();
+
+      return ctx.role === "admin" && params.roomId !== "";
+    },
+  });
+
+  expect(declared.authorize).toBeTypeOf("function");
+
+  /** Refused by the compiler, and never run. */
+  const refused = () => {
+    channel({
+      pattern: "chat:{roomId}",
+      events: { message: messageSchema },
+      // @ts-expect-error the pattern names roomId, not room
+      authorize: (params: { room: string }) => params.room !== "",
+    });
+    channel({
+      pattern: "chat:{roomId}",
+      events: { message: messageSchema },
+      // @ts-expect-error this App's context has no such property
+      authorize: (_params, ctx) => ctx.admin === true,
+    });
+    // @ts-expect-error a Channel without Authorize is not a Channel
+    channel({ pattern: "chat:{roomId}", events: { message: messageSchema } });
+  };
+  expect(refused).toBeTypeOf("function");
+});
+
+/** Authorize may do the async work a session or a database read takes, and so may `context`. */
+test("an async context types Authorize on what it resolves to", () => {
+  const { channel } = initSSE({
+    transport: createMemoryTransport(),
+    context: async (request: Request) => ({ userId: await Promise.resolve(request.url) }),
+    key: (ctx) => {
+      expectTypeOf(ctx).toEqualTypeOf<{ userId: string }>();
+
+      return ctx.userId;
+    },
+  });
+
+  channel({
+    pattern: "user:{userId}:inbox",
+    events: { mail: asType<{ id: string }>() },
+    authorize: async (params, ctx) => {
+      expectTypeOf(ctx).toEqualTypeOf<{ userId: string }>();
+
+      return Promise.resolve(ctx.userId === params.userId);
+    },
+  });
+});
+
+/** An App with only public Channels writes no `context`, and its Ctx is `undefined` (ADR-0008). */
+test("an App that builds no context declares Authorize on undefined", () => {
+  const { channel } = initSSE({ transport: createMemoryTransport() });
+
+  channel({
+    pattern: "announcements",
+    events: { announcement: asType<{ title: string }>() },
+    authorize: (params, ctx) => {
+      expectTypeOf(params).toEqualTypeOf<Record<never, string>>();
+      expectTypeOf(ctx).toEqualTypeOf<undefined>();
+
+      return true;
+    },
+  });
 });

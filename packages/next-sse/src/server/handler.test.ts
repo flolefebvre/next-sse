@@ -36,6 +36,7 @@ const appWith = (transport = createMemoryTransport()): ChatApp => {
     chat: channel({
       pattern: "chat:{roomId}",
       events: { message: asType<{ text: string }>(), typing: asType<{ who: string }>() },
+      authorize: () => true,
     }),
   }) as unknown as ChatApp;
 };

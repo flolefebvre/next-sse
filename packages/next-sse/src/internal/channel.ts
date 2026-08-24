@@ -1,11 +1,31 @@
 import type { IsJson } from "./json.js";
+import type { ParamsOf } from "./pattern.js";
 import type { ReservedEventName, ReservedRegistryKey } from "./reserved.js";
 import type { InferOutput, StandardSchemaV1 } from "./standard-schema.js";
+
+/**
+ * The App's decision whether a Connection may subscribe to a Channel, as the App writes it: the
+ * params its pattern names, and the context this App builds per request (ADR-0003). It is taken
+ * once per Channel when the Connection opens, and again on every reconnect — never per Message
+ * — so it is free to do the async work a session or database read takes.
+ */
+export type Authorize<Pattern extends string, Ctx> = (
+  params: ParamsOf<Pattern>,
+  ctx: Ctx,
+) => boolean | Promise<boolean>;
+
+/**
+ * Authorize as the Registry carries it, once the declaration is read as data: neither the
+ * params of the pattern nor the App's Ctx are knowable from a `ChannelDeclaration` alone, and
+ * `never` is what says so — every Authorize an App writes is assignable to this, and calling
+ * one takes the cast the handler makes once, in the one place where both are known.
+ */
+export type DeclaredAuthorize = (params: never, ctx: never) => boolean | Promise<boolean>;
 
 /** The events a Channel carries, by name: one Standard Schema each. */
 export type EventMap = Record<string, StandardSchemaV1>;
 
-/** One Channel, as the App declares it: its name pattern and the events it carries. */
+/** One Channel, as the App declares it: its name pattern, its events, and what guards it. */
 export interface ChannelDeclaration<
   Pattern extends string = string,
   Events extends EventMap = EventMap,
@@ -14,6 +34,8 @@ export interface ChannelDeclaration<
   readonly pattern: Pattern;
   /** The events this Channel carries, by name. One method per key lands on the Handle. */
   readonly events: Events;
+  /** Whether a Connection may subscribe to this Channel. Never reaches the client (ADR-0002). */
+  readonly authorize: DeclaredAuthorize;
 }
 
 /** The App's Channels, by Registry key. */

@@ -18,6 +18,7 @@ export const sse = createSSE({
     events: {
       message: z.object({ id: z.string(), text: z.string().trim().min(1) }),
     },
+    authorize: () => true,
   }),
 });
 
