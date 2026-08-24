@@ -1,9 +1,10 @@
 import { type } from "arktype";
 import * as v from "valibot";
-import { beforeEach, expect, expectTypeOf, test } from "vitest";
+import { beforeEach, expect, expectTypeOf, test, vi } from "vitest";
 import { z } from "zod";
 
 import { createMemoryTransport } from "../transport/memory.js";
+import { TransportClosedError } from "../transport/index.js";
 import type { Cursor } from "../transport/index.js";
 
 import { asType, initSSE, InvalidPayloadError } from "./index.js";
@@ -23,7 +24,7 @@ const typingSchema = v.object({ who: v.string() });
 
 /** One App, declared the way an App declares one: the fixture every type claim below reads. */
 const anApp = () => {
-  const { channel, createSSE } = initSSE({ transport: createMemoryTransport() });
+  const { channel, createSSE } = initSSE({ drain: false, transport: createMemoryTransport() });
 
   return createSSE({
     chat: channel({
@@ -116,7 +117,7 @@ test("what a Channel declares is what the Registry carries", () => {
 });
 
 test("an event whose schema produces what JSON cannot carry is refused", () => {
-  const { channel } = initSSE({ transport: createMemoryTransport() });
+  const { channel } = initSSE({ drain: false, transport: createMemoryTransport() });
 
   channel({ pattern: "audit", events: { at: z.iso.datetime() }, authorize: () => true });
 
@@ -135,7 +136,7 @@ test("an event whose schema produces what JSON cannot carry is refused", () => {
 });
 
 test("an event named after something a Handle already has is refused", () => {
-  const { channel } = initSSE({ transport: createMemoryTransport() });
+  const { channel } = initSSE({ drain: false, transport: createMemoryTransport() });
 
   expect(() =>
     channel({
@@ -157,7 +158,7 @@ test("an event named after something a Handle already has is refused", () => {
 });
 
 test("a Channel named after one of the Registry's own keys is refused", () => {
-  const { channel, createSSE } = initSSE({ transport: createMemoryTransport() });
+  const { channel, createSSE } = initSSE({ drain: false, transport: createMemoryTransport() });
   const declaration = channel({
     pattern: "x:{id}",
     events: { ping: asType<null>() },
@@ -175,10 +176,35 @@ test("a Channel named after one of the Registry's own keys is refused", () => {
   ).toThrow(/"drain".*is reserved/);
 });
 
+/**
+ * The shutdown of ADR-0011, on the same object as the Channels: it is the Instance's own Drain,
+ * which is what makes `sse.drain()` in a custom server or a test the very thing the signal
+ * handlers call.
+ */
+test("the Registry carries this Instance's Drain", async () => {
+  const transport = createMemoryTransport();
+  const { channel, createSSE } = initSSE({ drain: false, transport });
+  const sse = createSSE({
+    chat: channel({
+      pattern: "chat:{roomId}",
+      events: { message: messageSchema },
+      authorize: () => true,
+    }),
+  });
+  const close = vi.spyOn(transport, "close");
+
+  await sse.drain();
+
+  expect(close).toHaveBeenCalledTimes(1);
+  await expect(sse.chat({ roomId: "42" }).message({ text: "too late" })).rejects.toBeInstanceOf(
+    TransportClosedError,
+  );
+});
+
 /** One Channel and the log under it, for the two tests that watch what a Publish writes. */
 const aChatApp = () => {
   const transport = createMemoryTransport();
-  const { channel, createSSE } = initSSE({ transport });
+  const { channel, createSSE } = initSSE({ drain: false, transport });
   const sse = createSSE({
     chat: channel({
       pattern: "chat:{roomId}",
@@ -216,7 +242,7 @@ test("a payload the schema refuses rejects the Publish, and reaches no log", asy
 });
 
 test("a Channel whose pattern has a placeholder the filler cannot fill is refused", () => {
-  const { channel } = initSSE({ transport: createMemoryTransport() });
+  const { channel } = initSSE({ drain: false, transport: createMemoryTransport() });
 
   expect(() => channel({ pattern: "chat:{room-id}", events: {}, authorize: () => true })).toThrow(
     /placeholder/,
@@ -245,6 +271,7 @@ test("a Handle is the Handle of its Channel's events", () => {
  */
 test("Authorize is handed the params of its pattern and the context this App builds", () => {
   const { channel } = initSSE({
+    drain: false,
     transport: createMemoryTransport(),
     context: (request: Request) => ({ role: request.headers.get("x-role") ?? "guest" }),
   });
@@ -285,6 +312,7 @@ test("Authorize is handed the params of its pattern and the context this App bui
 /** Authorize may do the async work a session or a database read takes, and so may `context`. */
 test("an async context types Authorize on what it resolves to", () => {
   const { channel } = initSSE({
+    drain: false,
     transport: createMemoryTransport(),
     context: async (request: Request) => ({ userId: await Promise.resolve(request.url) }),
     key: (ctx) => {
@@ -307,7 +335,7 @@ test("an async context types Authorize on what it resolves to", () => {
 
 /** An App with only public Channels writes no `context`, and its Ctx is `undefined` (ADR-0008). */
 test("an App that builds no context declares Authorize on undefined", () => {
-  const { channel } = initSSE({ transport: createMemoryTransport() });
+  const { channel } = initSSE({ drain: false, transport: createMemoryTransport() });
 
   channel({
     pattern: "announcements",
@@ -327,7 +355,7 @@ test("an App that builds no context declares Authorize on undefined", () => {
  * about it where it declared them, not through a Connection guarded by the wrong rule.
  */
 test("a Channel another Channel's pattern would match is refused", () => {
-  const { channel, createSSE } = initSSE({ transport: createMemoryTransport() });
+  const { channel, createSSE } = initSSE({ drain: false, transport: createMemoryTransport() });
   const events = { message: messageSchema };
 
   expect(() =>

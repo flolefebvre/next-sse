@@ -64,14 +64,21 @@ export type Handle<Events extends EventMap = EventMap> = {
  * pattern asks for, and with nothing when it asks for none.
  *
  * `channels` is what `<SSEProvider>` strips down and shares with the client, `cursor` and
- * `snapshot` are the handoff of ADR-0007, and `kick` is the revocation of ADR-0003; all of them
- * are Registry keys ADR-0008 reserves, precisely because the Registry needs the properties for
- * itself.
+ * `snapshot` are the handoff of ADR-0007, `kick` is the revocation of ADR-0003 and `drain` is
+ * the shutdown of ADR-0011; all of them are Registry keys ADR-0008 reserves, precisely because
+ * the Registry needs the properties for itself.
  */
 export type Registry<Channels extends ChannelRecord = ChannelRecord> = Handoff & {
   handlers: { GET: (request: Request) => Promise<Response> };
   channels: Channels;
   kick: Kick;
+  /**
+   * Shut this Instance down and resolve when it is done: new connects answered `503`, every
+   * Connection ended with `reconnect` over the drain window, then the Transport closed. It is
+   * what the signal handlers call, and what a custom server or a test sequences its own
+   * shutdown on. Idempotent: every call joins the Drain in flight (ADR-0011).
+   */
+  drain: () => Promise<void>;
 } & {
   [Key in Exclude<keyof Channels & string, ReservedRegistryKey>]: (
     ...args: ParamsArgs<PatternOf<Channels[Key]>>
@@ -185,6 +192,7 @@ export function createSSE<Channels extends ChannelRecord>(
   registry.handlers = { GET: createGetHandler(instance) };
   registry.channels = declarations;
   registry.kick = createKick(instance);
+  registry.drain = () => instance.drain();
   registry.cursor = handoff.cursor;
   registry.snapshot = handoff.snapshot;
 

@@ -5,7 +5,7 @@ import { createMemoryTransport } from "../transport/memory.js";
 import { TransportUnavailableError } from "../transport/index.js";
 import type { Entry, Transport } from "../transport/index.js";
 
-import { getInstance, type Connection, type Instance } from "./instance.js";
+import { getInstance, type Connection, type Instance, type InstanceOptions } from "./instance.js";
 import type { StoredMessage } from "./wire.js";
 
 /**
@@ -17,6 +17,14 @@ beforeEach(() => {
   const globals = globalThis as unknown as { [key: symbol]: unknown };
   delete globals[Symbol.for("@flefebvre/next-sse")];
 });
+
+/**
+ * The Instance these tests build, with no signal handler on it: installing those is the Drain
+ * suite's own subject, and a fixture that installed a pair per test would leave them on the
+ * process running the suite (ADR-0011).
+ */
+const anInstance = (options: InstanceOptions = {}): Instance =>
+  getInstance({ drain: false, ...options });
 
 const message = (channel: string, payload: unknown): Entry => ({
   v: 1,
@@ -85,7 +93,7 @@ const aboutToResume = async (): Promise<{
   trace: string[];
 }> => {
   const transport = createMemoryTransport();
-  const instance = getInstance({ transport });
+  const instance = anInstance({ transport });
   const from = await transport.tail();
   await transport.publish(message("chat:42", { text: "missed" }));
 
@@ -130,19 +138,19 @@ test("the Instance keeps its Transport across evaluations, whatever a later one 
   const first = createMemoryTransport();
   const second = createMemoryTransport();
 
-  const instance = getInstance({ transport: first });
+  const instance = anInstance({ transport: first });
 
-  expect(getInstance({ transport: second }).transport).toBe(first);
-  expect(getInstance()).toBe(instance);
+  expect(anInstance({ transport: second }).transport).toBe(first);
+  expect(anInstance()).toBe(instance);
 });
 
 test("the Instance keeps its Connections across evaluations, and swaps the Registry", async () => {
-  const instance = getInstance({ transport: createMemoryTransport() });
+  const instance = anInstance({ transport: createMemoryTransport() });
   instance.registry = registryOf("chat:{roomId}");
   const connection = connectionOn("chat:42");
   await live(instance, connection);
 
-  const reevaluated = getInstance({ transport: createMemoryTransport() });
+  const reevaluated = anInstance({ transport: createMemoryTransport() });
   reevaluated.registry = registryOf("presence:{roomId}");
 
   expect(reevaluated.connections.has(connection)).toBe(true);
@@ -158,13 +166,13 @@ test("the Instance keeps its Connections across evaluations, and swaps the Regis
 test("the Instance swaps the context and the Key builder across evaluations", () => {
   const context = () => ({ role: "admin" });
   const key = () => "ada";
-  const instance = getInstance({ transport: createMemoryTransport(), context, key });
+  const instance = anInstance({ transport: createMemoryTransport(), context, key });
 
   expect(instance.context).toBe(context);
   expect(instance.key).toBe(key);
 
   const second = () => ({ role: "guest" });
-  getInstance({ transport: createMemoryTransport(), context: second });
+  anInstance({ transport: createMemoryTransport(), context: second });
 
   expect(instance.context).toBe(second);
   expect(instance.key).toBeUndefined();
@@ -185,7 +193,7 @@ const twoOverlapping = async (): Promise<{
   subscribed: Connection;
   elsewhere: Connection;
 }> => {
-  const instance = getInstance({ transport: createMemoryTransport() });
+  const instance = anInstance({ transport: createMemoryTransport() });
   const subscribed = connectionOn("chat:42", "chat:7");
   const elsewhere = connectionOn("chat:7");
   await live(instance, subscribed);
@@ -207,7 +215,7 @@ test("a Message reaches the Connections subscribed to its Channel, and no others
 });
 
 test("a Publish this Instance made itself comes back through the log like any other", async () => {
-  const instance = getInstance({ transport: createMemoryTransport() });
+  const instance = anInstance({ transport: createMemoryTransport() });
   const connection = connectionOn("chat:42");
   await live(instance, connection);
 
@@ -218,7 +226,7 @@ test("a Publish this Instance made itself comes back through the log like any ot
 });
 
 test("an Entry for a Channel nobody here holds, and a control Entry, reach no Connection", async () => {
-  const instance = getInstance({ transport: createMemoryTransport() });
+  const instance = anInstance({ transport: createMemoryTransport() });
   const connection = connectionOn("chat:42");
   await live(instance, connection);
 
@@ -230,7 +238,7 @@ test("an Entry for a Channel nobody here holds, and a control Entry, reach no Co
 });
 
 test("a Connection that was closed leaves the table and is fed nothing further", async () => {
-  const instance = getInstance({ transport: createMemoryTransport() });
+  const instance = anInstance({ transport: createMemoryTransport() });
   const connection = connectionOn("chat:42");
   const close = await live(instance, connection);
 
@@ -244,7 +252,7 @@ test("a Connection that was closed leaves the table and is fed nothing further",
 test("the Instance reads the log once, however many Connections it holds", async () => {
   const transport = createMemoryTransport();
   const subscribe = vi.spyOn(transport, "subscribe");
-  const instance = getInstance({ transport });
+  const instance = anInstance({ transport });
 
   await live(instance, connectionOn("chat:42"));
   await live(instance, connectionOn("chat:7"));
@@ -253,7 +261,7 @@ test("the Instance reads the log once, however many Connections it holds", async
 });
 
 test("a Connection resuming from a Cursor is replayed what came after it, and nothing else", async () => {
-  const instance = getInstance({ transport: createMemoryTransport() });
+  const instance = anInstance({ transport: createMemoryTransport() });
   await instance.transport.publish(message("chat:42", { text: "before" }));
   const from = await instance.transport.publish(message("chat:42", { text: "the last it saw" }));
   await instance.transport.publish(message("chat:42", { text: "missed" }));
@@ -273,7 +281,7 @@ test("a Connection resuming from a Cursor is replayed what came after it, and no
  * would show as a `reconnect` in the trace.
  */
 test("replay carries no control Entry and no Channel the Connection did not name", async () => {
-  const instance = getInstance({ transport: createMemoryTransport() });
+  const instance = anInstance({ transport: createMemoryTransport() });
   const from = await instance.transport.tail();
   await instance.transport.publish(kick({ channel: "chat:42" }));
   await instance.transport.publish(message("chat:other", { text: "elsewhere" }));
@@ -286,7 +294,7 @@ test("replay carries no control Entry and no Channel the Connection did not name
 });
 
 test("a replay long enough to span several pages carries every Entry, once, in order", async () => {
-  const instance = getInstance({ transport: createMemoryTransport() });
+  const instance = anInstance({ transport: createMemoryTransport() });
   const from = await instance.transport.tail();
   for (let n = 0; n < 1201; n += 1) {
     await instance.transport.publish(message("chat:42", { text: `n${String(n)}` }));
@@ -338,7 +346,7 @@ test("a Message published after the last replay page is delivered once, after ca
  */
 test("the cut holds when the replay ends on an Entry this Connection is not subscribed to", async () => {
   const transport = createMemoryTransport();
-  const instance = getInstance({ transport });
+  const instance = anInstance({ transport });
   const from = await transport.tail();
   const { connection, trace } = tracing("chat:42");
 
@@ -354,7 +362,7 @@ test("the cut holds when the replay ends on an Entry this Connection is not subs
 
 test("a Cursor the log has dropped opens on the tail, with a reset and no replay", async () => {
   const transport = createMemoryTransport({ retention: { cap: 1 } });
-  const instance = getInstance({ transport });
+  const instance = anInstance({ transport });
   const stale = await transport.publish(message("chat:42", { text: "one" }));
   await transport.publish(message("chat:42", { text: "two" }));
   await transport.publish(message("chat:42", { text: "three" }));
@@ -377,7 +385,7 @@ test("a Cursor the log has dropped opens on the tail, with a reset and no replay
  */
 test("a live-only connect adopts the tail, and a reconnect from it misses nothing", async () => {
   const transport = createMemoryTransport();
-  const instance = getInstance({ transport });
+  const instance = anInstance({ transport });
   await transport.publish(message("chat:42", { text: "long before" }));
   const first = tracing("chat:42");
 
@@ -402,7 +410,7 @@ test("a live-only connect adopts the tail, and a reconnect from it misses nothin
  */
 test("a live-only connect is fed what landed in its opening window, and still adopts the tail", async () => {
   const transport = createMemoryTransport();
-  const instance = getInstance({ transport });
+  const instance = anInstance({ transport });
   const { connection, trace } = tracing("chat:42");
 
   const tail = transport.tail.bind(transport);
@@ -423,7 +431,7 @@ test("a live-only connect is fed what landed in its opening window, and still ad
 
 test("a Connection that never opened its replay is fed nothing, and leaves no trace behind", async () => {
   const transport = createMemoryTransport();
-  const instance = getInstance({ transport });
+  const instance = anInstance({ transport });
   const { connection, trace } = tracing("chat:42");
 
   const opening = await instance.open(connection);
@@ -465,7 +473,7 @@ test("an Entry the feed delivers late, after the replay carried it, is not deliv
 
 test("a client that goes away mid-replay stops it, rather than paging the rest of the log", async () => {
   const transport = createMemoryTransport();
-  const instance = getInstance({ transport });
+  const instance = anInstance({ transport });
   const from = await transport.tail();
   for (let n = 0; n < 1201; n += 1) {
     await transport.publish(message("chat:42", { text: `n${String(n)}` }));
@@ -502,12 +510,12 @@ test("a client that goes away mid-replay stops it, rather than paging the rest o
  * default", which is what makes `heartbeat: 0` a Connection with no heartbeat at all.
  */
 test("the lifecycle durations are the App's, or the defaults, with 0 meaning off", () => {
-  expect(getInstance()).toMatchObject({ heartbeat: 15_000, maxLifetime: 30 * 60_000 });
-  expect(getInstance({ heartbeat: 0, maxLifetime: 0 })).toMatchObject({
+  expect(anInstance()).toMatchObject({ heartbeat: 15_000, maxLifetime: 30 * 60_000 });
+  expect(anInstance({ heartbeat: 0, maxLifetime: 0 })).toMatchObject({
     heartbeat: 0,
     maxLifetime: 0,
   });
-  expect(getInstance({ heartbeat: 250 })).toMatchObject({
+  expect(anInstance({ heartbeat: 250 })).toMatchObject({
     heartbeat: 250,
     maxLifetime: 30 * 60_000,
   });
@@ -522,7 +530,7 @@ test.each([
   ["a negative interval", { heartbeat: -1 }],
   ["an interval that is no number at all", { maxLifetime: Number.NaN }],
 ])("%s is refused at the configuration rather than armed", (_case, options) => {
-  expect(() => getInstance(options)).toThrow(/milliseconds/);
+  expect(() => anInstance(options)).toThrow(/milliseconds/);
 });
 
 /**
@@ -554,7 +562,7 @@ const withGap = (): { transport: Transport; gap: () => void } => {
  */
 test("a gap on the live feed tells every live Connection to refetch, and closes none", async () => {
   const { transport, gap } = withGap();
-  const instance = getInstance({ transport });
+  const instance = anInstance({ transport });
   const one = tracing("chat:42");
   const other = tracing("chat:7");
   await (await instance.open(one.connection)).start();
@@ -574,7 +582,7 @@ test("a gap on the live feed tells every live Connection to refetch, and closes 
  */
 test("a gap while a Connection is still opening reaches it with its replay, never before", async () => {
   const { transport, gap } = withGap();
-  const instance = getInstance({ transport });
+  const instance = anInstance({ transport });
   const from = await transport.tail();
   await transport.publish(message("chat:42", { text: "missed" }));
   const { connection, trace } = tracing("chat:42");
@@ -604,7 +612,7 @@ test("a subscription that could not be opened is not remembered", async () => {
       return memory.subscribe(listener, options);
     },
   };
-  const instance = getInstance({ transport });
+  const instance = anInstance({ transport });
 
   await expect(instance.open(connectionOn("chat:42"))).rejects.toThrow(TransportUnavailableError);
   expect(instance.connections.size).toBe(0);
@@ -622,8 +630,8 @@ test("a subscription that could not be opened is not remembered", async () => {
  * rather than quietly turned into its opposite.
  */
 test("a duration longer than a timer can hold is refused, not silently inverted", () => {
-  expect(() => getInstance({ maxLifetime: 30 * 24 * 60 * 60_000 })).toThrow(/about 24 days/);
-  expect(getInstance({ maxLifetime: 2_147_483_647 })).toMatchObject({
+  expect(() => anInstance({ maxLifetime: 30 * 24 * 60 * 60_000 })).toThrow(/about 24 days/);
+  expect(anInstance({ maxLifetime: 2_147_483_647 })).toMatchObject({
     maxLifetime: 2_147_483_647,
   });
 });
@@ -635,7 +643,7 @@ test("a duration longer than a timer can hold is refused, not silently inverted"
  * by one Instance ends the Connections every other Instance holds.
  */
 test("a Kick by Key ends the Connections that Key holds, and no others", async () => {
-  const instance = getInstance({ transport: createMemoryTransport() });
+  const instance = anInstance({ transport: createMemoryTransport() });
   const hers = keyed("ada", "chat:42");
   const alsoHers = keyed("ada", "chat:7");
   const his = keyed("sam", "chat:42");
@@ -675,7 +683,7 @@ test("a Kick by Channel ends every Connection subscribed to it, whatever else it
  * and nothing else, each once and in the order the log carried them.
  */
 test("a Kick reaches a Connection that is still opening, and never enters its buffer", async () => {
-  const instance = getInstance({ transport: createMemoryTransport() });
+  const instance = anInstance({ transport: createMemoryTransport() });
   const { connection, trace } = tracing("chat:42");
   const opening = await instance.open({ ...connection, key: "ada" });
 
@@ -697,7 +705,7 @@ test("a Kick reaches a Connection that is still opening, and never enters its bu
  * App's log, or a later library meaning something by it, must not read as "end everything".
  */
 test("a Kick that names neither a Key nor a Channel ends nothing", async () => {
-  const instance = getInstance({ transport: createMemoryTransport() });
+  const instance = anInstance({ transport: createMemoryTransport() });
   const connection = keyed("ada", "chat:42");
   await live(instance, connection);
 
