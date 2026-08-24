@@ -132,7 +132,7 @@ export function createMemoryTransport(options: MemoryTransportOptions = {}): Tra
 
     async subscribe(
       listener: (entry: StoredEntry) => void,
-      options: { onGap: () => void },
+      options: { onGap: (resumeFrom: Cursor) => void },
     ): Promise<Unsubscribe> {
       assertOpen();
       void options.onGap;

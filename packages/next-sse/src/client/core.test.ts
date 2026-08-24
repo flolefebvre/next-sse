@@ -425,13 +425,11 @@ test("the core carries the Cursor it was last given, without comparing it to the
 
 /**
  * Control events are not positions (ADR-0004): they carry no `id:`, so none of them moves the
- * Cursor — and `reset`, whatever refetch it sets off above, leaves the Connection exactly where
- * it was.
+ * Cursor by being received.
  */
-test("no Control event moves the Cursor, reset included", async () => {
+test("no Control event moves the Cursor by being received", async () => {
   const { opened, subscriber } = await positioned();
 
-  only(opened).emit("reset");
   only(opened).caughtUp();
   only(opened).emit("heartbeat");
   only(opened).fail();
@@ -439,6 +437,62 @@ test("no Control event moves the Cursor, reset included", async () => {
 
   expect(opened[1]?.cursor).toBe("cursor-8");
   expect(subscriber.statuses).toEqual(["live", "reconnecting"]);
+});
+
+/**
+ * The one position a Control event does move, and it moves it by saying so rather than by
+ * arriving. The Cursor this client holds is the one the Instance has just refused, so keeping it
+ * would mean meeting the same refusal on the next reconnect — one more `reset`, one more
+ * refetch, for a gap already dealt with. The value is taken as it comes and never compared
+ * (ADR-0001), and the Connection is reopened on it, because the URL this one is on still names
+ * the Cursor that was refused.
+ */
+test("a reset moves the Cursor to the position it names, and reopens the Connection there", async () => {
+  const { opened, subscriber } = await positioned();
+
+  opened[0]?.emit("reset", { cursor: "cursor-40" });
+
+  expect(opened).toHaveLength(2);
+  expect(opened[1]?.cursor).toBe("cursor-40");
+  expect(subscriber.statuses).toEqual(["reconnecting"]);
+});
+
+/**
+ * A `reset` naming nothing is a wire this core did not write, and it is read as saying nothing
+ * about position: the Connection comes back exactly where it already was rather than nowhere.
+ */
+test("a reset that names no position reopens where the Connection already was", async () => {
+  const { opened } = await positioned();
+
+  opened[0]?.emit("reset");
+
+  expect(opened[1]?.cursor).toBe("cursor-8");
+});
+
+/**
+ * The case the whole thing exists for, and the half a variable could not reach. A page whose
+ * hooks brought no Snapshot refetches into no new Cursor, so the position a `reset` names is the
+ * only one it will ever get — and the browser's own recovery reads neither that variable nor the
+ * Cursor in it: an ordinary transient drop reopens **this stream's URL** with the browser's own
+ * `Last-Event-ID` buffer, which on a Channel that has said nothing is empty. Before the reopen
+ * that URL still named the refused Cursor, and the drop walked straight back into it.
+ */
+test("a transient drop after a reset comes back on the corrected Cursor, not the refused one", async () => {
+  const { opened } = await subscribed({ cursor: "stale-1" });
+  expect(only(opened).cursor).toBe("stale-1");
+  only(opened).ready({ cursor: "tail-9", refused: [] });
+
+  opened[0]?.emit("reset", { cursor: "tail-9" });
+
+  /**
+   * The stream a transient drop would have the browser retry by itself is this one, and the URL
+   * it would retry no longer carries the Cursor the Instance refused. The drop itself is the
+   * browser's business: the core takes no action on it, and there is no third Connection.
+   */
+  expect(opened[1]?.cursor).toBe("tail-9");
+  opened[1]?.drop();
+
+  expect(opened).toHaveLength(2);
 });
 
 /**
@@ -608,7 +662,7 @@ test("a reset calls each subscriber's own handler, and the Connection's once for
 
   expect(own).toHaveBeenCalledTimes(1);
   expect(appWide).toHaveBeenCalledTimes(1);
-  expect(subscriber.statuses).toEqual([]);
+  expect(subscriber.statuses).toEqual(["reconnecting"]);
 });
 
 test("a reset every subscriber handles itself never reaches the Connection's handler", async () => {

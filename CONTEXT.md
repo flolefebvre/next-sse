@@ -65,7 +65,7 @@ The opaque, Transport-minted position in an App's Message flow that a Connection
 _Avoid_: Offset, sequence number, last event id, checkpoint
 
 **Reset**:
-The signal to a Connection that its Cursor is unusable (too old, malformed, or unknown to the Transport), so the App must refetch its state before continuing live.
+The signal to a Connection that its Cursor is unusable (too old, malformed, or unknown to the Transport), so the App must refetch its state before continuing live. It names the position the Connection continues from, so a client that has nothing else to replace the refused Cursor with is not sent back into the same gap.
 _Avoid_: Resync, invalidate, gap
 
 **Snapshot**:
@@ -77,7 +77,7 @@ The App's single server-only declaration of all its Channels (pattern, events, A
 _Avoid_: Config, schema, definitions, manifest
 
 **Control event**:
-An in-band signal from the library to the client core on a Connection (`ready`, `heartbeat`, `reconnect`, `caught-up`, `reset`). Never a Message: it belongs to no Channel, carries no Cursor and is never replayed.
+An in-band signal from the library to the client core on a Connection (`ready`, `heartbeat`, `reconnect`, `caught-up`, `reset`). Never a Message: it belongs to no Channel, is never a position in the log — none of them moves the client's Cursor by being received — and is never replayed. `ready` and `reset` do name a position, in what they carry.
 _Avoid_: System message, meta event, protocol message
 
 **Handle**:

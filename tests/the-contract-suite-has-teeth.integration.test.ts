@@ -53,7 +53,7 @@ interface ToyLog {
 /** One listener on a toy Transport, with the position it would resume from. */
 interface ToyReader {
   listener: (entry: StoredEntry) => void;
-  onGap: () => void;
+  onGap: (resumeFrom: Cursor) => void;
   lastSeen: Cursor;
 }
 
@@ -91,7 +91,7 @@ const catchUp = (state: ToyState): void => {
     const position = positionOf(reader.lastSeen);
     if (position === undefined || position < state.log.dropped) {
       reader.lastSeen = cursorOf(state.log.minted);
-      reader.onGap();
+      reader.onGap(reader.lastSeen);
       continue;
     }
 
@@ -174,7 +174,7 @@ const createToyTransport = (log: ToyLog, flaw?: Flaw): Transport => {
 
     async subscribe(
       listener: (entry: StoredEntry) => void,
-      options: { onGap: () => void },
+      options: { onGap: (resumeFrom: Cursor) => void },
     ): Promise<Unsubscribe> {
       await reachable();
 

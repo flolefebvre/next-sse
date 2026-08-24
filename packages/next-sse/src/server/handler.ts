@@ -4,7 +4,7 @@ import { TransportError } from "../transport/index.js";
 
 import { DrainingError } from "./drain.js";
 import type { Connection, Instance, Opening } from "./instance.js";
-import { encodeControl, encodeMessage, encodeRetry, type Ready } from "./wire.js";
+import { encodeControl, encodeMessage, encodeRetry, type Ready, type Reset } from "./wire.js";
 
 /** What ADR-0004 tells the client core to wait before reconnecting on its own, in milliseconds. */
 const RETRY_MS = 3000;
@@ -308,7 +308,7 @@ async function streamFor(
     channels: allowed,
     key,
     deliver: (entry) => write(encodeMessage(entry)),
-    reset: () => write(encodeControl("reset")),
+    reset: (from) => write(encodeControl("reset", { cursor: from } satisfies Reset)),
     caughtUp: () => write(encodeControl("caught-up")),
     /**
      * Ending a Connection is a no-op the second time, and a no-op on one whose client has already

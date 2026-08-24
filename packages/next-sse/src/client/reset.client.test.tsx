@@ -9,8 +9,9 @@ import { act, flush, mount } from "./react.testkit.js";
 
 /**
  * Reset, as an App experiences it (ADR-0007): the Instance says the Cursor is unusable, and
- * something fetches the state again. Nothing here is a status — the Connection is live
- * throughout — and the only question is who is told.
+ * something fetches the state again. Reset is still no status of its own, and the question these
+ * cases are about is who is told — but the Connection does come back on the position the `reset`
+ * named (#62), so what a hook reports across one is the ordinary `reconnecting`.
  *
  * This is the one file in the repo that reaches for a Next internal, and it is the only way to
  * prove the default without booting Next: `useRouter` reads `AppRouterContext`, so a test that
@@ -58,7 +59,7 @@ test("a Reset refetches the route, with no App code and once for the whole page"
   });
 
   expect(refresh).toHaveBeenCalledTimes(1);
-  expect(tree.container.querySelector("p")?.dataset.status).toBe("connecting");
+  expect(tree.container.querySelector("p")?.dataset.status).toBe("reconnecting");
 
   await tree.unmount();
 });

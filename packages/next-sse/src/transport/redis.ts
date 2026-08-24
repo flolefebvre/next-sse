@@ -121,7 +121,7 @@ export function createRedisPublisher(options: RedisTransportOptions = {}): Publi
 /** One listener on the live feed, with the gap report that belongs to it. */
 interface Feed {
   listener: (entry: StoredEntry) => void;
-  onGap: () => void;
+  onGap: (resumeFrom: Cursor) => void;
 }
 
 function createRedisLog(options: RedisTransportOptions): Transport {
@@ -355,13 +355,20 @@ function createRedisLog(options: RedisTransportOptions): Transport {
     if (!lost(info, position)) return position;
 
     narrate(`the log dropped ${position}, which the reader was resuming from`);
-    for (const { onGap } of feeds) onGap();
 
     /**
-     * The loop resumes just below the oldest Entry the log still holds, so that Entry is
-     * delivered and the same gap can never be reported twice.
+     * The gap is reported with the oldest Entry the log still holds, and the loop resumes just
+     * below it — so that Entry is delivered, and the same gap can never be reported twice.
+     *
+     * The two are one position apart on purpose. What the gap names is handed on to clients
+     * (ADR-0004), so it has to be a position this log can still serve, and `justBefore` is by
+     * construction below everything the log kept: `read` answers `gone` for it, which would send
+     * every one of those clients straight back into the gap they were being told about.
      */
-    return justBefore(info.oldestKeptId);
+    const oldest = info.oldestKeptId;
+    for (const { onGap } of feeds) onGap(oldest);
+
+    return justBefore(oldest);
   };
 
   return {
@@ -424,7 +431,7 @@ function createRedisLog(options: RedisTransportOptions): Transport {
 
     async subscribe(
       listener: (entry: StoredEntry) => void,
-      options: { onGap: () => void },
+      options: { onGap: (resumeFrom: Cursor) => void },
     ): Promise<Unsubscribe> {
       assertOpen();
 

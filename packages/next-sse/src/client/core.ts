@@ -118,7 +118,8 @@ interface Subscriber extends Subscription {
  *
  * The Cursor is the third rule, and the core's whole part in gap-free delivery is to carry it:
  * it remembers the last event id it saw — `ready`'s Cursor to begin with, then every Message's
- * `id` — and puts it in the URL of every Connection it opens itself. It never parses it, never
+ * `id`, and the position a `reset` names when the one it held turns out to be unusable — and
+ * puts it in the URL of every Connection it opens itself. It never parses it, never
  * compares two of them, and never decides what to replay; the format stays the Transport's
  * (ADR-0001) and the exactly-once cut stays the Instance's (ADR-0005). A native `EventSource`
  * reconnect does the same thing for free through `Last-Event-ID`.
@@ -134,7 +135,8 @@ interface Subscriber extends Subscription {
  *
  * **Everything that ends a Connection ends it through those same two doors.** The heartbeat
  * watchdog — 3× the interval `ready` advertised, with no block of any kind in between — the
- * `reconnect` the Instance sends before it lets a Connection go, and a page put away and
+ * `reconnect` the Instance sends before it lets a Connection go, a `reset` naming a position this
+ * stream's URL does not carry, and a page put away and
  * brought back all close and reopen through `closeSource` and `openSource`, with the Cursor
  * this client holds. There is no second path, so nothing can reopen without the Cursor, and a
  * Connection reopened for any of those reasons resumes exactly like one reopened for any other.
@@ -402,9 +404,30 @@ export function createCore({ url, eventSource, page, onReset }: CoreOptions): Co
      * subscriber whose Channel this Connection refused is not one of them: it was dropped from
      * this Connection, and the gap this Cursor left is not in anything it holds — refetching on
      * its behalf would refresh a route because of a stream it is not on.
-     * Reset is not a status (ADR-0007): the Connection is live and stays live.
+     *
+     * It also says where the Instance has put this Connection — the tail it adopted, or the
+     * position its live feed resumed at — and that is taken exactly as `ready`'s is, because the
+     * position this client was holding is the one just refused. Presence is all that is checked
+     * of it, never the value: what a Cursor means is the Transport's (ADR-0001).
+     *
+     * **And the Connection is reopened on it** (#62), which is the fifth reason this core owns a
+     * reopen and the same shape as a Channel-set change: the URL this stream is on is out of
+     * date. Adopting the position without reopening honours half of what a `reset` says — the
+     * browser's own recovery reads neither this variable nor that URL, so an ordinary transient
+     * drop before the next Message would come back on the very Cursor that was just refused, meet
+     * it again, and cost a second refetch. The reopen resumes exactly where the `reset` said, so
+     * it loses nothing and replays nothing; what it costs is one round trip, and it is taken
+     * whether or not a Message has already stamped the browser's buffer — one rule, no sub-case
+     * whose safety turns on which of two positions is the newer, which is a comparison this core
+     * may not make.
+     *
+     * Reset is still not a status (ADR-0007), but the reopen it now sets off is: these
+     * subscribers are told `reconnecting`, the way they are for every other reopen.
      */
-    on("reset", () => {
+    on("reset", (event) => {
+      const { cursor } = JSON.parse(event.data) as { cursor?: unknown };
+      if (typeof cursor === "string" && cursor !== "") lastEventId = cursor;
+
       let anyDefault = false;
       for (const subscriber of [...subscribers]) {
         if (refused.has(subscriber.channel)) continue;
@@ -412,6 +435,8 @@ export function createCore({ url, eventSource, page, onReset }: CoreOptions): Co
         else subscriber.onReset();
       }
       if (anyDefault) onReset?.();
+
+      reopen();
     });
 
     opened.addEventListener("error", () => {

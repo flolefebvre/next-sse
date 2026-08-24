@@ -116,7 +116,7 @@ function deferredTransport(open: () => Promise<Transport>): Transport {
     },
     async subscribe(
       listener: (entry: StoredEntry) => void,
-      options: { onGap: () => void },
+      options: { onGap: (resumeFrom: Cursor) => void },
     ): Promise<Unsubscribe> {
       return (await opened()).subscribe(listener, options);
     },
