@@ -34,8 +34,27 @@ export const RECONNECT_WAIT_MS = 30_000;
  * own; what it is not is this suite's claim, and a scenario that left the browser open would fail
  * `assertPromptExit` for a reason that has nothing to do with it.
  */
-export function openBrowser(): Promise<Browser> {
-  return chromium.launch();
+export async function openBrowser(): Promise<Browser> {
+  try {
+    return await chromium.launch();
+  } catch (error) {
+    throw missingBrowser(error)
+      ? new Error(
+          "the browser scenarios need Chromium, and `pnpm install` deliberately downloads no " +
+            "browser (ADR-0009): run `pnpm exec playwright install chromium` once",
+        )
+      : error;
+  }
+}
+
+/**
+ * A machine that has the library and not the browser, told what to do about it — the same
+ * courtesy `buildExample` pays a run started without `pnpm build`. Playwright's own message names
+ * a path under a cache directory and a command with a different package manager in front of it,
+ * which is a puzzle to hand somebody whose only mistake was to check the repository out.
+ */
+function missingBrowser(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("Executable doesn't exist");
 }
 
 /** One reader of the demo page, holding the Connection their browser holds. */
