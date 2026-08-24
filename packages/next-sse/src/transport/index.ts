@@ -179,12 +179,18 @@ export interface TypedPublisher<App extends PublishableApp> {
  * over a Publisher, with no runtime Channel data.
  *
  * ```ts
- * import type { sse } from "../app/lib/sse";
+ * import { createPublisher } from "@flefebvre/next-sse/transport";
+ * import { createRedisPublisher } from "@flefebvre/next-sse/transport/redis";
+ * import type { sse as app } from "../app/lib/sse";
  *
  * const publisher = createRedisPublisher({ url: process.env.REDIS_URL });
- * const sse = createPublisher<typeof sse>(publisher);
+ * const sse = createPublisher<typeof app>(publisher);
  * await sse.publish("chat:42", "message", { id: "1", text: "from the worker" });
  * ```
+ *
+ * The App's Registry is imported under a name of its own because the worker's own publisher is
+ * the thing it will call `sse`: the type comes in as `app`, and the value that shadows nothing
+ * keeps the call site reading the way it does inside the App.
  *
  * The type argument is erased with the import it came from: this function reads nothing off the
  * App at runtime, holds no patterns and no schemas, and does no validation. What it adds over
