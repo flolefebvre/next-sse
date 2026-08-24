@@ -115,7 +115,10 @@ test("both Instances carry the one log to their Connections, in its order and on
     expect(Object.fromEntries(byHer.map(({ text, id }) => [text, id]))).toEqual(
       Object.fromEntries(texts.map((text, i) => [text, cursors[i]])),
     );
-    expect(byHer).toHaveLength(texts.length);
+    /** And neither Connection is owed anything else: the next frame is the next Publish. */
+    await there.chat({ roomId: "42" }).message({ text: "and nothing in between" });
+    expect(await hers.message()).toEqual({ channel: "chat:42", text: "and nothing in between" });
+    expect(await his.message()).toEqual({ channel: "chat:42", text: "and nothing in between" });
 
     hers.leave();
     his.leave();
