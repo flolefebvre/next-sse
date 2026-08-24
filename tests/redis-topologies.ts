@@ -43,6 +43,9 @@ export const SENTINEL_FAILOVER_TIMEOUT_MS = 5_000;
  */
 const REPLICATION_CATCHUP_MS = 10_000;
 
+/** The one key the kill writes itself, so that its `WAIT` covers what the case published. */
+const REPLICATION_PROBE_KEY = "next-sse-test-replication-probe";
+
 /** One running topology, and the way to stop it. */
 export interface RunningTopology {
   /** The nodes a client of this topology is pointed at, reachable from this process. */
@@ -84,8 +87,12 @@ export interface KillableTopology extends FailoverTopology {
    * `key` names the log whose reader must be on the doomed node when it dies; that is asserted
    * before the kill, not assumed. Throws, with what it last saw, when the reader never showed
    * up there, when the replica never caught up, or when nothing was promoted in time.
+   *
+   * Answers **the moment `SHUTDOWN NOSAVE` was issued**. Everything before it — finding the
+   * reader, waiting for the replica — is staging, and a case whose bound counts the sentinel's
+   * detection and election has to start its clock at the death itself, not at the staging.
    */
-  kill(key: string): Promise<void>;
+  kill(key: string): Promise<number>;
 }
 
 /**
@@ -537,11 +544,19 @@ async function promoteInSentinel(sentinel: number): Promise<void> {
  *    and not absorbed: a `WAIT` that runs out means a topology that is not replicating, and it
  *    throws rather than kills anyway.
  *
+ *    The write just before it is what makes that true, and it is not decoration: `WAIT` waits
+ *    for the replication offset of **this connection's own** writes, not for the master's
+ *    current one. Measured on a master whose replica was frozen: `WAIT 1` on a connection that
+ *    had only read answered `1` in 4 ms, while the same `WAIT` on a connection that had written
+ *    blocked for 3.4 s until the acknowledgement. This connection has read only — so it writes
+ *    one throwaway key first, which puts its offset past everything the case published, and
+ *    `WAIT` then means what it is here to mean.
+ *
  * The kill command itself is expected to fail: a server that is shutting down answers nothing
  * and closes the socket, which is precisely the acknowledgement wanted.
  */
-async function killInSentinel(sentinel: number, key: string): Promise<void> {
-  await onNodes(async (ask) => {
+async function killInSentinel(sentinel: number, key: string): Promise<number> {
+  return onNodes(async (ask) => {
     const doomed = await namedMaster(ask, sentinel);
 
     await until(`a blocked reader of ${key} on the master ${String(doomed)}`, async () => {
@@ -550,6 +565,7 @@ async function killInSentinel(sentinel: number, key: string): Promise<void> {
       return clients.includes("cmd=xread") ? undefined : "no client on it is blocked in xread";
     });
 
+    await ask(doomed, ["SET", REPLICATION_PROBE_KEY, String(Date.now())]);
     const replicated = Number(await ask(doomed, ["WAIT", "1", String(REPLICATION_CATCHUP_MS)]));
     if (replicated < 1) {
       throw new Error(
@@ -559,6 +575,7 @@ async function killInSentinel(sentinel: number, key: string): Promise<void> {
     }
 
     await ask(doomed, ["SHUTDOWN", "NOSAVE"]).catch(() => undefined);
+    const killedAt = Date.now();
 
     await until(`the promotion of a replica of the killed ${String(doomed)}`, async () => {
       const now = await namedMaster(ask, sentinel);
@@ -570,5 +587,7 @@ async function killInSentinel(sentinel: number, key: string): Promise<void> {
         ? undefined
         : `${String(now)} is named but reports ${String(promoted[0])}`;
     });
+
+    return killedAt;
   });
 }

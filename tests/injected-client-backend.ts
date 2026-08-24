@@ -192,10 +192,7 @@ export const FAILOVER_DELIVERY_BOUND_MS = 20_000;
 const KILLED_MASTER_BOUND_MS =
   SENTINEL_DOWN_AFTER_MS + SENTINEL_FAILOVER_TIMEOUT_MS + FAILOVER_DELIVERY_BOUND_MS;
 
-/** How long the client is given to find the promoted master again before the case Publishes. */
-const FAILOVER_USABLE_BOUND_MS = 20_000;
-
-/** How long the whole failover case is given: the promotion, then both bounds above, with room. */
+/** How long the whole failover case is given: the failover, then the bound above, with room. */
 export const FAILOVER_TIMEOUT_MS = 120_000;
 
 /**
@@ -247,8 +244,6 @@ export async function readerSurvivesAFailover(
   where: string,
 ): Promise<void> {
   const bound = failover.action === "kill" ? KILLED_MASTER_BOUND_MS : FAILOVER_DELIVERY_BOUND_MS;
-  const usableBound =
-    failover.action === "kill" ? KILLED_MASTER_BOUND_MS : FAILOVER_USABLE_BOUND_MS;
   const named = failoverNames[failover.action];
   const prefix = freshPrefix();
   const failures: Reported[] = [];
@@ -269,22 +264,28 @@ export async function readerSurvivesAFailover(
     await vi.waitFor(() => expect(seen).toHaveLength(1), { timeout: 5_000, interval: 25 });
 
     const key = logKeyOf(prefix);
-    if (failover.action === "kill") await failover.topology.kill(key);
-    else await failover.topology.promote(key);
+
+    /**
+     * Where the clock the bound is enforced on starts, and each action starts it where its own
+     * derivation does: a kill at the death itself — the sentinel's detection and election are
+     * terms of that bound and cannot be outside the budget they are part of — a promotion at
+     * the handover, which is already over by the time it is visible and is a term of nothing.
+     */
+    const from =
+      failover.action === "kill"
+        ? await failover.topology.kill(key)
+        : await failover.topology.promote(key).then(() => Date.now());
     const promoted = Date.now();
 
-    await vi.waitFor(() => transport.tail(), {
-      timeout: usableBound,
-      interval: 100,
-    });
+    /** What is left of the one end-to-end budget, so that no step of it can borrow from another. */
+    const left = (): number => Math.max(0, from + bound - Date.now());
+
+    await vi.waitFor(() => transport.tail(), { timeout: left(), interval: 100 });
     const usable = Date.now();
     await transport.publish(tick("after"));
     const published = Date.now();
 
-    await vi.waitFor(() => expect(seen).toHaveLength(2), {
-      timeout: bound,
-      interval: 25,
-    });
+    await vi.waitFor(() => expect(seen).toHaveLength(2), { timeout: left(), interval: 25 });
     const delivered = Date.now();
 
     /**
@@ -293,11 +294,13 @@ export async function readerSurvivesAFailover(
      * prints what it actually took.
      */
     console.info(
-      `[${named.issue}] ${where}: the log was readable again ${String(usable - promoted)}ms ` +
-        `after ${named.what}, the Publish accepted ${String(published - usable)}ms after that and ` +
-        `delivered ${String(delivered - published)}ms after that; ` +
-        `${String(gaps.length)} reset(s)${describe(gaps, promoted)}; ` +
-        `${String(failures.length)} reported failure(s)${describe(failures, promoted)}`,
+      `[${named.issue}] ${where}: ${String(promoted - from)}ms from ${named.what} to a new ` +
+        `master, the log readable again ${String(usable - promoted)}ms after that, the Publish ` +
+        `accepted ${String(published - usable)}ms after that and delivered ` +
+        `${String(delivered - published)}ms after that — ${String(delivered - from)}ms end to ` +
+        `end, bounded at ${String(bound)}ms; ` +
+        `${String(gaps.length)} reset(s)${describe(gaps, from)}; ` +
+        `${String(failures.length)} reported failure(s)${describe(failures, from)}`,
     );
 
     expect(seen.map((entry) => entry.type === "message" && entry.payload)).toEqual([

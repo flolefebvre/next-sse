@@ -121,18 +121,20 @@ Message read from the demoted node in the moment after the promotion is not a ga
 is a replica of the new master, so the worst the window costs is replication lag.
 
 **Killing the Sentinel master under the reader changes nothing the reader reports** — measured, not
-reasoned: across runs the log is readable again 1.0–2.0 s after the kill (the sentinel's 1 s
-`down-after-milliseconds` plus its election), the next Publish is delivered within a second of
-that, and there are **no** Resets and **no** `onError` on the read path at all. The blocked `XREAD`
+reasoned. Across runs, from the `SHUTDOWN` to the next Message being delivered: **~4.1 s end to
+end**, of which ~2.1 s is the sentinel noticing and electing (its 1 s `down-after-milliseconds`
+plus the election) and ~1.9 s is node-redis re-homing the client onto the new master; the Publish
+that follows is accepted within milliseconds and delivered within tens of them. There are **no**
+Resets and **no** `onError` on the read path at all. The blocked `XREAD`
 never fails into the Transport's own reconnect path, because node-redis's Sentinel client (6.2.x)
 re-homes it first. That path stays observed on Cluster, where the demoted node ends the read
 itself. Which layer carries the reader is not part of what this library promises: the guarantee is
 delivery — or a Reset — inside the bound, and it holds whether node-redis absorbs the loss or hands
 it to the Transport's reconnect path.
 
-What an ungraceful loss does cost your App is on the **write** side: for the second or two the
-election takes there is no master to write to, so a Publish attempted in that window rejects on its
-`operationTimeout` — with the usual caveat below that it may still have landed. Reads simply
+What an ungraceful loss does cost your App is on the **write** side: for the ~4 s the detection,
+election and re-homing take there is no master to write to, so a Publish attempted in that window
+rejects on its `operationTimeout` — with the usual caveat below that it may still have landed. Reads simply
 resume. And one thing the tests deliberately do not stage: the case replicates the log to the
 replica before killing the master, so what is measured is the failover and not Redis's
 asynchronous replication dropping a write the dying master had not yet passed on. That loss is
