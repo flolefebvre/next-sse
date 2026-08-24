@@ -26,12 +26,21 @@ const STOP_TIMEOUT_MS = 10_000;
 export interface Instance {
   /** Where it answers, on a port of its own. */
   url: string;
+  /** That port, for the one scenario that wants an Instance back at the same address. */
+  port: number;
   /**
    * Signal it, and do not come back until the process is gone. What comes back is how it went:
    * a scenario is expected to hand that to `assertPromptExit`, so that every one of them is a
    * witness of the Drain (ADR-0011) rather than only the scenario that is about it.
    */
   stop(): Promise<Exit>;
+  /**
+   * Kill it where it stands, and do not come back until the process is gone: no signal it can
+   * handle, no Drain, no goodbye to the Connections it holds — the crash, as against the
+   * orchestrated shutdown `stop()` is. There is no `Exit` to read: a process that was given no
+   * say in its own end makes no claim worth asserting.
+   */
+  kill(): Promise<void>;
 }
 
 /** How a signalled Instance went. */
@@ -121,19 +130,24 @@ export function anApp(): App {
  * Every caller owns the Instance it started and must `stop()` it in a `finally`: a scenario
  * that fails between the two would otherwise leave a `next start` holding a port for the rest
  * of the machine's day.
+ *
+ * The port is the kernel's unless a caller names one, which only the scenario about a process
+ * coming back at the address it died on ever does (#45): every other Instance of every run takes
+ * a free port, so runs on one machine never collide.
  */
 export async function startInstance(
   app: App = anApp(),
   env: Record<string, string> = {},
+  onPort?: number,
 ): Promise<Instance> {
-  const port = await freePort();
+  const port = onPort ?? (await freePort());
   const child = spawn(NEXT_BIN, ["start", "--port", String(port)], {
     cwd: EXAMPLE_DIR,
     env: { ...process.env, ...app.env, ...env, NEXT_TELEMETRY_DISABLED: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const url = `http://127.0.0.1:${String(port)}`;
-  const instance: Instance = { url, stop: () => stop(child) };
+  const instance: Instance = { url, port, stop: () => stop(child), kill: () => kill(child) };
 
   try {
     await waitUntilServing(url, child);
@@ -229,10 +243,16 @@ async function tryFetch(url: string): Promise<Response | undefined> {
 }
 
 async function stop(child: ChildProcess): Promise<Exit> {
+  /**
+   * A `SIGKILL` is a forced end whoever pulled the trigger, including a `stop()` that gave up
+   * before this one was called: reading it off the process rather than off this call's own timer
+   * is what keeps a second `stop()` of an Instance that had to be killed reporting the reason it
+   * was, instead of accusing it of not handling a signal it never received.
+   */
   const ended = (forced: boolean): Exit => ({
     code: child.exitCode,
     signal: child.signalCode,
-    forced,
+    forced: forced || child.signalCode === "SIGKILL",
   });
   if (child.exitCode !== null || child.signalCode !== null) return ended(false);
 
@@ -248,6 +268,14 @@ async function stop(child: ChildProcess): Promise<Exit> {
   clearTimeout(fallback);
 
   return ended(forced);
+}
+
+async function kill(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  child.kill("SIGKILL");
+  await exited;
 }
 
 async function assertBuiltLibrary(): Promise<void> {

@@ -7,5 +7,8 @@ packages:
 allowBuilds:
   cpu-features: false
   esbuild: true
+  # Playwright's install script downloads every browser it ships with; the e2e project drives
+  # Chromium alone (ADR-0009), which the CI job asks for by name.
+  playwright: false
   protobufjs: false
   ssh2: false

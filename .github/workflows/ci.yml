@@ -101,6 +101,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The browser scenarios of #45. Playwright's own install script is blocked in
+      # pnpm-workspace.yaml, so the one browser the e2e project drives is asked for by name here
+      # — `--with-deps` because a bare runner has none of the system libraries Chromium links.
+      - name: Install Chromium for the browser scenarios
+        run: pnpm exec playwright install --with-deps chromium
+
       - name: Run the e2e project
         run: pnpm exec tsx scripts/gate.ts build,test:e2e
         env:
