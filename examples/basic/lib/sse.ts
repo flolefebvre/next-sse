@@ -47,6 +47,24 @@ export const sse = createSSE({
     authorize: (_params, session) => session.role === "admin",
   }),
   /**
+   * The broadcast: one Channel, no params, everybody on it.
+   *
+   * It is the plainest Channel an App can declare, and the one thing worth saying about it is
+   * that `authorize` is still written out. A Channel every Connection may read says so; the
+   * decision is never absent, and a reader of this Registry can tell public from forgotten.
+   *
+   * Nothing inside the App Publishes here: the announcements of this demo come from the worker
+   * in `worker/`, which is where a broadcast usually comes from — a deploy, a cron, an incident
+   * bot, none of which is a request.
+   */
+  announcements: channel({
+    pattern: "announcements",
+    events: {
+      posted: z.object({ id: z.string(), text: z.string().trim().min(1) }),
+    },
+    authorize: () => true,
+  }),
+  /**
    * Per-user notifications: one Channel per reader, and the param is what decides it.
    *
    * `authorize` is handed the params of the very Channel being asked for, so the rule is the

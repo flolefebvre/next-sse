@@ -62,6 +62,16 @@ export function appendNotice(text: string): Message {
   return appendTo("notices", text);
 }
 
+/** What every reader of this App sees, oldest first, whoever they are. */
+export function listAnnouncements(): Message[] {
+  return listOf("announcements");
+}
+
+/** One announcement, ready to be Published to everybody. */
+export function appendAnnouncement(text: string): Message {
+  return appendTo("announcements", text);
+}
+
 /** What this reader alone has been sent, oldest first: the read their Snapshot is taken of. */
 export function listNotifications(userId: string): Message[] {
   return listOf(`notifications:${userId}`);

@@ -1,10 +1,11 @@
 import { headers } from "next/headers";
 import { Suspense } from "react";
 
-import { listMessages, listNotices, listNotifications } from "@/lib/messages";
+import { listAnnouncements, listMessages, listNotices, listNotifications } from "@/lib/messages";
 import { sessionFrom } from "@/lib/session";
 import { ROOM_ID, sse } from "@/lib/sse";
 
+import { Announcements } from "./announcements";
 import { Messages } from "./messages";
 import { Notices } from "./notices";
 import { Notifications } from "./notifications";
@@ -33,11 +34,13 @@ async function Room() {
   const messages = await sse.snapshot(() => listMessages(ROOM_ID));
   const notices = await sse.snapshot(() => (session.role === "admin" ? listNotices() : []));
   const notifications = await sse.snapshot(() => listNotifications(session.userId));
+  const announcements = await sse.snapshot(() => listAnnouncements());
 
   return (
     <>
       <RoleSwitch role={session.role} />
       <Messages roomId={ROOM_ID} snapshot={messages} />
+      <Announcements snapshot={announcements} />
       <Notifications userId={session.userId} snapshot={notifications} />
       <Notices snapshot={notices} />
     </>
