@@ -1,9 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
+
+import { inject } from "vitest";
 
 import { freePort } from "./ports.js";
 
@@ -85,17 +88,48 @@ export async function buildExample(): Promise<void> {
 }
 
 /**
+ * One App of the run, as its Instances are configured: the run's server, under a Prefix nothing
+ * else uses.
+ *
+ * The Prefix is the whole of the isolation, and it is enough — it is what keeps two Apps apart
+ * on a shared server anyway (ADR-0006). A scenario that wants two Instances of one App hands
+ * this same value to both; two scenarios never see each other's log.
+ */
+export interface App {
+  /** What every Instance of this App is started with, on top of its own environment. */
+  env: Record<string, string>;
+}
+
+/** A fresh App on the run's server: a Prefix of its own, and nothing else configured. */
+export function anApp(): App {
+  return {
+    env: {
+      REDIS_URL: inject("redisUrl"),
+      NEXT_SSE_PREFIX: `next-sse-e2e-${randomUUID().slice(0, 8)}`,
+    },
+  };
+}
+
+/**
  * Start one Instance of the built example app on a free port and wait until it serves.
+ *
+ * It is an Instance of a fresh App unless the caller brings one, which is what a scenario about
+ * a single Instance wants: a log with nobody else on it. Everything the App configures can be
+ * overridden per Instance through `env`, so a scenario needing a short lifetime or a fast
+ * heartbeat sets it there rather than in a branch of the library (ADR-0009).
  *
  * Every caller owns the Instance it started and must `stop()` it in a `finally`: a scenario
  * that fails between the two would otherwise leave a `next start` holding a port for the rest
  * of the machine's day.
  */
-export async function startInstance(env: Record<string, string> = {}): Promise<Instance> {
+export async function startInstance(
+  app: App = anApp(),
+  env: Record<string, string> = {},
+): Promise<Instance> {
   const port = await freePort();
   const child = spawn(NEXT_BIN, ["start", "--port", String(port)], {
     cwd: EXAMPLE_DIR,
-    env: { ...process.env, ...env, NEXT_TELEMETRY_DISABLED: "1" },
+    env: { ...process.env, ...app.env, ...env, NEXT_TELEMETRY_DISABLED: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const url = `http://127.0.0.1:${String(port)}`;
@@ -109,6 +143,60 @@ export async function startInstance(env: Record<string, string> = {}): Promise<I
   }
 
   return instance;
+}
+
+/** Two Instances of one App, and the way both go. */
+export interface TwoInstances {
+  /** The Instance a client is on. */
+  here: Instance;
+  /** Another Instance of the same App, which may hold Connections of its own. */
+  there: Instance;
+  /**
+   * Signal both and assert each ended its own Connections. Stopping one of them earlier — as a
+   * failover scenario does — costs nothing here: a process that is already gone is not
+   * signalled twice, and the exit it reported the first time is the one asserted again.
+   */
+  stop(): Promise<void>;
+}
+
+/**
+ * Two Instances of one App, on one server: two `next start` processes on ports of their own,
+ * sharing a Prefix and nothing else.
+ *
+ * That is the topology this library exists for — two pods behind a load balancer — and the one
+ * the integration project can only approximate in a single process (ADR-0009): here each
+ * Instance has its own module registry, its own `globalThis`, its own Connection table and its
+ * own subscription, exactly as a deployment does. They are booted together because a run pays
+ * for every boot in wall-clock and no scenario needs one before the other.
+ */
+export async function twoInstances(app: App = anApp()): Promise<TwoInstances> {
+  const [here, there] = await bothStarted(app);
+
+  return {
+    here,
+    there,
+    stop: async () => {
+      const exits = await Promise.all([here.stop(), there.stop()]);
+      for (const exit of exits) assertPromptExit(exit);
+    },
+  };
+}
+
+/**
+ * Both Instances up, or neither: the one that did start is signalled before the failure is
+ * raised, so a boot that goes wrong leaves no `next start` behind.
+ */
+async function bothStarted(app: App): Promise<[Instance, Instance]> {
+  const started = await Promise.allSettled([startInstance(app), startInstance(app)]);
+  const running = started.flatMap((one) => (one.status === "fulfilled" ? [one.value] : []));
+  const failed = started.find((one) => one.status === "rejected");
+
+  if (failed !== undefined) {
+    await Promise.all(running.map((instance) => instance.stop()));
+    throw failed.reason as Error;
+  }
+
+  return running as [Instance, Instance];
 }
 
 async function waitUntilServing(url: string, child: ChildProcess): Promise<void> {
