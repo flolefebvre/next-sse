@@ -436,9 +436,12 @@ async function ensureFeed(state: InstanceState): Promise<void> {
  *
  * The Transport reports it once per resume, and only when the position it resumed from is below
  * what the log still serves; an outage that lost nothing costs the Connections nothing. It also
- * reports *where* it resumed, and that is what each `reset` carries: every Entry this feed will
- * go on to deliver comes after that position, so a Connection resuming from it loses nothing —
- * where the Cursor it was holding is exactly the one the log no longer serves.
+ * reports the oldest position it can still serve, and that is what each `reset` carries. It is a
+ * position the log answers rather than the one just below it, which is the whole difference
+ * between telling these Connections where they stand and sending them back into the gap they
+ * were told about — and the Cursor they were holding is, by definition, the second of those.
+ * The one Entry sitting exactly at that position is delivered live on this very Connection,
+ * moments after the `reset` names it.
  */
 function gap(state: InstanceState, resumeFrom: Cursor): void {
   for (const held of state.held.values()) {

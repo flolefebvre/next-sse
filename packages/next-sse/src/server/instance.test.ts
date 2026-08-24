@@ -375,12 +375,26 @@ test("the cut holds when the replay ends on an Entry this Connection is not subs
   expect(trace).toEqual(["chat:42 mid-replay", "caught-up", "chat:42 live"]);
 });
 
-test("a Cursor the log has dropped opens on the tail, with a reset and no replay", async () => {
+/**
+ * A log that has dropped what a Connection is about to bring: three Messages under a retention of
+ * one, and the Cursor of the first of them, which the log no longer serves.
+ */
+const withADroppedCursor = async (): Promise<{
+  transport: Transport;
+  instance: Instance;
+  stale: Cursor;
+}> => {
   const transport = createMemoryTransport({ retention: { cap: 1 } });
   const instance = anInstance({ transport });
   const stale = await transport.publish(message("chat:42", { text: "one" }));
   await transport.publish(message("chat:42", { text: "two" }));
   await transport.publish(message("chat:42", { text: "three" }));
+
+  return { transport, instance, stale };
+};
+
+test("a Cursor the log has dropped opens on the tail, with a reset and no replay", async () => {
+  const { transport, instance, stale } = await withADroppedCursor();
   const { connection, trace } = tracing("chat:42");
 
   const opening = await instance.open(connection, { after: stale });
@@ -400,56 +414,54 @@ test("a Cursor the log has dropped opens on the tail, with a reset and no replay
  * and a reconnect from it is an ordinary live-only resume rather than a second gone Cursor.
  */
 test("the reset of a dropped Cursor carries the tail, and a reconnect from it is not reset again", async () => {
-  const transport = createMemoryTransport({ retention: { cap: 1 } });
-  const instance = anInstance({ transport });
-  const stale = await transport.publish(message("chat:42", { text: "one" }));
-  await transport.publish(message("chat:42", { text: "two" }));
-  await transport.publish(message("chat:42", { text: "three" }));
+  const { instance, stale } = await withADroppedCursor();
   const first = tracing("chat:42");
 
   const opening = await instance.open(first.connection, { after: stale });
   await opening.start();
   opening.close();
 
-  const carried = position(first.trace);
   const second = tracing("chat:42");
-  await (await instance.open(second.connection, { after: carried })).start();
+  await (await instance.open(second.connection, { after: position(first.trace) })).start();
 
   expect(second.trace).toEqual(["caught-up"]);
 });
 
 /**
- * A Transport whose replay walks into a log that moved under it: the first page is served and
- * every page after it is `gone`, which is what a trimmed log does to a reader it has overtaken.
+ * A replay walking into a log that moved under it: the first page is served and every page after
+ * it is `gone`, which is what a trimmed log does to a reader it has overtaken. The Cursor the
+ * Connection opened with was served, so it is the only position `ready` ever gave it — and the
+ * one it must not be sent back to.
  */
-const goneAfterOnePage = (transport: Transport): Transport => {
-  let pages = 0;
-
-  return {
-    ...transport,
-    read: async (after, limit) => {
-      if (pages > 0) return { gone: true };
-      pages += 1;
-      const page = await transport.read(after, limit);
-
-      return "gone" in page ? page : { ...page, done: false };
-    },
-  };
-};
-
-/**
- * The Cursor this Connection opened with was served, and then went away mid-replay. It is the
- * one position it must not be sent back to, and it is also the only one `ready` ever gave it —
- * so the `reset` reads a fresh tail and names that instead.
- */
-test("a log that moves under a running replay resets from a fresh tail, not the Cursor that went away", async () => {
+const whenTheLogMovesMidReplay = async (
+  tail?: () => Promise<Cursor>,
+): Promise<{ memory: Transport; from: Cursor; trace: string[] }> => {
   const memory = createMemoryTransport();
-  const instance = anInstance({ transport: goneAfterOnePage(memory) });
+  let pages = 0;
+  const instance = anInstance({
+    transport: {
+      ...memory,
+      ...(tail === undefined ? {} : { tail }),
+      read: async (after, limit) => {
+        if (pages > 0) return { gone: true };
+        pages += 1;
+        const page = await memory.read(after, limit);
+
+        return "gone" in page ? page : { ...page, done: false };
+      },
+    },
+  });
   const from = await memory.tail();
   await memory.publish(message("chat:42", { text: "missed" }));
   const { connection, trace } = tracing("chat:42");
 
   await (await instance.open(connection, { after: from })).start();
+
+  return { memory, from, trace };
+};
+
+test("a log that moves under a running replay resets from a fresh tail, not the Cursor that went away", async () => {
+  const { memory, from, trace } = await whenTheLogMovesMidReplay();
 
   expect(trace).toEqual(["chat:42 missed", `reset ${await memory.tail()}`, "caught-up"]);
   expect(position(trace)).not.toBe(from);
@@ -463,18 +475,9 @@ test("a log that moves under a running replay resets from a fresh tail, not the 
  * Connection.
  */
 test("a tail the log cannot answer leaves the reset carrying where the Connection opened", async () => {
-  const memory = createMemoryTransport();
-  const instance = anInstance({
-    transport: {
-      ...goneAfterOnePage(memory),
-      tail: () => Promise.reject(new TransportUnavailableError("the backend is away")),
-    },
-  });
-  const from = await memory.tail();
-  await memory.publish(message("chat:42", { text: "missed" }));
-  const { connection, trace } = tracing("chat:42");
-
-  await (await instance.open(connection, { after: from })).start();
+  const { from, trace } = await whenTheLogMovesMidReplay(() =>
+    Promise.reject(new TransportUnavailableError("the backend is away")),
+  );
 
   expect(trace).toEqual(["chat:42 missed", `reset ${from}`, "caught-up"]);
 });

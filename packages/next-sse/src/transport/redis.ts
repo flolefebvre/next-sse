@@ -357,15 +357,18 @@ function createRedisLog(options: RedisTransportOptions): Transport {
     narrate(`the log dropped ${position}, which the reader was resuming from`);
 
     /**
-     * The loop resumes just below the oldest Entry the log still holds, so that Entry is
-     * delivered and the same gap can never be reported twice. It is also what the gap is
-     * reported *with*: every Entry this feed goes on to deliver comes after it, so a reader
-     * told to start there is told exactly where this feed now stands.
+     * The gap is reported with the oldest Entry the log still holds, and the loop resumes just
+     * below it — so that Entry is delivered, and the same gap can never be reported twice.
+     *
+     * The two are one position apart on purpose. What the gap names is handed on to clients
+     * (ADR-0004), so it has to be a position this log can still serve, and `justBefore` is by
+     * construction below everything the log kept: `read` answers `gone` for it, which would send
+     * every one of those clients straight back into the gap they were being told about.
      */
-    const from = justBefore(info.oldestKeptId);
-    for (const { onGap } of feeds) onGap(from);
+    const oldest = info.oldestKeptId;
+    for (const { onGap } of feeds) onGap(oldest);
 
-    return from;
+    return justBefore(oldest);
   };
 
   return {

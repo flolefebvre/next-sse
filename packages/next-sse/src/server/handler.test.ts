@@ -337,6 +337,26 @@ test("an empty Cursor is no Cursor at all: the Connection adopts the tail, live-
 });
 
 /**
+ * An App whose log has dropped what a Connection is about to bring: three Messages under a
+ * retention of one, and the Cursor of the first of them, which the log no longer serves.
+ */
+const withADroppedCursor = async (): Promise<{
+  transport: Transport;
+  sse: ChatApp;
+  chat: ReturnType<ChatApp["chat"]>;
+  stale: string;
+}> => {
+  const transport = createMemoryTransport({ retention: { cap: 1 } });
+  const sse = appWith(transport);
+  const chat = sse.chat({ roomId: "42" });
+  const stale = await chat.message({ text: "one" });
+  await chat.message({ text: "two" });
+  await chat.message({ text: "three" });
+
+  return { transport, sse, chat, stale };
+};
+
+/**
  * ADR-0006 supersedes ADR-0004 here: a Cursor the log cannot serve is never a `400`, because
  * the client core retries a non-200 with the same URL forever. It is a `200` stream carrying
  * the tail as its Cursor and a `reset` in band, so the App refetches once and goes on live.
@@ -345,12 +365,7 @@ test.each([
   ["one the log has dropped", true],
   ["one no log ever minted", false],
 ])("a Cursor %s is a 200 stream with a reset, never a non-200", async (_case, dropped) => {
-  const transport = createMemoryTransport({ retention: { cap: 1 } });
-  const sse = appWith(transport);
-  const chat = sse.chat({ roomId: "42" });
-  const stale = await chat.message({ text: "one" });
-  await chat.message({ text: "two" });
-  await chat.message({ text: "three" });
+  const { transport, sse, chat, stale } = await withADroppedCursor();
   const cursor = dropped ? stale : "not-a-cursor";
 
   const response = await connect(sse, `?channel=chat:42&cursor=${cursor}`);
@@ -380,12 +395,7 @@ test.each([
  * from then on this client is where the Instance put it.
  */
 test("a reconnect from the position a reset carried is not reset a second time", async () => {
-  const transport = createMemoryTransport({ retention: { cap: 1 } });
-  const sse = appWith(transport);
-  const chat = sse.chat({ roomId: "42" });
-  const stale = await chat.message({ text: "one" });
-  await chat.message({ text: "two" });
-  await chat.message({ text: "three" });
+  const { sse, stale } = await withADroppedCursor();
 
   const first = framesOf(await connect(sse, `?channel=chat:42&cursor=${stale}`));
   await first.next();

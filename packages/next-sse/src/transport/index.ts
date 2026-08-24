@@ -52,12 +52,14 @@ export interface Publisher {
 /**
  * The whole ordered log (ADR-0005): the Publisher half, plus paging strictly after a Cursor
  * and the live feed every Instance reads. `onGap` fires exactly once when the position the
- * subscription resumes from is gone, and is handed the position it resumed at instead — the one
- * every Entry this feed is about to deliver comes after.
+ * subscription resumes from is gone, and is handed a position in its place: the oldest one this
+ * log can still serve, which everything the feed is about to deliver comes at or after.
  *
  * That argument is what lets the Instance tell its Connections where they now stand rather than
  * only that they are lost: a position this layer already holds travels in band, and is never
- * read back out of the log by whoever needs it (ADR-0004).
+ * read back out of the log by whoever needs it (ADR-0004). It is passed on to clients, so it
+ * must be a position `read` will serve rather than one it answers `gone` for — which rules out
+ * the position just below the oldest Entry, however naturally a reader resumes there.
  */
 export interface Transport extends Publisher {
   read(after: Cursor | undefined, limit: number): Promise<Page>;
