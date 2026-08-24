@@ -1,0 +1,10 @@
+{
+  "name": "worker-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A process outside Next.js: it Publishes into an App's log with no Next.js and no React installed.",
+  "dependencies": {
+    "@flefebvre/next-sse": "workspace:*"
+  }
+}

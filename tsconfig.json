@@ -15,5 +15,11 @@
     "noEmit": true
   },
   "include": ["packages/*/src", "e2e/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "*.config.ts"],
-  "exclude": ["**/dist", "**/node_modules", "tests/dist-consumer", "examples"]
+  "exclude": [
+    "**/dist",
+    "**/node_modules",
+    "tests/dist-consumer",
+    "tests/worker-consumer",
+    "examples"
+  ]
 }
