@@ -289,12 +289,16 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
      * holds is behind a gap it cannot describe: the only honest answer is to fetch the state
      * again. A subscriber that brought its own handler is the one told; the Connection's
      * handler — the provider's `router.refresh()` by default — is called once for all the
-     * others, so a page of hooks that said nothing costs one refetch rather than one each.
+     * others, so a page of hooks that said nothing costs one refetch rather than one each. A
+     * subscriber whose Channel this Connection refused is not one of them: it was dropped from
+     * this Connection, and the gap this Cursor left is not in anything it holds — refetching on
+     * its behalf would refresh a route because of a stream it is not on.
      * Reset is not a status (ADR-0007): the Connection is live and stays live.
      */
     opened.addEventListener("reset", () => {
       let anyDefault = false;
       for (const subscriber of [...subscribers]) {
+        if (refused.has(subscriber.channel)) continue;
         if (subscriber.onReset === undefined) anyDefault = true;
         else subscriber.onReset();
       }
@@ -381,15 +385,18 @@ export function createCore({ url, eventSource, onReset }: CoreOptions): Core {
        * live-only in the same breath — it joined at the live point, so the next replay this
        * Connection carries is one it lived through the beginning of and must not miss. One that
        * brought a Cursor is neither: a Connection is about to reopen on its behalf, and it
-       * starts where every subscriber of that Connection starts. A Channel this Connection was
-       * refused is neither live nor about to be, and the hook hears that from the next `ready`.
+       * starts where every subscriber of that Connection starts.
+       *
+       * A hook mounting onto a Channel this Connection was refused is told that, for the same
+       * reason and at once: the Channel set has not changed, so nothing will reopen and no
+       * further `ready` will ever reach it — left alone it would report `connecting` for as long
+       * as the page lives. There has to be a Connection for that to be the truth; when the last
+       * one was closed for being refused everything, the reconcile this subscription schedules
+       * is about to open another and Authorize is about to be asked again.
        */
-      if (
-        live &&
-        open.has(subscriber.channel) &&
-        !refused.has(subscriber.channel) &&
-        subscription.cursor === undefined
-      ) {
+      if (source !== undefined && refused.has(subscriber.channel)) {
+        setStatus(subscriber, "refused");
+      } else if (live && open.has(subscriber.channel) && subscription.cursor === undefined) {
         subscriber.liveOnly = false;
         setStatus(subscriber, "live");
       }

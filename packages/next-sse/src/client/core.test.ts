@@ -745,7 +745,11 @@ test("a Channel that was live is refused when the next Connection says so", asyn
   expect(streaming.statuses).toEqual(["live", "connecting", "refused"]);
 });
 
-/** A hook mounting onto a Connection that already refused its Channel is refused, not live. */
+/**
+ * A hook mounting onto a Connection that already refused its Channel is told so at once. Nothing
+ * else would ever tell it: the Channel set has not changed, so no Connection reopens and no
+ * second `ready` is coming.
+ */
 test("a subscriber joining a Connection that refused its Channel is told so", async () => {
   const { core, opened } = setup();
   core.subscribe(recorder("chat:secret"));
@@ -756,6 +760,30 @@ test("a subscriber joining a Connection that refused its Channel is told so", as
 
   const late = recorder("chat:secret");
   core.subscribe(late);
+  await tick();
 
-  expect(late.statuses).toEqual([]);
+  expect(late.statuses).toEqual(["refused"]);
+  expect(opened).toHaveLength(1);
+});
+
+/**
+ * A Reset is the Connection saying its Cursor is gone, and it concerns the Channels that
+ * Connection carries. A refused subscriber is not on it, so refetching on its behalf — or
+ * refreshing the whole route for it — would be an answer to something that never happened to it.
+ */
+test("a Reset on a partly refused Connection leaves the refused subscribers alone", async () => {
+  const appWide = vi.fn();
+  const { EventSource, opened } = fakeEventSources();
+  const core = createCore({ url: "/api/sse", eventSource: EventSource, onReset: appWide });
+  const own = vi.fn();
+  const refused = recorder("chat:secret", { onReset: own });
+  core.subscribe(refused);
+  core.subscribe(recorder("chat:42", { onReset: own }));
+  await tick();
+  only(opened).ready({ cursor: "cursor-0", refused: ["chat:secret"] });
+
+  only(opened).emit("reset");
+
+  expect(own).toHaveBeenCalledTimes(1);
+  expect(appWide).not.toHaveBeenCalled();
 });
