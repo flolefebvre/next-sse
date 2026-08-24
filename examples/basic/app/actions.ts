@@ -1,9 +1,16 @@
 "use server";
 
+import type { Snapshot } from "@flefebvre/next-sse/client";
 import { revalidatePath } from "next/cache";
 import { cookies, headers } from "next/headers";
 
-import { appendMessage, appendNotice, appendNotification, type Message } from "@/lib/messages";
+import {
+  appendMessage,
+  appendNotice,
+  appendNotification,
+  listAnnouncements,
+  type Message,
+} from "@/lib/messages";
 import { ROLE_COOKIE, sessionFrom, type Role } from "@/lib/session";
 import { sse } from "@/lib/sse";
 
@@ -38,6 +45,19 @@ export async function announce(text: string): Promise<Message> {
   await sse.admin().notice(notice);
 
   return notice;
+}
+
+/**
+ * The announcements as they stand now, with the Cursor taken before the read: a Snapshot minted
+ * outside a page render, for the one component that refetches itself.
+ *
+ * `sse.snapshot` is not a Server-Component-only call — it is the App asking its log where it
+ * stands and reading its data in that order — so a server action mints one exactly as the page
+ * does. What comes back crosses to the client as an ordinary serialisable value, opaque here as
+ * it is there.
+ */
+export async function latestAnnouncements(): Promise<Snapshot<Message[]>> {
+  return sse.snapshot(() => listAnnouncements());
 }
 
 /**

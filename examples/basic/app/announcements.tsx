@@ -1,9 +1,12 @@
 "use client";
 
 import { upsertBy, type Snapshot } from "@flefebvre/next-sse/client";
+import { useState } from "react";
 
 import type { Message } from "@/lib/messages";
 import { channels, useChannelState } from "@/lib/sse.client";
+
+import { latestAnnouncements } from "./actions";
 
 /**
  * The broadcast, as a page consumes one: subscribe, and render what arrives.
@@ -17,9 +20,37 @@ import { channels, useChannelState } from "@/lib/sse.client";
  * which is what makes it the natural place to show a Reset that refetches instead of refreshing.
  */
 export function Announcements({ snapshot }: { snapshot: Snapshot<Message[]> }) {
-  const { state, status } = useChannelState(channels.announcements(), snapshot, {
-    posted: upsertBy("id"),
-  });
+  /**
+   * The Reset override, and the whole of what one is: a Snapshot this component owns.
+   *
+   * A Reset says the Cursor this Channel was resuming from is unusable — too old for what the
+   * log still keeps — so the data on screen may have holes in it and the App has to read again.
+   * The provider's default answer is `router.refresh()`, which re-runs the whole page; this
+   * panel does the smaller thing instead and refetches its own list. Handing the hook the new
+   * Snapshot is what closes the loop: it re-seeds the state and reopens the Channel from the
+   * position that read was taken at, so nothing published in between is missed.
+   *
+   * A page whose Reset costs a refresh needs none of this. Write one where the refresh is too
+   * much — a heavy route, a form the reader is in the middle of — or where this Channel's data
+   * is the only thing worth reading again.
+   *
+   * The second piece of state is the server's: whenever a new render does arrive — after a Kick,
+   * after a navigation — its Snapshot is the newer one and it wins over whatever this component
+   * fetched for itself.
+   */
+  const [seed, setSeed] = useState(snapshot);
+  const [rendered, setRendered] = useState(snapshot);
+  if (rendered !== snapshot) {
+    setRendered(snapshot);
+    setSeed(snapshot);
+  }
+
+  const { state, status } = useChannelState(
+    channels.announcements(),
+    seed,
+    { posted: upsertBy("id") },
+    { onReset: () => void latestAnnouncements().then(setSeed) },
+  );
 
   return (
     <section>
