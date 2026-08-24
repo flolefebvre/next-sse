@@ -96,7 +96,11 @@ export default defineConfig({
           fileParallelism: false,
           testTimeout: 60_000,
           hookTimeout: 300_000,
-          sequence: { groupOrder: 2 },
+          /**
+           * Last of all, and in a group of its own: two projects sharing a group must agree on
+           * their worker count, and this one runs one file at a time where `example` does not.
+           */
+          sequence: { groupOrder: 3 },
         },
       },
     ],
