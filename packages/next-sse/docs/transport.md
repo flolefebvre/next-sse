@@ -97,16 +97,21 @@ real master watched by a sentinel through an injected `createSentinel` client, o
 Valkey 8 — the same suite standalone runs, minus the outage cases, which need one Transport's own
 path to the backend cut and have no honest counterpart in a multi-node topology.
 
-**Failover is covered too, and the two kinds differ.** A replica is promoted under a subscription
-that is mid-read, on a real three-master cluster and on a real sentinel, and in both the Publish
-that follows arrives with no gap and no Reset, well inside the 20 s the cases bound it to (the
-client's `socketTimeout` of 15 s, plus the reader's reissue pause and a round trip). What differs
-is what your App sees:
+**Failover is covered too, in both the ways a master is lost, and the kinds differ.** A replica is
+promoted under a subscription that is mid-read, on a real three-master cluster and on a real
+sentinel; and on the sentinel the master the reader is demonstrably blocked on is also **killed
+outright** (`SHUTDOWN NOSAVE`, no handover), which is what a lost node actually looks like. In every
+one of them the Publish that follows arrives with no gap and no Reset, well inside the bound the
+case holds it to: 20 s for a promotion (the client's `socketTimeout` of 15 s, plus the reader's
+reissue pause and a round trip), and 26 s for a kill — the same 20 s, after the sentinel's own
+`down-after-milliseconds` and `failover-timeout`, since nothing can be promoted until the death has
+been noticed. What differs is what your App sees:
 
-| Topology     | What the reader does                                                                                        | What `onError` reports                              |
-| ------------ | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| **Cluster**  | the demoted node ends the blocking read, and the loop blocks again on the new master after its 250 ms pause | one failure, `operation: "subscribe"`, per failover |
-| **Sentinel** | node-redis moves the reader onto the new master itself, within about a second                               | nothing                                             |
+| Topology                    | What the reader does                                                                                        | What `onError` reports                              |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| **Cluster**                 | the demoted node ends the blocking read, and the loop blocks again on the new master after its 250 ms pause | one failure, `operation: "subscribe"`, per failover |
+| **Sentinel**                | node-redis moves the reader onto the new master itself, within about a second                               | nothing                                             |
+| **Sentinel, master killed** | the same: node-redis carries the blocked read across, once the sentinel has promoted a replica              | nothing on the read path                            |
 
 The Cluster error is `UNBLOCKED force unblock from blocking operation, instance state changed
 (master -> replica?)` — the server saying it is no longer the master of that slot. **It is expected
@@ -115,9 +120,27 @@ an App that alerts on `onError` should not treat one per failover as an incident
 Message read from the demoted node in the moment after the promotion is not a gap either: that node
 is a replica of the new master, so the worst the window costs is replication lag.
 
-The one thing no test observes is a node the reader sits on dying outright rather than handing over.
-That is the ordinary connection loss the Transport already survives: the read fails, the reader
-resumes from its last position, and a Reset is raised only if the log has meanwhile dropped it.
+**Killing the Sentinel master under the reader changes nothing the reader reports** — measured, not
+reasoned. Across runs, from the `SHUTDOWN` to the next Message being delivered: **~4.1 s end to
+end**, of which ~2.1 s is the sentinel noticing and electing (its 1 s `down-after-milliseconds`
+plus the election) and ~1.9 s is node-redis re-homing the client onto the new master; the Publish
+that follows is accepted within milliseconds and delivered within tens of them. There are **no**
+Resets and **no** `onError` on the read path at all. The blocked `XREAD`
+never fails into the Transport's own reconnect path, because node-redis's Sentinel client (6.2.x)
+re-homes it first. That path stays observed on Cluster, where the demoted node ends the read
+itself. Which layer carries the reader is not part of what this library promises: the guarantee is
+delivery — or a Reset — inside the bound, and it holds whether node-redis absorbs the loss or hands
+it to the Transport's reconnect path.
+
+What an ungraceful loss does cost your App is on the **write** side, in two windows for two
+different reasons. For the ~2 s of detection and election there is genuinely no master to write to;
+for the ~2 s after that a master exists, but the client has not re-homed onto it yet. A Publish
+attempted in either rejects on its `operationTimeout` — with the usual caveat below that it may
+still have landed. Reads simply resume. And one thing the tests deliberately do not stage: the
+case replicates the log to the replica before killing the master, so what is measured is the
+failover and not Redis's asynchronous replication dropping a write the dying master had not yet
+passed on. That loss is real, it is Redis's, and on a promoted replica missing Entries the reader
+would report a Reset.
 
 ### Error behaviour
 

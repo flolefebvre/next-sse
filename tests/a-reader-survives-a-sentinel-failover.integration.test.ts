@@ -30,7 +30,7 @@ test(
   async () => {
     const { client, topology } = injected();
 
-    await readerSurvivesAFailover(client, topology, "sentinel");
+    await readerSurvivesAFailover(client, { action: "promote", topology }, "sentinel");
   },
   FAILOVER_TIMEOUT_MS,
 );
