@@ -2,8 +2,8 @@ import { expect, expectTypeOf, test } from "vitest";
 
 import {
   assertFillablePattern,
+  collidingName,
   fillPattern,
-  isLiteralPattern,
   matchPattern,
   type ParamNames,
   type ParamsArgs,
@@ -108,8 +108,65 @@ test("the literal parts of a pattern are not a pattern of their own", () => {
   expect(matchPattern("a.c:{id}", "a.c:42")).toEqual({ id: "42" });
 });
 
-test("a pattern with no placeholder is already a Channel name", () => {
-  expect(isLiteralPattern("announcements")).toBe(true);
-  expect(isLiteralPattern("chat:admin")).toBe(true);
-  expect(isLiteralPattern("chat:{roomId}")).toBe(false);
+/**
+ * A param stops at the separator, so the separators a name holds are the ones its pattern spells
+ * out: two patterns that ask for a different number of parts have no name in common, whatever
+ * their params are.
+ */
+test("patterns of different segment counts can never make the same name", () => {
+  expect(collidingName("chat:{roomId}", "announcements")).toBeUndefined();
+  expect(collidingName("chat:{roomId}", "chat:{roomId}:typing")).toBeUndefined();
+  expect(collidingName("{a}", "{a}:{b}")).toBeUndefined();
+});
+
+/** The witness is a name both patterns make, and both matchers take apart again. */
+test("two patterns that can make one name answer with it", () => {
+  const collisions = [
+    ["user:{id}", "{kind}:7"],
+    ["chat:{roomId}", "chat:admin"],
+    ["chat:{roomId}", "chat:{room}"],
+    ["{a}:{b}", "x:y"],
+    ["a{id}c", "{head}bc"],
+    ["user:{id}:inbox", "user:7:{box}"],
+  ] as const;
+
+  for (const [pattern, other] of collisions) {
+    const name = collidingName(pattern, other);
+
+    expect(name, `${pattern} / ${other}`).toBeDefined();
+    expect(matchPattern(pattern, name ?? ""), `${pattern} / ${name}`).toBeDefined();
+    expect(matchPattern(other, name ?? ""), `${other} / ${name}`).toBeDefined();
+  }
+});
+
+test("patterns whose literal parts disagree have no name in common", () => {
+  expect(collidingName("chat:{roomId}", "presence:{roomId}")).toBeUndefined();
+  expect(collidingName("user:{id}:inbox", "user:{id}:outbox")).toBeUndefined();
+  expect(collidingName("announcements", "audit")).toBeUndefined();
+  expect(collidingName("a{id}c", "a{id}d")).toBeUndefined();
+});
+
+/** Two names of one Channel: the same literal pattern twice, which is the same Channel. */
+test("a pattern collides with itself", () => {
+  expect(collidingName("announcements", "announcements")).toBe("announcements");
+  expect(collidingName("user:{id}", "user:{id}")).toBeDefined();
+});
+
+/** A param is `[^:]+`: it takes at least one character, so an empty part is nobody's name. */
+test("a param never stands for an empty part of a name", () => {
+  expect(collidingName("chat:{roomId}", "chat:")).toBeUndefined();
+  expect(collidingName("{id}", "")).toBeUndefined();
+});
+
+/**
+ * A pattern that names one param twice ties its parts to each other, and the walk does not carry
+ * that tie: it answers with a witness the matcher then refuses. The pair is refused all the same
+ * — erring towards a Registry the App has to rename is the safe direction — and the caller is
+ * what checks the witness before quoting it.
+ */
+test("a param named twice is answered conservatively", () => {
+  const name = collidingName("{a}:{a}", "{b}:{b}x");
+
+  expect(name).toBeDefined();
+  expect(matchPattern("{a}:{a}", name ?? "")).toBeUndefined();
 });

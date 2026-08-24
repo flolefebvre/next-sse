@@ -99,12 +99,116 @@ function escapeLiteral(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** The character a witness uses where both patterns accept any character at all. */
+const WITNESS_FILLER = "x";
+
 /**
- * Whether this pattern is already a Channel name: no placeholder to fill, so it names exactly
- * one Channel.
+ * One step of a segment: a character the pattern spells out, the one character a param must
+ * have, or the characters a param may have on top of it.
  */
-export function isLiteralPattern(pattern: string): boolean {
-  return !new RegExp(PLACEHOLDER.source).test(pattern);
+type Step = { kind: "char"; char: string } | { kind: "one" } | { kind: "more" };
+
+/**
+ * A Channel name both patterns can make, or `undefined` when no name belongs to both.
+ *
+ * This is what makes an overlap decidable on the patterns alone, without the params neither the
+ * Registry nor this function has. A param is `[^:]+` — non-empty, and it stops at the separator
+ * — so the separators a name holds are the ones its pattern spells out: two patterns of
+ * different segment counts can never meet, and two of the same count meet exactly where every
+ * one of their segments does. A segment is then literal text and `[^:]+` holes, and whether two
+ * of those share a word is the ordinary walk below, which also spells the word out.
+ *
+ * The answer is exact for every pattern whose param names are distinct within it, which is what
+ * the type level models — `ParamsOf` reads a name once — and it is the answer the matcher would
+ * give: with distinct names, anything the holes match fills back in. A pattern that names one
+ * param twice constrains its holes to each other, and this walk does not carry that constraint:
+ * it answers with a witness the matcher may then refuse. Erring that way is the safe one — a
+ * pair is refused that could have been allowed, never the reverse — and the caller is expected
+ * to check the witness before quoting it.
+ */
+export function collidingName(pattern: string, other: string): string | undefined {
+  const segments = pattern.split(SEPARATOR);
+  const others = other.split(SEPARATOR);
+  if (segments.length !== others.length) return undefined;
+
+  const shared: string[] = [];
+  for (const [index, segment] of segments.entries()) {
+    const both = sharedSegment(stepsOf(segment), stepsOf(others[index] ?? ""));
+    if (both === undefined) return undefined;
+    shared.push(both);
+  }
+
+  return shared.join(SEPARATOR);
+}
+
+/** A segment as the steps a name has to take to match it, one per character and two per param. */
+function stepsOf(segment: string): Step[] {
+  const steps: Step[] = [];
+  let end = 0;
+  for (const match of segment.matchAll(PLACEHOLDER)) {
+    for (const char of segment.slice(end, match.index)) steps.push({ kind: "char", char });
+    steps.push({ kind: "one" }, { kind: "more" });
+    end = match.index + match[0].length;
+  }
+  for (const char of segment.slice(end)) steps.push({ kind: "char", char });
+
+  return steps;
+}
+
+/**
+ * The shortest text both segments accept, spelled out, or `undefined` when there is none.
+ *
+ * Two positions walk together, and the only choice is what a `more` does: stand aside and let
+ * the walk move on without it, or take the character the other side is asking for. Every pair of
+ * positions is answered once, so the walk is over in a step per pair.
+ */
+function sharedSegment(left: Step[], right: Step[]): string | undefined {
+  const answered = new Map<string, string | undefined>();
+
+  const from = (here: number, there: number): string | undefined => {
+    const key = `${here}:${there}`;
+    if (answered.has(key)) return answered.get(key);
+
+    const answer = walk(here, there);
+    answered.set(key, answer);
+
+    return answer;
+  };
+
+  const walk = (here: number, there: number): string | undefined => {
+    if (here === left.length) return rest(right, there);
+    if (there === right.length) return rest(left, here);
+
+    const step = left[here] as Step;
+    const other = right[there] as Step;
+    if (step.kind === "more") {
+      return from(here + 1, there) ?? taken(other, from(here, there + 1));
+    }
+    if (other.kind === "more") {
+      return from(here, there + 1) ?? taken(step, from(here + 1, there));
+    }
+    if (step.kind === "char" && other.kind === "char" && step.char !== other.char) return undefined;
+
+    return taken(step.kind === "char" ? step : other, from(here + 1, there + 1));
+  };
+
+  return from(0, 0);
+}
+
+/** What is left of one segment once the other is spent: only `more` steps may be skipped. */
+function rest(steps: Step[], from: number): string | undefined {
+  return steps.slice(from).every((step) => step.kind === "more") ? "" : undefined;
+}
+
+/**
+ * The character this step spells out, in front of the walk that follows it. A `more` spells out
+ * nothing: standing aside is what it just did, and the walk it left is already a shared text.
+ */
+function taken(step: Step, following: string | undefined): string | undefined {
+  if (following === undefined) return undefined;
+  if (step.kind === "more") return following;
+
+  return (step.kind === "char" ? step.char : WITNESS_FILLER) + following;
 }
 
 /**
