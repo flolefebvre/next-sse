@@ -41,7 +41,9 @@ redis-cli XADD '{next-sse}:log' MAXLEN '~' 10000 '*' entry \
   one server apart. It defaults to `next-sse`; use whatever the App's `NEXT_SSE_PREFIX` says.
 - **One field, `entry`**, holding the envelope as JSON.
 - **`MAXLEN ~ <cap>` rides on the write.** The Instances trim regardless; a publisher that omits
-  it lets the log grow between their trims. The default cap is 10 000.
+  it lets the log grow between their trims. Use the cap the App runs under —
+  `NEXT_SSE_RETENTION_CAP`, or 10 000 when it is unset — because a publisher trimming at a smaller
+  one drops Entries the App still promises to replay, and every client that was away then Resets.
 - The Cursor is the entry id `XADD` returns. Nothing outside a Transport reads one.
 
 In Node, with the library available, `createPublisher<typeof sse>` writes this for you and type-checks

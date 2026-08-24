@@ -207,7 +207,6 @@ does App-wide, compose the client provider yourself:
 "use client";
 
 import { SSEClientProvider, type ClientChannels } from "@flefebvre/next-sse/client";
-
 import type { ReactNode } from "react";
 
 export function Providers({

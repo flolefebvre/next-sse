@@ -111,6 +111,7 @@ export function Providers({
 ```tsx
 // app/layout.tsx
 import { toClientChannels } from "@flefebvre/next-sse/server";
+import type { ReactNode } from "react";
 
 import { sse } from "@/lib/sse";
 

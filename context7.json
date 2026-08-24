@@ -4,13 +4,13 @@
   "description": "Typed, authorization-aware pub/sub over Server-Sent Events for the Next.js App Router, gap-free across reconnects, redeploys and the server-render handoff.",
   "folders": ["packages/next-sse/docs"],
   "excludeFolders": [
-    ".github",
-    "docs",
-    "e2e",
-    "examples",
-    "packages/next-sse/src",
-    "scripts",
-    "tests"
+    "./.github",
+    "./docs",
+    "./e2e",
+    "./examples",
+    "./scripts",
+    "./tests",
+    "packages/next-sse/src"
   ],
   "excludeFiles": ["AGENTS.md", "CLAUDE.md", "CONTEXT.md"],
   "rules": [

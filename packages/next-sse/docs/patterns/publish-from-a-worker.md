@@ -27,7 +27,11 @@ async function main(): Promise<void> {
     throw new Error("This worker needs REDIS_URL: the log it Publishes into is the App's.");
   }
 
-  const publisher = createRedisPublisher({ url, prefix: process.env.NEXT_SSE_PREFIX });
+  // No `prefix` here on purpose: the factory reads `NEXT_SSE_PREFIX` itself, with the same rule
+  // the App applies — an empty variable is unset, and falls back to `next-sse`. Passing the
+  // variable through would hand the factory `""` on a host that materialises unset variables as
+  // empty strings, which is refused rather than defaulted.
+  const publisher = createRedisPublisher({ url });
   const sse = createPublisher<typeof app>(publisher);
 
   try {
@@ -74,7 +78,10 @@ Any language, one `XADD` of one JSON envelope:
 // worker/raw-envelope.ts
 import { createClient } from "redis";
 
-const prefix = process.env.NEXT_SSE_PREFIX ?? "next-sse";
+// Read the two variables the App reads, the way it reads them: empty is unset, and the cap is
+// the App's — trimming at a lower one would drop Entries the App still promises to replay.
+const prefix = process.env.NEXT_SSE_PREFIX || "next-sse";
+const cap = process.env.NEXT_SSE_RETENTION_CAP || "10000";
 const envelope = {
   v: 1,
   type: "message",
@@ -95,7 +102,7 @@ try {
     `{${prefix}}:log`,
     "MAXLEN",
     "~",
-    "10000",
+    cap,
     "*",
     "entry",
     JSON.stringify(envelope),
@@ -106,7 +113,8 @@ try {
 ```
 
 The key is `{<Prefix>}:log`, braces included; the single field is `entry`; the cap rides on the
-write. The whole contract, including the control entry that Kicks, is in
+write, and it must be the cap the App runs under — a publisher trimming at a smaller one turns
+replayable Entries into Resets. The whole contract, including the control entry that Kicks, is in
 [wire-format.md](../wire-format.md).
 
 ## Write the data, then publish

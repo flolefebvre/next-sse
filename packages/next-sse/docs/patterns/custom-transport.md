@@ -18,6 +18,7 @@ import type {
   Retention,
   StoredEntry,
   Transport,
+  Unsubscribe,
 } from "@flefebvre/next-sse/transport";
 ```
 
