@@ -22,6 +22,22 @@ export const ABANDONED_AFTER_MS = 600_000;
 /** How often a waiting starter looks again. Fixed: the wait is for a peer, not for a backoff. */
 const POLL_MS = 150;
 
+/**
+ * How long a starter waits for its turn before starting without one.
+ *
+ * Waiting has to be bounded, and by less than the caller's own budget: a `beforeAll` that times
+ * out does not cancel the start it is waiting on, so a turn is held until the start under it
+ * settles whatever the file that asked for it does. Without a bound, one start that is merely
+ * slow would spend every waiting file's budget as well as its own, and one late topology would
+ * fail five (found by measuring: the coarse first version of this did exactly that).
+ *
+ * Above what several ordinary starts take, well under the 180 s a file gives its topology, and
+ * what it degrades into is the behaviour this file was written to improve rather than a new
+ * failure: starters that stopped waiting bind their ports at the same time again, and Docker's
+ * refusal is what the retry is for.
+ */
+export const TURN_WAIT_MS = 90_000;
+
 /** What Docker says when the host port a container asks for was taken between reserve and run. */
 const PORT_TAKEN = "port is already allocated";
 
@@ -137,19 +153,23 @@ async function clear(lock: string): Promise<void> {
 }
 
 /**
- * Take the turn, waiting for whoever has it, and clearing it when it is nobody's.
+ * Take the turn, waiting for whoever has it, clearing it when it is nobody's — and answering
+ * whether it was granted at all, because the wait is bounded and a starter that ran out of it
+ * goes ahead regardless.
  *
  * The file is read back after it is created, and that is the last line rather than the first:
  * a turn taken away in the instant it was granted is written back by whoever took it, unless
  * a third starter claimed the free path in between — and a starter that does not find its own
  * pid in the file it just wrote waits like the others rather than start beside someone.
  */
-async function take(lock: string): Promise<void> {
+async function take(lock: string, waitMs: number): Promise<boolean> {
   await mkdir(dirname(lock), { recursive: true });
+  const deadline = Date.now() + waitMs;
 
   for (;;) {
-    if ((await claim(lock)) && (await heldBy(lock)) === process.pid) return;
+    if ((await claim(lock)) && (await heldBy(lock)) === process.pid) return true;
     if (await stale(lock)) await clear(lock);
+    if (Date.now() >= deadline) return false;
 
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }
@@ -161,16 +181,17 @@ async function give(lock: string): Promise<void> {
 }
 
 /**
- * Start something that binds **fixed host ports** — a whole topology, ports reserved and
- * container brought up — one starter at a time across every worker of the run, and again from
- * the top when Docker says the port was already allocated.
+ * Start something that binds **fixed host ports** — ports reserved and a container brought up
+ * on them — one starter at a time across every worker of the run, and again from the top when
+ * Docker says the port was already allocated.
  *
  * Both halves answer the same thing, from opposite ends. A topology reserves free ports and
  * only then asks Docker to bind them, so between the two any other worker can take one; and
  * five topology files starting at once also put five containers through Docker's port
  * publishing at once, which is where testcontainers' ten-second wait for the ports to be bound
- * to the host runs out. Held across the *whole* start — the container is up and its ports are
- * bound when the turn is given back — the turn removes the collision and the pile-up together.
+ * to the host runs out. The turn covers exactly that stretch — from picking the numbers to
+ * Docker having them bound — and its caller gives it back before waiting for whatever is inside
+ * the container to settle, which is the slow part and no business of anyone else's ports.
  *
  * The retry is the remainder: the run's other port takers — the standalone container Docker
  * maps itself, the proxies a case puts in front of a node — take no turn, so a collision is
@@ -184,14 +205,15 @@ async function give(lock: string): Promise<void> {
 export async function takingHostPorts<T>(
   start: () => Promise<T>,
   lock: string = LOCK_FILE,
+  waitMs: number = TURN_WAIT_MS,
 ): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     try {
-      await take(lock);
+      const took = await take(lock, waitMs);
       try {
         return await start();
       } finally {
-        await give(lock);
+        if (took) await give(lock);
       }
     } catch (error) {
       if (attempt >= START_ATTEMPTS || !String(error).includes(PORT_TAKEN)) throw error;

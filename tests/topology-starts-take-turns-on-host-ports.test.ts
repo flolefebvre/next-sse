@@ -118,6 +118,19 @@ test("a turn another live process holds is waited for, not taken", async () => {
   await expect(waiting).resolves.toBe("in");
 });
 
+test("a starter done waiting goes ahead, and gives away no turn it never took", async () => {
+  const holder = spawn(process.execPath, ["-e", "setTimeout(() => undefined, 30000)"], {
+    stdio: "ignore",
+  });
+  await writeFile(lock, String(holder.pid));
+
+  await expect(takingHostPorts(() => Promise.resolve("in"), lock, 300)).resolves.toBe("in");
+  await expect(readFile(lock, "utf8")).resolves.toBe(String(holder.pid));
+
+  holder.kill();
+  await new Promise((resolve) => holder.on("exit", resolve));
+});
+
 test("a start Docker refused the host port to is run again, from scratch", async () => {
   let attempts = 0;
 
