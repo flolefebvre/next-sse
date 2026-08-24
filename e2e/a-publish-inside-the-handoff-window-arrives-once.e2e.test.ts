@@ -75,8 +75,9 @@ test("a Publish inside the handoff window reaches the hydrated page exactly once
     const [connection] = reader.connections;
     expect(connection?.searchParams.get("cursor")).toEqual(expect.any(String));
   } finally {
-    assertPromptExit(await instance.stop());
+    const exit = await instance.stop();
     await browser.close();
+    assertPromptExit(exit);
   }
 });
 

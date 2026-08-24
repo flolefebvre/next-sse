@@ -38,6 +38,11 @@ export const RECONNECT_WAIT_MS = 30_000;
  * server never sees idle — so `server.close()` sat out the ten seconds `stop()` allows and the
  * process was `SIGKILL`ed (#74). The draining refusal carries `Connection: close` now, which ends
  * that socket with the answer, and these scenarios are where a regression would show up first.
+ *
+ * Which is why how the shutdown went is read *last*, after the browser and everything else is
+ * closed, and never between two teardown steps: the day that assertion fails is the day it would
+ * otherwise throw mid-teardown and leave a Chromium and a `next start` behind for the rest of the
+ * run to trip over.
  */
 export async function openBrowser(): Promise<Browser> {
   try {

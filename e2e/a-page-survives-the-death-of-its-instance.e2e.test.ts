@@ -70,9 +70,12 @@ test(
         "and the deploy is over",
       ]);
     } finally {
-      await app.stop();
-      await proxy.close();
-      await browser.close();
+      try {
+        await app.stop();
+      } finally {
+        await proxy.close();
+        await browser.close();
+      }
     }
   },
 );
@@ -136,10 +139,14 @@ test(
        * its whole grace window on, because the client reconnected over the pooled keep-alive
        * socket faster than the server could reap it (#74). The refusal closes that socket now,
        * and `assertPromptExit` is where this scenario says so.
+       *
+       * How it went is read after everything is closed, and never between two of them: the day
+       * that assertion fails is the day a Chromium and a `next start` would be left behind by
+       * throwing in the middle of a teardown.
        */
-      assertPromptExit(await instance.stop());
-      assertPromptExit(await publisher.stop());
+      const exits = [await instance.stop(), await publisher.stop()];
       await browser.close();
+      for (const exit of exits) assertPromptExit(exit);
     }
   },
 );

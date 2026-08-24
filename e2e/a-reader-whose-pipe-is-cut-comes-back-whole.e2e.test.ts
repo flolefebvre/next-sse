@@ -78,8 +78,9 @@ test("a reader whose pipe is cut comes back with every Message, once", async () 
       "and the reader is back",
     ]);
   } finally {
-    assertPromptExit(await instance.stop());
+    const exit = await instance.stop();
     await proxy.close();
     await browser.close();
+    assertPromptExit(exit);
   }
 });
