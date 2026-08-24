@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { nextMessage, openDemoStream, publish } from "./harness/demo.js";
+import { DEMO_ROOM, nextMessage, openDemoStream, publish } from "./harness/demo.js";
 import { assertPromptExit, twoInstances } from "./harness/example.js";
 import { startProxy } from "./harness/proxy.js";
 
@@ -68,8 +68,12 @@ test("a reader whose Instance is taken out comes back on the survivor with no ga
  */
 const RECONNECT_TIMEOUT_MS = 15_000;
 
-/** What a Message read off this reader's Connection is expected to be: the room, and a text. */
-const inTheRoom = (text: string): { channel: string; text: string } => ({
-  channel: "chat:42",
+/**
+ * What a Message read off this reader's Connection is expected to be: the room, the text, and a
+ * position of its own — the one its reader would come back with.
+ */
+const inTheRoom = (text: string) => ({
+  channel: `chat:${DEMO_ROOM}`,
   text,
+  cursor: expect.any(String),
 });

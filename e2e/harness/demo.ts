@@ -8,8 +8,11 @@ import { openStream, type Stream } from "./stream.js";
  * reader of the example would copy: there is no test-only path through this App (ADR-0009).
  */
 
+/** The room the demo page shows, and the one the webhook Publishes into unless told otherwise. */
+export const DEMO_ROOM = "42";
+
 /** The Channels the demo page subscribes to: the room, and the admin Channel most readers lose. */
-const DEMO_CHANNELS = "channel=chat:42&channel=admin";
+const DEMO_CHANNELS = [`chat:${DEMO_ROOM}`, "admin"];
 
 /**
  * One reader of the demo page, holding the Connection that page holds — resuming from a Cursor
@@ -22,17 +25,36 @@ const DEMO_CHANNELS = "channel=chat:42&channel=admin";
  * Snapshot is not a place to read one from (ADR-0009).
  */
 export function openDemoStream(url: string, cursor?: string): Stream {
-  const resuming = cursor === undefined ? "" : `&cursor=${encodeURIComponent(cursor)}`;
-
-  return openStream(`${url}/api/sse?${DEMO_CHANNELS}${resuming}`);
+  return openChannels(url, DEMO_CHANNELS, cursor);
 }
 
-/** One Message into the room, through the demo's own webhook. */
-export async function publish(url: string, text: string): Promise<void> {
+/**
+ * One reader of several rooms at once, which is what makes "per Channel" mean anything: the
+ * Registry's `chat:{roomId}` is a family of Channels, and one Connection carries as many of
+ * them as its reader asks for, under the one Cursor they share (ADR-0001).
+ */
+export function openRoomsStream(url: string, rooms: string[], cursor?: string): Stream {
+  return openChannels(
+    url,
+    rooms.map((room) => `chat:${room}`),
+    cursor,
+  );
+}
+
+/** The demo's SSE route, asked for these Channels, resuming when the caller has a position. */
+function openChannels(url: string, channels: string[], cursor?: string): Stream {
+  const query = channels.map((channel) => `channel=${channel}`);
+  if (cursor !== undefined) query.push(`cursor=${encodeURIComponent(cursor)}`);
+
+  return openStream(`${url}/api/sse?${query.join("&")}`);
+}
+
+/** One Message into a room — the demo's own, unless another is named — through its webhook. */
+export async function publish(url: string, text: string, roomId?: string): Promise<void> {
   const response = await fetch(`${url}/api/webhook`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(roomId === undefined ? { text } : { text, roomId }),
   });
 
   if (!response.ok) {
@@ -42,21 +64,27 @@ export async function publish(url: string, text: string): Promise<void> {
   }
 }
 
+/** One Message off a Connection, as much of it as a scenario about the demo reads. */
+export interface Delivered {
+  channel: string;
+  text: string;
+  /** Where the Connection now stands: the position this Message came with, and nowhere else. */
+  cursor: string;
+}
+
 /**
- * The next Message off a Connection, read the way the demo's page reads one: its Channel, and
- * the text a reader would see. Anything else the envelope carries is the Publish scenario's
- * business, and a scenario that reads it here would be a second opinion on the wire.
+ * The next Message off a Connection, read the way the demo's page reads one: its Channel, the
+ * text a reader would see, and the position it carries. What the envelope holds besides is the
+ * Publish scenario's business, and reading it here would be a second opinion on the wire.
  */
-export async function nextMessage(
-  stream: Stream,
-  timeoutMs?: number,
-): Promise<{ channel: string; text: string }> {
-  const { channel, payload } = JSON.parse((await stream.next("message", timeoutMs)).data) as {
+export async function nextMessage(stream: Stream, timeoutMs?: number): Promise<Delivered> {
+  const received = await stream.next("message", timeoutMs);
+  const { channel, payload } = JSON.parse(received.data) as {
     channel: string;
     payload: { text: string };
   };
 
-  return { channel, text: payload.text };
+  return { channel, text: payload.text, cursor: received.lastEventId };
 }
 
 /**
