@@ -58,8 +58,8 @@ const SSEContext = createContext<SSEContextValue | null>(null);
  * tree shares.
  *
  * It is public (ADR-0008) so an App that needs to compose rather than mount the Server
- * Component can. Everything a Server Component cannot pass — a callback, and so the Reset
- * behaviour — belongs on this one when its ticket lands.
+ * Component can, and because a Server Component cannot be handed a callback: `onReset` — the
+ * one thing that has to be a function — lives here and nowhere else.
  */
 export function SSEClientProvider({
   channels,
