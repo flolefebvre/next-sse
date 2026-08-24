@@ -21,7 +21,9 @@ const HEADERS = {
  * request data, so reading the URL — which this handler needs anyway — is what bails out,
  * before anything is registered or subscribed. `export const dynamic` is not an option: it is
  * a build error under Cache Components. `connection()` from `next/server` would work too, and
- * is deliberately not used: the package imports nothing from Next.js.
+ * is deliberately not used: the server half imports nothing from Next.js — the client's default
+ * Reset (`client/router-reset.tsx`) is the package's one `next/navigation` import, and it is a
+ * `'use client'` module.
  */
 export function createGetHandler(instance: Instance): (request: Request) => Promise<Response> {
   return async function GET(request: Request): Promise<Response> {

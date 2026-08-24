@@ -23,6 +23,7 @@ import type { Cursor } from "../transport/index.js";
 
 import { createGetHandler } from "./handler.js";
 import type { Instance } from "./instance.js";
+import { createHandoff, type Handoff } from "./snapshot.js";
 
 /**
  * A Channel with its params filled in: the value Publish agrees on. Every declared event is a
@@ -43,14 +44,15 @@ export type Handle<Events extends EventMap = EventMap> = {
 };
 
 /**
- * The App's Registry: the route handlers it re-exports, the Channels as declared, and one
- * Handle factory per Channel — called with the params its pattern asks for, and with nothing
- * when it asks for none.
+ * The App's Registry: the route handlers it re-exports, the Channels as declared, the
+ * server-render handoff, and one Handle factory per Channel — called with the params its
+ * pattern asks for, and with nothing when it asks for none.
  *
- * `channels` is what `<SSEProvider>` strips down and shares with the client; it is one of the
- * Registry keys ADR-0008 reserves, precisely because the Registry needs it for itself.
+ * `channels` is what `<SSEProvider>` strips down and shares with the client, and `cursor` and
+ * `snapshot` are the handoff of ADR-0007; all three are Registry keys ADR-0008 reserves,
+ * precisely because the Registry needs the properties for itself.
  */
-export type Registry<Channels extends ChannelRecord = ChannelRecord> = {
+export type Registry<Channels extends ChannelRecord = ChannelRecord> = Handoff & {
   handlers: { GET: (request: Request) => Promise<Response> };
   channels: Channels;
 } & {
@@ -132,8 +134,11 @@ export function createSSE<Channels extends ChannelRecord>(
       handleFor(instance, declaration, params);
   }
 
+  const handoff = createHandoff(instance);
   registry.handlers = { GET: createGetHandler(instance) };
   registry.channels = declarations;
+  registry.cursor = handoff.cursor;
+  registry.snapshot = handoff.snapshot;
 
   return registry as unknown as Registry<Channels>;
 }

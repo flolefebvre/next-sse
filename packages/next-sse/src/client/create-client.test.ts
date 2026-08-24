@@ -3,7 +3,10 @@ import { z } from "zod";
 
 import type { ChannelDeclaration } from "../internal/channel.js";
 
-import type { Channels, Handle, Handlers, SSEClient } from "./create-client.js";
+import type { Snapshot } from "../internal/snapshot.js";
+
+import type { SSEClient } from "./create-client.js";
+import type { Channels, Handle, Handlers } from "./handle.js";
 
 /**
  * The client's half of ADR-0002, as a type test: a Client Component knows the App's Channels
@@ -19,6 +22,7 @@ type Announcements = ChannelDeclaration<"announcements", { announcement: typeof 
 type App = { channels: { chat: Chat; announcements: Announcements } };
 
 declare const client: SSEClient<App>;
+declare const snapshot: Snapshot<{ text: string; sentAt: string }[]>;
 
 test("a Channel is addressed by its key, with the params its pattern names", () => {
   expectTypeOf<Channels<App>["chat"]>().parameters.toEqualTypeOf<[params: { roomId: string }]>();
@@ -60,6 +64,49 @@ test("only the events the Channel carries can be handled", () => {
     client.useChannel(client.channels.chat(), {});
     // @ts-expect-error this App has no such Channel
     client.useChannel(client.channels.nope(), {});
+  };
+
+  expect(refused).toBeTypeOf("function");
+});
+
+/**
+ * `useChannelState` reads its events off the same Registry type `useChannel` does — there is no
+ * type parameter on a Handle to carry them — and its state comes from the Snapshot alone.
+ */
+test("the state hook is typed by the Snapshot's data and the Channel's events", () => {
+  const held = () => {
+    const room = client.useChannelState(client.channels.chat({ roomId: "42" }), snapshot, {
+      message: (state, payload) => {
+        expectTypeOf(state).toEqualTypeOf<{ text: string; sentAt: string }[]>();
+        expectTypeOf(payload).toEqualTypeOf<{ text: string; sentAt: string }>();
+
+        return state;
+      },
+    });
+
+    expectTypeOf(room.state).toEqualTypeOf<{ text: string; sentAt: string }[]>();
+    expectTypeOf(room.pending.message).toEqualTypeOf<{ text: string; sentAt: string }[]>();
+    expectTypeOf(room.inFlight).toEqualTypeOf<boolean>();
+    room.apply("message", { text: "applied", sentAt: "2026-01-01T00:00:00Z" });
+    room.act("message", null, async () => ({ text: "sent", sentAt: "2026-01-01T00:00:00Z" }));
+  };
+
+  expect(held).toBeTypeOf("function");
+});
+
+test("only the events the Channel carries can be reduced, applied or acted on", () => {
+  const refused = () => {
+    client.useChannelState(client.channels.chat({ roomId: "42" }), snapshot, {
+      // @ts-expect-error the Channel carries no such event
+      shout: (state: unknown) => state,
+    });
+    const room = client.useChannelState(client.channels.chat({ roomId: "42" }), snapshot, {});
+    // @ts-expect-error an optimistic payload has the event's wire shape
+    room.act("message", { text: "no date" }, async () => ({ text: "", sentAt: "" }));
+    client.useChannelState(client.channels.chat({ roomId: "42" }), snapshot, {
+      // @ts-expect-error the reducer must give back the state's own type
+      message: () => "not a list",
+    });
   };
 
   expect(refused).toBeTypeOf("function");

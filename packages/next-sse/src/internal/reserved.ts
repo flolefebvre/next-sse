@@ -1,8 +1,9 @@
 /**
  * The Registry's own keys: a Channel cannot be named after one, because the Registry needs the
  * property for itself (ADR-0008). `handlers` is the route file's export, `channels` is what
- * `<SSEProvider>` shares with the client, and `snapshot`, `kick` and `drain` are the calls the
- * tickets that own them put on the same object.
+ * `<SSEProvider>` shares with the client, `cursor` and `snapshot` are the server-render handoff
+ * of ADR-0007, and `kick` and `drain` are the calls the tickets that own them put on the same
+ * object.
  *
  * This tuple is the one place the list exists: the compile-time guard reads its members and
  * the runtime throw iterates it, so a name added here is enforced both ways at once.
@@ -10,6 +11,7 @@
 export const RESERVED_REGISTRY_KEYS = [
   "handlers",
   "channels",
+  "cursor",
   "snapshot",
   "kick",
   "drain",

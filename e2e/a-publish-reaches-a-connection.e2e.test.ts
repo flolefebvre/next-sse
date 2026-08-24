@@ -34,7 +34,7 @@ test("a Publish reaches a Connection", async () => {
     expect(JSON.parse(message.data)).toEqual({
       channel: "chat:42",
       event: "message",
-      payload: { text: "hello from a Route Handler" },
+      payload: { id: expect.any(String), text: "hello from a Route Handler" },
     });
     expect(message.lastEventId).not.toBe("");
   } finally {

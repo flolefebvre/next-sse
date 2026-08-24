@@ -1,12 +1,12 @@
 import { act, createElement, StrictMode, type ReactNode } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, hydrateRoot } from "react-dom/client";
+import { renderToString } from "react-dom/server";
 
 /**
- * The whole React harness of the `client` project (ADR-0009): mount a tree in jsdom, let its
- * effects run, take it down again. It is deliberately small — `react-dom/client` and React's
- * own `act` are enough for live-only components, and a testing library would be a dependency
- * bought before it is needed. The Snapshot handoff, which hydrates real `renderToString`
- * output, is the ticket that gets to reconsider that.
+ * The whole React harness of the `client` project (ADR-0009): mount a tree in jsdom — or
+ * hydrate one over real `renderToString` output — let its effects run, take it down again. It
+ * is deliberately small: `react-dom` and React's own `act` are enough, and a testing library
+ * would still be a dependency bought before it is needed.
  *
  * The `.testkit.` in the name is what keeps this file out of the tarball: the package's build
  * config excludes the pattern, the way it excludes tests.
@@ -50,6 +50,32 @@ export async function mount(ui: ReactNode, { strict = false } = {}): Promise<Mou
 }
 
 /**
+ * Render a tree the way a server does, then hydrate that markup with the same tree.
+ *
+ * This is the handoff as a page really performs it (ADR-0009): the list a reader sees first is
+ * the server's HTML, and the hooks only start once React has adopted it. A test that mounted
+ * client-side instead would prove the reducers and nothing about the seam — the Snapshot's
+ * whole purpose is to make those two renders agree.
+ */
+export async function hydrate(ui: ReactNode): Promise<Mounted> {
+  const container = document.createElement("div");
+  container.innerHTML = renderToString(ui);
+  document.body.append(container);
+
+  const root = await act(async () => hydrateRoot(container, ui));
+
+  return {
+    container,
+    async unmount() {
+      await act(async () => {
+        root.unmount();
+      });
+      container.remove();
+    },
+  };
+}
+
+/**
  * Let one macrotask turn pass, with React flushing whatever it produces.
  *
  * This is the tick the client core coalesces Channel-set changes on: a test that has just
@@ -58,6 +84,25 @@ export async function mount(ui: ReactNode, { strict = false } = {}): Promise<Mou
 export async function flush(): Promise<void> {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+/**
+ * Click the button with this label and let React catch up with whatever it caused.
+ *
+ * Labels rather than selectors, because that is what the tests are about: a component that
+ * refetches, or opens a second room, or sends. Nothing here needs a query language.
+ */
+export async function click(container: HTMLElement, label: string): Promise<void> {
+  const button = Array.from(container.querySelectorAll("button")).find(
+    (candidate) => candidate.textContent === label,
+  );
+  if (button === undefined) {
+    throw new Error(`next-sse: no button labelled "${label}" in this tree.`);
+  }
+
+  await act(() => {
+    button.click();
   });
 }
 

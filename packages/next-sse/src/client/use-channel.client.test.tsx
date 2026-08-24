@@ -1,42 +1,17 @@
 import { useState } from "react";
 import { beforeEach, expect, test, vi } from "vitest";
 
-import type { ChannelDeclaration } from "../internal/channel.js";
-import type { StandardSchemaV1 } from "../internal/standard-schema.js";
+import { sealSnapshot, type Snapshot } from "../internal/snapshot.js";
 
-import { fakeEventSources, type FakeEventSource } from "./fake-event-source.js";
-import { createClient, SSEClientProvider, type ClientChannels } from "./index.js";
-import { act, flush, mount, type Mounted } from "./react.testkit.js";
+import { app, channels, installEventSource, useChannel, type Chat } from "./app.testkit.js";
+import type { FakeEventSource } from "./fake-event-source.js";
+import { createClient } from "./index.js";
+import { act, click, flush, mount, type Mounted } from "./react.testkit.js";
 
-/**
- * The App of these tests, written the way an App writes it: the Registry is a type, the
- * Channels are Handles, and no Channel name is spelled out in a component.
- */
-type Chat = ChannelDeclaration<"chat:{roomId}", { message: StandardSchemaV1<{ text: string }> }>;
-type Presence = ChannelDeclaration<
-  "presence:{roomId}",
-  { joined: StandardSchemaV1<{ who: string }> }
->;
-
-const { channels, useChannel } = createClient<{ channels: { chat: Chat; presence: Presence } }>();
-
-/** What `<SSEProvider>` would have handed down: the allowlist, and nothing else. */
-const DECLARED: ClientChannels = {
-  chat: { pattern: "chat:{roomId}", events: ["message"] },
-  presence: { pattern: "presence:{roomId}", events: ["joined"] },
-};
-
-/**
- * jsdom registers no `EventSource` — no DOM shim does — so the browser's own global is what a
- * test supplies. The core takes its constructor by injection and defaults to this global,
- * which is why nothing here has to patch a module.
- */
 let opened: FakeEventSource[] = [];
 
 beforeEach(() => {
-  const fake = fakeEventSources();
-  opened = fake.opened;
-  (globalThis as { EventSource?: unknown }).EventSource = fake.EventSource;
+  opened = installEventSource();
 });
 
 function Messages({ roomId = "42" }: { roomId?: string }) {
@@ -58,12 +33,6 @@ function Presence() {
   return <span>{channel}</span>;
 }
 
-const app = (children: React.ReactNode, url?: string) => (
-  <SSEClientProvider channels={DECLARED} url={url}>
-    {children}
-  </SSEClientProvider>
-);
-
 /** The one Connection there should be, refused if there is any other number of them. */
 function only(): FakeEventSource {
   expect(opened).toHaveLength(1);
@@ -82,7 +51,7 @@ test("a mounted hook subscribes to the Channel its Handle resolves to", async ()
 });
 
 test("the SSE route is /api/sse unless the provider says otherwise", async () => {
-  const tree = await mount(app(<Messages />, "/live/stream"));
+  const tree = await mount(app(<Messages />, { url: "/live/stream" }));
   await flush();
 
   expect(only().url.startsWith("/live/stream?")).toBe(true);
@@ -96,6 +65,7 @@ test("a Message on the Channel reaches the component, and one on another does no
   const connection = only();
 
   await act(() => {
+    connection.caughtUp();
     connection.message("chat:42", "message", { text: "hello" });
     connection.message("chat:7", "message", { text: "elsewhere" });
     connection.message("chat:42", "message", { text: "again" });
@@ -111,6 +81,7 @@ test("an event with no handler is ignored rather than an error", async () => {
   await flush();
 
   await act(() => {
+    only().caughtUp();
     only().message("chat:42", "typing", { who: "ada" });
   });
 
@@ -177,6 +148,7 @@ test("a Strict Mode setup, cleanup and setup burst opens exactly one Connection"
   expect(only().channels).toEqual(["chat:42"]);
 
   await act(() => {
+    only().caughtUp();
     only().message("chat:42", "message", { text: "once" });
   });
 
@@ -199,9 +171,7 @@ test("a re-render with fresh handler closures keeps the Connection it has", asyn
   const tree = await mount(app(<Rerendering />));
   await flush();
 
-  await act(() => {
-    tree.container.querySelector("button")?.click();
-  });
+  await click(tree.container, "render");
   await flush();
 
   expect(opened).toHaveLength(1);
@@ -313,6 +283,92 @@ test("a hook that never received a Message still reconnects from the Cursor read
   });
 
   expect(tree.container.textContent).toBe("published while it was away");
+
+  await tree.unmount();
+});
+
+/**
+ * The low-level half of the handoff (ADR-0007): the component takes the Snapshot its server
+ * component handed it, gives it to the hook, and the Connection resumes from the position that
+ * render read its data at. Nothing here spells out a Cursor — the component cannot, and that is
+ * the point of the Snapshot being opaque.
+ */
+function Resuming({ snapshot }: { snapshot: Snapshot<string[]> }) {
+  const [texts, setTexts] = useState(snapshot.data);
+  useChannel(
+    channels.chat({ roomId: "42" }),
+    { message: (payload) => setTexts((seen) => [...seen, payload.text]) },
+    { snapshot },
+  );
+
+  return <p>{texts.join("|")}</p>;
+}
+
+test("a hook that brings a Snapshot resumes its Connection from inside it", async () => {
+  const tree = await mount(app(<Resuming snapshot={sealSnapshot("cursor-3", ["read"])} />));
+  await flush();
+
+  expect(only().cursor).toBe("cursor-3");
+  expect(tree.container.textContent).toBe("read");
+
+  await tree.unmount();
+});
+
+/**
+ * A replay answers the Cursor somebody brought, and is a duplicate to everybody else. The hook
+ * that asked for it is fed it; the one that brought no Snapshot hears nothing until the
+ * Connection is live, because it has no way to tell what it already has.
+ */
+test("the replay reaches the hook that brought a Snapshot, and not the live-only one", async () => {
+  const tree = await mount(
+    app(
+      <>
+        <Resuming snapshot={sealSnapshot("cursor-3", ["read"])} />
+        <Messages />
+      </>,
+    ),
+  );
+  await flush();
+
+  await act(() => {
+    only().ready({ cursor: "cursor-3", refused: [] });
+    only().message("chat:42", "message", { text: "replayed" }, "cursor-4");
+    only().caughtUp();
+    only().message("chat:42", "message", { text: "live" }, "cursor-5");
+  });
+
+  expect(tree.container.querySelector("p")?.textContent).toBe("read|replayed|live");
+  expect(tree.container.querySelectorAll("p")[1]?.textContent).toBe("live");
+
+  await tree.unmount();
+});
+
+/**
+ * What a Reset costs once the refetch has happened: the refreshed server component minted a new
+ * Snapshot, the new prop reaches the hook, and the Connection reopens from that position. One
+ * reconnect, and the reducers of whatever holds the state absorb the overlap.
+ */
+test("a new Snapshot prop reopens the Connection from the new position", async () => {
+  function Refreshing() {
+    const [snapshot, setSnapshot] = useState(sealSnapshot("cursor-3", ["read"]));
+
+    return (
+      <>
+        <Resuming snapshot={snapshot} />
+        <button onClick={() => setSnapshot(sealSnapshot("cursor-9", ["read again"]))}>
+          refresh
+        </button>
+      </>
+    );
+  }
+  const tree = await mount(app(<Refreshing />));
+  await flush();
+
+  await click(tree.container, "refresh");
+  await flush();
+
+  expect(opened).toHaveLength(2);
+  expect(opened[1]?.cursor).toBe("cursor-9");
 
   await tree.unmount();
 });
