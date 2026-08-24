@@ -52,19 +52,24 @@ async function main(): Promise<void> {
   });
 
   await client.connect();
-  const cursor = await client.sendCommand([
-    "XADD",
-    `{${prefix}}:log`,
-    "MAXLEN",
-    "~",
-    RETENTION_CAP,
-    "*",
-    "entry",
-    JSON.stringify(envelope),
-  ]);
-  await client.close();
 
-  console.log(JSON.stringify({ published: envelope.payload.text, cursor: String(cursor) }));
+  /** The connection is closed on every path out, or a failed write leaves this process alive. */
+  try {
+    const cursor = await client.sendCommand([
+      "XADD",
+      `{${prefix}}:log`,
+      "MAXLEN",
+      "~",
+      RETENTION_CAP,
+      "*",
+      "entry",
+      JSON.stringify(envelope),
+    ]);
+
+    console.log(JSON.stringify({ published: envelope.payload.text, cursor: String(cursor) }));
+  } finally {
+    await client.close();
+  }
 }
 
 /** In a function for the same reason as `publish.ts`: this package has no top-level `await`. */

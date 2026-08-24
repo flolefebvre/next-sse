@@ -39,13 +39,21 @@ async function main(): Promise<void> {
 
   const publisher = createRedisPublisher({ url, prefix: process.env.NEXT_SSE_PREFIX });
   const sse = createPublisher<typeof app>(publisher);
-
   const text = process.argv[2] ?? "the worker was here";
-  const cursor = await sse.publish("announcements", "posted", { id: crypto.randomUUID(), text });
 
-  await publisher.close();
+  /**
+   * The close is in a `finally` because a Publish can fail — an unreachable server, an
+   * operation that timed out — and the connection it opened would otherwise hold this process
+   * open long after the error was printed. A short-lived worker owes its Publisher a close on
+   * every path out.
+   */
+  try {
+    const cursor = await sse.publish("announcements", "posted", { id: crypto.randomUUID(), text });
 
-  console.log(JSON.stringify({ published: text, cursor }));
+    console.log(JSON.stringify({ published: text, cursor }));
+  } finally {
+    await publisher.close();
+  }
 }
 
 /**

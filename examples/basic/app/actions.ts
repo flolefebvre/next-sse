@@ -15,6 +15,22 @@ import { ROLE_COOKIE, sessionFrom, type Role } from "@/lib/session";
 import { sse } from "@/lib/sse";
 
 /**
+ * What a Message may say, checked before anything is written.
+ *
+ * Every event of this App declares `z.string().trim().min(1)`, and that schema is run by the
+ * Publish — after the write. So a text the schema will refuse throws with the Message already
+ * stored: it shows up on the next server render and never travels the Channel, which is the one
+ * way this demo could put a page and its stream out of step. Whatever the schema refuses, refuse
+ * here; the webhook route says the same thing about the room name it is given.
+ */
+function saying(input: string): string {
+  const text = input.trim();
+  if (text === "") throw new Error("A Message needs something to say.");
+
+  return text;
+}
+
+/**
  * Write, then Publish, then hand the Message back — the order every send follows.
  *
  * The return value is what makes the sender's own list move before its Message comes back down
@@ -22,8 +38,8 @@ import { sse } from "@/lib/sse";
  * the echo that arrives a moment later is absorbed by `upsertBy('id')`. Nothing here is
  * special-cased for the sender, and no page is refetched to show what was just sent.
  */
-export async function send(roomId: string, text: string): Promise<Message> {
-  const message = appendMessage(roomId, text);
+export async function send(roomId: string, input: string): Promise<Message> {
+  const message = appendMessage(roomId, saying(input));
   await sse.chat({ roomId }).message(message);
 
   return message;
@@ -37,11 +53,11 @@ export async function send(roomId: string, text: string): Promise<Message> {
  * here, where the write happens. The two guards read the same session and are deliberately not
  * the same guard.
  */
-export async function announce(text: string): Promise<Message> {
+export async function announce(input: string): Promise<Message> {
   const session = sessionFrom((await headers()).get("cookie"));
   if (session.role !== "admin") throw new Error("Only an admin may announce.");
 
-  const notice = appendNotice(text);
+  const notice = appendNotice(saying(input));
   await sse.admin().notice(notice);
 
   return notice;
@@ -67,10 +83,11 @@ export async function latestAnnouncements(): Promise<Snapshot<Message[]>> {
  * the same rule the Registry's `authorize` states from the reading side, kept from the writing
  * side. A real App notifies somebody *else* from wherever the event happens — an order shipped,
  * a mention posted — and the only line that changes is where the user id comes from.
+ *
  */
-export async function notifyMe(text: string): Promise<Message> {
+export async function notifyMe(input: string): Promise<Message> {
   const session = sessionFrom((await headers()).get("cookie"));
-  const notification = appendNotification(session.userId, text);
+  const notification = appendNotification(session.userId, saying(input));
   await sse.notifications({ userId: session.userId }).arrived(notification);
 
   return notification;
