@@ -1,8 +1,11 @@
+import type { ReactNode } from "react";
+
 import type { ChannelDeclaration } from "../internal/channel.js";
+import { sealSnapshot, type Snapshot } from "../internal/snapshot.js";
 import type { StandardSchemaV1 } from "../internal/standard-schema.js";
 
 import { fakeEventSources, type FakeEventSource } from "./fake-event-source.js";
-import { createClient, type ClientChannels } from "./index.js";
+import { createClient, SSEClientProvider, type ClientChannels } from "./index.js";
 
 /**
  * The App every client test is written against, declared the way an App declares one: the
@@ -46,3 +49,37 @@ export function installEventSource(): FakeEventSource[] {
 
   return fake.opened;
 }
+
+/**
+ * The provider a test mounts: the App's Channels, and an `onReset` of its own.
+ *
+ * The handler is what keeps the default — `router.refresh()`, and so `next/navigation` and an
+ * App Router above the tree — out of every test that is not about Reset. Reset has its own file,
+ * and it is the only one that mounts a router.
+ */
+export const app = (
+  children: ReactNode,
+  { url, onReset = () => undefined }: { url?: string; onReset?: () => void } = {},
+) => (
+  <SSEClientProvider channels={DECLARED} url={url} onReset={onReset}>
+    {children}
+  </SSEClientProvider>
+);
+
+/** What this App's `chat` Channel carries, and what a page of it holds a list of. */
+export interface Message {
+  id: string;
+  text: string;
+}
+
+/** A list of Messages, keyed the way `upsertBy('id')` expects, from their texts alone. */
+export const messagesOf = (...texts: string[]): Message[] =>
+  texts.map((text, index) => ({ id: String(index + 1), text }));
+
+/**
+ * A Snapshot as `sse.snapshot(read)` would have minted it: the data, and the Cursor taken
+ * before the read. Sealing one here rather than on the server is the only way a client test can
+ * have one at all — the type is opaque by construction, and there is no other door.
+ */
+export const snapshotOf = (cursor: string, messages: Message[] = []): Snapshot<Message[]> =>
+  sealSnapshot(cursor, messages);

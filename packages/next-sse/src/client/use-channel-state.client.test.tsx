@@ -1,33 +1,30 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { beforeEach, expect, test } from "vitest";
 
-import { sealSnapshot, type Snapshot } from "../internal/snapshot.js";
+import type { Snapshot } from "../internal/snapshot.js";
 
-import { channels, DECLARED, installEventSource, useChannelState } from "./app.testkit.js";
+import {
+  app,
+  channels,
+  installEventSource,
+  messagesOf,
+  snapshotOf,
+  useChannelState,
+  type Message,
+} from "./app.testkit.js";
 import type { FakeEventSource } from "./fake-event-source.js";
-import { SSEClientProvider, upsertBy } from "./index.js";
-import { act, flush, mount } from "./react.testkit.js";
+import { upsertBy } from "./index.js";
+import { act, click, flush, mount } from "./react.testkit.js";
 
 /**
  * The primary client shape (ADR-0007): the hook owns the list, the page hands it a Snapshot,
  * and nothing in a component names a Cursor or a Channel string.
  */
-interface Message {
-  id: string;
-  text: string;
-}
-
 let opened: FakeEventSource[] = [];
 
 beforeEach(() => {
   opened = installEventSource();
 });
-
-const snapshotOf = (cursor: string, ...texts: string[]): Snapshot<Message[]> =>
-  sealSnapshot(
-    cursor,
-    texts.map((text, index) => ({ id: String(index + 1), text })),
-  );
 
 function Room({ snapshot }: { snapshot: Snapshot<Message[]> }) {
   const {
@@ -79,26 +76,13 @@ beforeEach(() => {
   });
 });
 
-const app = (children: ReactNode) => (
-  <SSEClientProvider channels={DECLARED} onReset={() => undefined}>
-    {children}
-  </SSEClientProvider>
-);
-
 const texts = (tree: { container: HTMLElement }, selector = "ul") =>
   Array.from(tree.container.querySelectorAll(`${selector} li`), (item) => item.textContent);
 
-const click = async (tree: { container: HTMLElement }, label: string) => {
-  const button = Array.from(tree.container.querySelectorAll("button")).find(
-    (candidate) => candidate.textContent === label,
-  );
-  await act(() => {
-    button?.click();
-  });
-};
-
 test("the state starts as what the server read, and the Connection resumes from that read", async () => {
-  const tree = await mount(app(<Room snapshot={snapshotOf("cursor-3", "one", "two")} />));
+  const tree = await mount(
+    app(<Room snapshot={snapshotOf("cursor-3", messagesOf("one", "two"))} />),
+  );
   await flush();
 
   expect(texts(tree)).toEqual(["one", "two"]);
@@ -112,7 +96,9 @@ test("the state starts as what the server read, and the Connection resumes from 
  * one it did not. One reducer sorts both out, which is why the hooks have no dedup of their own.
  */
 test("a replayed Message the Snapshot already had is absorbed, and a new one lands", async () => {
-  const tree = await mount(app(<Room snapshot={snapshotOf("cursor-3", "one", "two")} />));
+  const tree = await mount(
+    app(<Room snapshot={snapshotOf("cursor-3", messagesOf("one", "two"))} />),
+  );
   await flush();
 
   await act(() => {
@@ -128,7 +114,7 @@ test("a replayed Message the Snapshot already had is absorbed, and a new one lan
 });
 
 test("the statuses are replaying while it catches up, then live", async () => {
-  const tree = await mount(app(<Room snapshot={snapshotOf("cursor-3", "one")} />));
+  const tree = await mount(app(<Room snapshot={snapshotOf("cursor-3", messagesOf("one"))} />));
   await flush();
   const status = () => tree.container.querySelector("div")?.dataset.status;
 
@@ -155,12 +141,14 @@ test("the statuses are replaying while it catches up, then live", async () => {
  */
 test("a new Snapshot prop restarts the state and reopens from the new position", async () => {
   function Refreshing() {
-    const [snapshot, setSnapshot] = useState(snapshotOf("cursor-3", "one"));
+    const [snapshot, setSnapshot] = useState(snapshotOf("cursor-3", messagesOf("one")));
 
     return (
       <>
         <Room snapshot={snapshot} />
-        <button onClick={() => setSnapshot(snapshotOf("cursor-9", "after the refetch"))}>
+        <button
+          onClick={() => setSnapshot(snapshotOf("cursor-9", messagesOf("after the refetch")))}
+        >
           refresh
         </button>
       </>
@@ -172,7 +160,7 @@ test("a new Snapshot prop restarts the state and reopens from the new position",
     opened[0]?.message("chat:42", "message", { id: "5", text: "live" }, "cursor-5");
   });
 
-  await click(tree, "refresh");
+  await click(tree.container, "refresh");
   await flush();
 
   expect(texts(tree)).toEqual(["after the refetch"]);
@@ -184,10 +172,10 @@ test("a new Snapshot prop restarts the state and reopens from the new position",
 
 /** `apply` is the same reducer, run on something that did not come off the wire. */
 test("apply runs a reducer here and now, and the Message's echo is absorbed", async () => {
-  const tree = await mount(app(<Room snapshot={snapshotOf("cursor-3", "one")} />));
+  const tree = await mount(app(<Room snapshot={snapshotOf("cursor-3", messagesOf("one"))} />));
   await flush();
 
-  await click(tree, "apply");
+  await click(tree.container, "apply");
 
   expect(texts(tree)).toEqual(["one", "applied"]);
 
@@ -207,10 +195,10 @@ test("apply runs a reducer here and now, and the Message's echo is absorbed", as
  * before the transition ends, so the row never blinks.
  */
 test("act shows an optimistic payload while it runs, then applies what came back", async () => {
-  const tree = await mount(app(<Room snapshot={snapshotOf("cursor-3", "one")} />));
+  const tree = await mount(app(<Room snapshot={snapshotOf("cursor-3", messagesOf("one"))} />));
   await flush();
 
-  await click(tree, "send");
+  await click(tree.container, "send");
 
   expect(texts(tree, "ol")).toEqual(["sending"]);
   expect(tree.container.querySelector("div")?.dataset.inFlight).toBe("true");
@@ -238,7 +226,7 @@ test("pending carries a list per declared event, empty ones included", async () 
 });
 
 test("an event with no reducer leaves the state where it was", async () => {
-  const tree = await mount(app(<Room snapshot={snapshotOf("cursor-3", "one")} />));
+  const tree = await mount(app(<Room snapshot={snapshotOf("cursor-3", messagesOf("one"))} />));
   await flush();
 
   await act(() => {

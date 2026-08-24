@@ -3,10 +3,10 @@ import { beforeEach, expect, test, vi } from "vitest";
 
 import { sealSnapshot, type Snapshot } from "../internal/snapshot.js";
 
-import { channels, DECLARED, installEventSource, useChannel, type Chat } from "./app.testkit.js";
+import { app, channels, installEventSource, useChannel, type Chat } from "./app.testkit.js";
 import type { FakeEventSource } from "./fake-event-source.js";
-import { createClient, SSEClientProvider } from "./index.js";
-import { act, flush, mount, type Mounted } from "./react.testkit.js";
+import { createClient } from "./index.js";
+import { act, click, flush, mount, type Mounted } from "./react.testkit.js";
 
 let opened: FakeEventSource[] = [];
 
@@ -33,17 +33,6 @@ function Presence() {
   return <span>{channel}</span>;
 }
 
-/**
- * The provider, as a test mounts one: with an `onReset` of its own, which is what keeps the
- * default — `router.refresh()`, and so `next/navigation` and an App Router above it — out of
- * every test that is not about Reset. Reset itself has its own file.
- */
-const app = (children: React.ReactNode, url?: string) => (
-  <SSEClientProvider channels={DECLARED} url={url} onReset={() => undefined}>
-    {children}
-  </SSEClientProvider>
-);
-
 /** The one Connection there should be, refused if there is any other number of them. */
 function only(): FakeEventSource {
   expect(opened).toHaveLength(1);
@@ -62,7 +51,7 @@ test("a mounted hook subscribes to the Channel its Handle resolves to", async ()
 });
 
 test("the SSE route is /api/sse unless the provider says otherwise", async () => {
-  const tree = await mount(app(<Messages />, "/live/stream"));
+  const tree = await mount(app(<Messages />, { url: "/live/stream" }));
   await flush();
 
   expect(only().url.startsWith("/live/stream?")).toBe(true);
@@ -182,9 +171,7 @@ test("a re-render with fresh handler closures keeps the Connection it has", asyn
   const tree = await mount(app(<Rerendering />));
   await flush();
 
-  await act(() => {
-    tree.container.querySelector("button")?.click();
-  });
+  await click(tree.container, "render");
   await flush();
 
   expect(opened).toHaveLength(1);
@@ -377,9 +364,7 @@ test("a new Snapshot prop reopens the Connection from the new position", async (
   const tree = await mount(app(<Refreshing />));
   await flush();
 
-  await act(() => {
-    tree.container.querySelector("button")?.click();
-  });
+  await click(tree.container, "refresh");
   await flush();
 
   expect(opened).toHaveLength(2);
