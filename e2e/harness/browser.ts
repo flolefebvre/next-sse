@@ -42,15 +42,13 @@ export interface Reader {
   connections: URL[];
   /** Open the demo page. What happens next is the scenario's to wait for. */
   open(url: string): Promise<void>;
-  /** The network dropping under this reader, and coming back. */
-  offline(dropped: boolean): Promise<void>;
   close(): Promise<void>;
 }
 
 /**
- * A reader in a browser context of their own: their own cookie jar, their own network. Two
- * readers of one scenario are two contexts, never two pages of one, so the role cookie of one
- * and the offline emulation of the other stay theirs.
+ * A reader in a browser context of their own: their own cookie jar, and their own record of the
+ * Connections they opened. Two readers of one scenario are two contexts, never two pages of one,
+ * so the session one of them switches into stays theirs.
  */
 export async function readerIn(browser: Browser): Promise<Reader> {
   const context = await browser.newContext();
@@ -73,7 +71,6 @@ export async function readerIn(browser: Browser): Promise<Reader> {
     open: async (url: string) => {
       await page.goto(url);
     },
-    offline: (dropped: boolean) => context.setOffline(dropped),
     close: () => context.close(),
   };
 }

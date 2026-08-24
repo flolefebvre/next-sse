@@ -7,6 +7,12 @@ export interface Proxy {
   url: string;
   /** Send everything from now on to this Instance. Nothing already open is touched. */
   sendTo(url: string): void;
+  /**
+   * Drop every connection it is holding, and go on listening. A pipe dying under a client with
+   * nobody telling it anything — the lift, the lost Wi-Fi, the middlebox that idles a stream out
+   * — which is the one way a Connection ends that the App never gets to say a word about.
+   */
+  cut(): void;
   close(): Promise<void>;
 }
 
@@ -55,14 +61,19 @@ export async function startProxy(url: string): Promise<Proxy> {
 
   await listen(server);
 
+  const cut = (): void => {
+    for (const socket of open) socket.destroy();
+    open.clear();
+  };
+
   return {
     url: `http://127.0.0.1:${String(portOf(server))}`,
     sendTo: (next: string) => {
       upstream = new URL(next);
     },
+    cut,
     close: async () => {
-      for (const socket of open) socket.destroy();
-      open.clear();
+      cut();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
