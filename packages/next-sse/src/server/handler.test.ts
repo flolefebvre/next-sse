@@ -1,8 +1,8 @@
 import { getEventListeners } from "node:events";
 
-import { beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 
-import type { Cursor } from "../transport/index.js";
+import type { Cursor, Transport } from "../transport/index.js";
 import { createMemoryTransport } from "../transport/memory.js";
 
 import { framesOf, type Frames } from "./frames.testkit.js";
@@ -40,6 +40,38 @@ const appWith = (transport = createMemoryTransport()): ChatApp => {
     }),
   }) as unknown as ChatApp;
 };
+
+/**
+ * An App whose Channel is guarded by the decision the test hands it, with a context built from
+ * the request the way a real one builds it from a session cookie.
+ */
+const guardedApp = (
+  authorize: (params: { roomId: string }, ctx: Role) => boolean | Promise<boolean>,
+  options: {
+    transport?: Transport;
+    context?: (request: Request) => Role | Promise<Role>;
+    key?: (ctx: Role) => string | undefined;
+  } = {},
+): ChatApp => {
+  const { channel, createSSE } = initSSE({
+    transport: options.transport ?? createMemoryTransport(),
+    context: options.context ?? ((request) => ({ role: request.headers.get("x-role") ?? "guest" })),
+    key: options.key,
+  });
+
+  return createSSE({
+    chat: channel({
+      pattern: "chat:{roomId}",
+      events: { message: asType<{ text: string }>() },
+      authorize,
+    }),
+  }) as unknown as ChatApp;
+};
+
+/** What the guarded App builds per request: the least a decision can be taken on. */
+interface Role {
+  role: string;
+}
 
 const connect = async (sse: ChatApp, query: string, init?: RequestInit): Promise<Response> =>
   sse.handlers.GET(new Request(`http://example.test/api/sse${query}`, init));
@@ -326,5 +358,174 @@ test.each([
 
   const live = await chat.message({ text: "after the reset" });
   expect((await frames.next()).id).toBe(live);
+  await frames.cancel();
+});
+
+/**
+ * The shape of every partial refusal: the Channels that passed stream as they always would, and
+ * the ones that did not are named in `ready` — on a `200`, because a browser `EventSource` shows
+ * the client neither the status nor the body of anything else (ADR-0003).
+ */
+test("a refused Channel is dropped from the Connection, and the others stream", async () => {
+  const transport = createMemoryTransport();
+  const sse = guardedApp(({ roomId }) => roomId !== "secret", { transport });
+
+  const frames = framesOf(await connect(sse, "?channel=chat:42&channel=chat:secret"));
+
+  expect(JSON.parse((await frames.next()).data ?? "")).toEqual({
+    cursor: await transport.tail(),
+    refused: ["chat:secret"],
+  });
+  await frames.next();
+  expect(await frames.next()).toEqual({ event: "caught-up", data: "{}" });
+  expect([...getInstance().connections][0]?.channels).toEqual(new Set(["chat:42"]));
+
+  await sse.chat({ roomId: "secret" }).message({ text: "not for you" });
+  const mine = await sse.chat({ roomId: "42" }).message({ text: "for me" });
+
+  expect((await frames.next()).id).toBe(mine);
+  await frames.cancel();
+});
+
+/**
+ * Every Channel refused: still a `200` naming them all, and then the end of the stream. No
+ * Cursor, because no Connection was opened and there is nothing to resume; no `retry:`, because
+ * the core closes this Connection itself rather than reopening one that would say the same.
+ */
+test("a Connection refused every Channel is told so, and the stream ends", async () => {
+  const sse = guardedApp(() => false);
+
+  const response = await connect(sse, "?channel=chat:42&channel=chat:7");
+  const frames = framesOf(response);
+
+  expect(response.status).toBe(200);
+  expect(await frames.next()).toEqual({
+    event: "ready",
+    data: JSON.stringify({ refused: ["chat:42", "chat:7"] }),
+  });
+  await expect(frames.next()).rejects.toThrow(/ended/);
+  expect(getInstance().connections.size).toBe(0);
+});
+
+/**
+ * A Channel this App does not declare is refused exactly the way a denied one is: the client
+ * must not be able to tell "you may not have this" from "there is no such thing". The App does
+ * hear the difference, once, on its own server.
+ */
+test("an unknown Channel is refused like a denied one, and warned about server-side", async () => {
+  const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  /** Both Apps share the process-wide Instance, so the denied one connects before the other. */
+  const declaring = initSSE({ transport: createMemoryTransport() });
+  const denies = declaring.createSSE({
+    presence: declaring.channel({
+      pattern: "presence:{roomId}",
+      events: {},
+      authorize: () => false,
+    }),
+  }) as unknown as ChatApp;
+
+  const denied = framesOf(await connect(denies, "?channel=presence:42"));
+  const unknown = framesOf(
+    await connect(
+      guardedApp(() => true),
+      "?channel=presence:42",
+    ),
+  );
+
+  expect(await unknown.next()).toEqual(await denied.next());
+  expect(warned).toHaveBeenCalledTimes(1);
+  expect(warned.mock.calls[0]?.[0]).toMatch(/presence:42.*Registry mismatch/s);
+});
+
+/** Authorize is asked about the Channel as its own pattern describes it, not as a string. */
+test("Authorize is given the params of the Channel and the context of the request", async () => {
+  const seen: { params: unknown; ctx: unknown }[] = [];
+  const built = vi.fn((request: Request) => ({ role: request.headers.get("x-role") ?? "guest" }));
+  const sse = guardedApp(
+    (params, ctx) => {
+      seen.push({ params, ctx });
+
+      return ctx.role === "admin";
+    },
+    { context: built },
+  );
+
+  const frames = framesOf(
+    await connect(sse, "?channel=chat:42&channel=chat:7", { headers: { "x-role": "admin" } }),
+  );
+
+  expect(seen).toEqual([
+    { params: { roomId: "42" }, ctx: { role: "admin" } },
+    { params: { roomId: "7" }, ctx: { role: "admin" } },
+  ]);
+  expect(built).toHaveBeenCalledTimes(1);
+  await frames.cancel();
+});
+
+/** The decision is taken again on every connect, which is what makes a reconnect re-decide. */
+test("Authorize runs again on the next Connection, and decides afresh", async () => {
+  const sse = guardedApp((_params, ctx) => ctx.role === "admin");
+
+  const refused = framesOf(await connect(sse, "?channel=chat:42"));
+  expect(JSON.parse((await refused.next()).data ?? "").refused).toEqual(["chat:42"]);
+
+  const allowed = framesOf(
+    await connect(sse, "?channel=chat:42", { headers: { "x-role": "admin" } }),
+  );
+  expect(JSON.parse((await allowed.next()).data ?? "").refused).toEqual([]);
+  await allowed.cancel();
+});
+
+/**
+ * A decision that could not be taken is not a decision. Answering `refused` for a database that
+ * blinked would leave the page reporting a terminal refusal for something transient; a non-200
+ * is what the client core already retries with backoff (ADR-0004).
+ */
+test.each([
+  ["authorize", () => guardedApp(() => Promise.reject(new Error("the database is down")))],
+  [
+    "context",
+    () =>
+      guardedApp(() => true, {
+        context: () => {
+          throw new Error("the session store is down");
+        },
+      }),
+  ],
+])("a throwing %s is a 500 before the stream opens, not a refusal", async (_case, build) => {
+  const failed = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+  const response = await connect(build(), "?channel=chat:42");
+
+  expect(response.status).toBe(500);
+  expect(response.headers.get("content-type")).not.toContain("text/event-stream");
+  expect(getInstance().connections.size).toBe(0);
+  expect(failed).toHaveBeenCalledTimes(1);
+});
+
+/**
+ * The Key is what a Kick will address Connections by (#37), so the Connection table has to carry
+ * it from the first Connection onwards. Nothing reads it yet.
+ */
+test("the Key this App derives lands on the Connection", async () => {
+  const sse = guardedApp(() => true, { key: (ctx) => `user:${ctx.role}` });
+  const frames = framesOf(await connect(sse, "?channel=chat:42", { headers: { "x-role": "ada" } }));
+  await frames.next();
+
+  expect([...getInstance().connections][0]?.key).toBe("user:ada");
+  await frames.cancel();
+});
+
+/** An App that configures no `key` names nobody, and the Connection carries no Key at all. */
+test("an App that derives no Key opens Connections without one", async () => {
+  const frames = framesOf(
+    await connect(
+      guardedApp(() => true),
+      "?channel=chat:42",
+    ),
+  );
+  await frames.next();
+
+  expect([...getInstance().connections][0]?.key).toBeUndefined();
   await frames.cancel();
 });

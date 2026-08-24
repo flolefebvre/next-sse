@@ -9,6 +9,20 @@ export type StoredMessage = Extract<Entry, { type: "message" }> & { readonly cur
  */
 export type ControlEvent = "ready" | "heartbeat" | "reconnect" | "caught-up" | "reset";
 
+/**
+ * What `ready` carries: where this Connection resumes from, and the Channels it asked for that
+ * did not pass Authorize (ADR-0003, ADR-0004).
+ *
+ * `cursor` is optional, and the one case it is absent is the one where every requested Channel
+ * was refused: no Connection was opened, so there is no position to name and nothing to resume.
+ * Reading the log's tail to fill the field would be a Transport round trip — one that can fail —
+ * for a Connection that will never exist, and the client core is written to expect nothing here.
+ */
+export interface Ready {
+  cursor?: Cursor;
+  refused: string[];
+}
+
 const encoder = new TextEncoder();
 
 /**

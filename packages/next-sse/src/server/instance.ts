@@ -1,3 +1,4 @@
+import type { ChannelRecord } from "../internal/channel.js";
 import type { Cursor, StoredEntry, Transport, Unsubscribe } from "../transport/index.js";
 
 import { selectTransport } from "./select-transport.js";
@@ -75,8 +76,12 @@ export interface Instance {
   key: KeyBuilder | undefined;
   /** The Connections this Instance is holding open right now. */
   readonly connections: ReadonlySet<Connection>;
-  /** The App's current Registry, as data: a re-evaluated `createSSE` swaps it. */
-  registry: unknown;
+  /**
+   * The App's current Registry, as data: a re-evaluated `createSSE` swaps it. It is what the
+   * handler resolves the Channel names on a Connection's query against, and so where Authorize
+   * is read from.
+   */
+  registry: ChannelRecord | undefined;
   /**
    * Register a Connection and start feeding it, resuming after `after` when it brought a
    * Cursor. Registering comes first, before the log is read at all: the live feed is buffered
