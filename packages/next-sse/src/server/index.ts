@@ -5,6 +5,7 @@ import { getInstance } from "./instance.js";
 import { channel, createSSE, type ChannelFactory, type Registry } from "./registry.js";
 
 export type { ChannelFactory, Handle, Registry, RegistryLike } from "./registry.js";
+export type { HandleLike, Kick, KickTarget } from "./kick.js";
 export type {
   Authorize,
   ChannelDeclaration,
