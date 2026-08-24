@@ -66,3 +66,53 @@ test("a Kick of a Handle from one Instance ends the Connections another Instance
     await close();
   }
 });
+
+/** The two rooms, so that "the one it keeps" and "the one it loses" can be different Channels. */
+const ROOMS = ["chat:42", "chat:7"];
+
+/**
+ * What the Kick was for: the App changed its mind about who may read what, and the Connection
+ * the other Instance was holding comes back through Authorize rather than back onto its Channels.
+ *
+ * This is the whole of ADR-0003's revocation, across the seam that makes it necessary: the
+ * decision is taken per Channel when a Connection opens and again on every reconnect, so the
+ * round trip a Kick costs is what the new answer is applied on — on the Instance that is holding
+ * the Connection, which never saw the Kick issued. The Channel that is still allowed is
+ * untouched, and the control Entry that ended the first Connection is not replayed into the
+ * second, which would drop it again the instant it was let back in.
+ */
+test("a Connection a Kick from another Instance ended comes back through Authorize", async () => {
+  const denied = new Set<string>();
+  const { here, there, close } = await twoInstances(inject("redisUrl"), {
+    context: (request) => request.headers.get("x-user") ?? undefined,
+    key: (user) => user,
+    authorize: ({ roomId }) => !denied.has(roomId),
+  });
+
+  try {
+    const hers = await connect(here, { user: "ada", channels: ROOMS });
+    expect(hers.refused).toEqual([]);
+    expect((await hers.next()).event).toBe("caught-up");
+
+    /** The App changes its mind on the Instance that is holding nothing, and enforces it there. */
+    denied.add("7");
+    await there.kick({ key: "ada" });
+    expect((await hers.next()).event).toBe("reconnect");
+
+    const back = await connect(here, { user: "ada", after: hers.cursor, channels: ROOMS });
+    expect(back.refused).toEqual(["chat:7"]);
+    expect((await back.next()).event).toBe("caught-up");
+
+    /**
+     * The room she lost carries nothing to her, and the one she kept carries everything: the
+     * shared Message is what she reads next, on a Connection that saw the other Publish go by.
+     */
+    await there.chat({ roomId: "7" }).message({ text: "the room she was refused" });
+    await there.chat({ roomId: "42" }).message({ text: "the room she kept" });
+    expect(await back.message()).toEqual({ channel: "chat:42", text: "the room she kept" });
+
+    back.leave();
+  } finally {
+    await close();
+  }
+});
