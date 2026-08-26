@@ -22,9 +22,11 @@
     "Publish through bound Handles only — sse.chat({ roomId }).message(payload) — never a generic sse.publish; the payload is the schema's Input and the wire carries its Output.",
     "Authorize runs at connect and at every reconnect, once per requested Channel, never per Message; a refused Channel is dropped while the rest keep streaming, and sse.kick({ key }) forces a re-Authorize.",
     "Reserved names: a Channel may not be called handlers, channels, cursor, snapshot, kick or drain, an event may not be called publish, snapshot, pattern, params or name, and two Channel patterns may not be able to produce the same Channel name.",
-    "redis is a plain dependency and the Transport is chosen from the environment: REDIS_URL set gives the Redis/Valkey Transport (Redis >= 7.0 or Valkey >= 8), unset gives the Memory Transport; set NEXT_SSE_PREFIX per App, since the Prefix is the only isolation on a shared server.",
+    "redis is a plain dependency; the Transport comes from the environment: REDIS_URL set gives the Redis/Valkey Transport (Redis >= 7.0 or Valkey >= 8), unset gives Memory. Set NEXT_SSE_PREFIX per App — the Prefix is the only isolation on a shared server.",
     "The server-render handoff is sse.snapshot(read) in a Server Component passed as a prop to useChannelState, which makes it gap-free; App code never sees a Cursor, and upsertBy('id') absorbs every duplicate a replay can produce.",
     "The wire envelope is a stable contract: a publisher outside Next.js XADDs {\"v\":1,\"type\":\"message\",\"channel\":…,\"event\":…,\"payload\":…} in the entry field of {<Prefix>}:log.",
     "If a snippet disagrees with the installed package, trust the .d.ts in node_modules over the docs."
-  ]
+  ],
+  "url": "https://context7.com/flolefebvre/next-sse",
+  "public_key": "pk_4Czm4B19o3pEf9xBjNGnP"
 }
