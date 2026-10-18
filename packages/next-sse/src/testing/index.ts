@@ -34,3 +34,23 @@ export { snapshotOf } from "./snapshot.js";
  * for `next/navigation`, so a component test needs no App Router above it (ADR-0008).
  */
 export { FakeEventSource, fakeEventSources } from "../client/fake-event-source.js";
+
+/**
+ * What the server side of an App Published, read back by its own test.
+ *
+ * It ships here because a test of server code that Publishes — a route handler, a server action
+ * that takes no `next/headers` — calls that code for real, against the Instance its Registry
+ * built, and then has nothing to assert the Publish with: the Transport is chosen inside the
+ * library. Reading the log from where the recorder started is what spares every consumer a
+ * mock of its own Registry (#92; this amends ADR-0009's `./testing` contents).
+ *
+ * ```ts
+ * const published = await recordPublishes();
+ * await createNote("1", "a");
+ * expect(await published()).toEqual([
+ *   { channel: "notes:1", event: "created", payload: { id: "a" } },
+ * ]);
+ * ```
+ */
+export { recordPublishes } from "./record-publishes.js";
+export type { PublishedMessage } from "./record-publishes.js";

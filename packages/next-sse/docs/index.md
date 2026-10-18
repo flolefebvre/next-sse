@@ -34,7 +34,7 @@ Six subpaths, and no root export.
 | `@flefebvre/next-sse/transport`        | the `Transport` and `Publisher` contracts, `createPublisher`, `TransportError`, `TransportUnavailableError`, `TransportClosedError`                  |
 | `@flefebvre/next-sse/transport/memory` | `createMemoryTransport`                                                                                                                              |
 | `@flefebvre/next-sse/transport/redis`  | `createRedisTransport`, `createRedisPublisher`                                                                                                       |
-| `@flefebvre/next-sse/testing`          | `transportContract`, `FakeEventSource`, `fakeEventSources`, `snapshotOf`                                                                             |
+| `@flefebvre/next-sse/testing`          | `transportContract`, `FakeEventSource`, `fakeEventSources`, `snapshotOf`, `recordPublishes`, and the `PublishedMessage` type                         |
 
 ## Iron rules
 

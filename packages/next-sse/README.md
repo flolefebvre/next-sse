@@ -125,7 +125,7 @@ Six subpaths, and no root export.
 | `/transport`        | the `Transport` contract, its errors, `createPublisher`                       | [transport.md](docs/transport.md) |
 | `/transport/memory` | `createMemoryTransport`                                                       | [transport.md](docs/transport.md) |
 | `/transport/redis`  | `createRedisTransport`, `createRedisPublisher`                                | [transport.md](docs/transport.md) |
-| `/testing`          | `transportContract`, `FakeEventSource`, `snapshotOf`                          | [testing.md](docs/testing.md)     |
+| `/testing`          | `transportContract`, `FakeEventSource`, `snapshotOf`, `recordPublishes`       | [testing.md](docs/testing.md)     |
 
 `/server` resolves to the implementation everywhere: a Server Component, a route handler, and an
 App's own tests under plain Node all load the same module. Keeping the Registry — and whatever it

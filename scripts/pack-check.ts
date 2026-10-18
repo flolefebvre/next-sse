@@ -59,6 +59,12 @@ const TRANSPORT_SUBPATH = "./transport";
 /** What none of it may reach. `redis` is a plain dependency and belongs there; these do not. */
 const FORBIDDEN_IMPORT = /^(next|react|react-dom)(\/|$)/;
 
+/** The subpath of what an App's test suite imports, which must not load the server graph. */
+const TESTING_SUBPATH = "./testing";
+
+/** Where the server entry's modules are built, none of which the testing graph may reach. */
+const SERVER_DIR = "dist/server/";
+
 const fail = (message: string): never => {
   console.error(message);
   process.exit(1);
@@ -97,14 +103,14 @@ if (missing.length > 0) {
 }
 
 /**
- * The modules the transport entries resolve to, read off the exports map rather than listed a
- * second time: a new `./transport/*` subpath is walked the day it is declared, and no one has to
- * remember this check exists. Same discipline as the reserved-name tuples — the list lives in
- * one place, and it is the map.
+ * The modules the entries under one subpath resolve to, read off the exports map rather than
+ * listed a second time: a new `./transport/*` subpath is walked the day it is declared, and no
+ * one has to remember this check exists. Same discipline as the reserved-name tuples — the list
+ * lives in one place, and it is the map.
  */
-const transportEntries = (): string[] =>
+const entriesUnder = (prefix: string): string[] =>
   Object.entries(manifest.exports)
-    .filter(([subpath]) => subpath.startsWith(TRANSPORT_SUBPATH))
+    .filter(([subpath]) => subpath.startsWith(prefix))
     .map(([subpath, target]) => {
       const conditions = (typeof target === "object" && target !== null ? target : {}) as Record<
         string,
@@ -140,19 +146,24 @@ const specifiersOf = (source: string): string[] => {
     .filter((specifier) => specifier !== "");
 };
 
+/** One entry set's import graph: the package modules it reaches, and what else they import. */
+interface Graph {
+  modules: string[];
+  packages: { file: string; specifier: string }[];
+  missing: string[];
+}
+
 /**
- * Walk the transport entries' import graph over the built output, and report every module of it
- * that reaches Next.js or React.
+ * Walk an import graph over the built output, following the package's own relative imports.
  *
  * The vantage is deliberate: this runs after `build`, so what is walked is what ships, not what
- * the source says. A worker Publishing into an App's log runs in a process that has neither
- * library installed (ADR-0008), and a type-only import is invisible here for the right reason —
- * it is erased from the emitted module, so it costs that process nothing.
+ * the source says. A type-only import is invisible here for the right reason — it is erased from
+ * the emitted module, so it costs the process that loads the entry nothing.
  */
-const impureTransportModules = (): string[] => {
-  const offences: string[] = [];
+const walk = (entries: string[]): Graph => {
+  const graph: Graph = { modules: [], packages: [], missing: [] };
   const visited = new Set<string>();
-  const queue = transportEntries();
+  const queue = [...entries];
 
   while (queue.length > 0) {
     const file = queue.pop();
@@ -163,25 +174,51 @@ const impureTransportModules = (): string[] => {
     try {
       source = readFileSync(new URL(file, `file://${PACKAGE_DIR}`), "utf-8");
     } catch {
-      offences.push(`${file} is missing from the built output`);
+      graph.missing.push(`${file} is missing from the built output`);
       continue;
     }
+    graph.modules.push(file);
 
     for (const specifier of specifiersOf(source)) {
       if (specifier.startsWith(".")) {
         queue.push(posix.normalize(posix.join(posix.dirname(file), specifier)));
-      } else if (FORBIDDEN_IMPORT.test(specifier)) {
-        offences.push(`${file} imports ${specifier}`);
+      } else {
+        graph.packages.push({ file, specifier });
       }
     }
   }
 
-  return offences;
+  return graph;
 };
 
-const impure = impureTransportModules();
+/**
+ * The transport entries reach no Next.js and no React: a worker Publishing into an App's log
+ * runs in a process that has neither library installed (ADR-0008).
+ */
+const transportGraph = walk(entriesUnder(TRANSPORT_SUBPATH));
+const impure = [
+  ...transportGraph.missing,
+  ...transportGraph.packages
+    .filter(({ specifier }) => FORBIDDEN_IMPORT.test(specifier))
+    .map(({ file, specifier }) => `${file} imports ${specifier}`),
+];
 if (impure.length > 0) {
   fail(`The transport entries must import no Next.js and no React: ${impure.join(", ")}`);
+}
+
+/**
+ * The testing entry reaches no module of the server one. `recordPublishes()` finds the Instance
+ * through its slot and names its type alone (#92): a runtime edge into `dist/server/` would drag
+ * the Registry's graph — the provider, Next.js, React — into every test file that imports
+ * `./testing`, and nothing but the built graph shows that edge.
+ */
+const testingGraph = walk(entriesUnder(TESTING_SUBPATH));
+const leaks = [
+  ...testingGraph.missing,
+  ...testingGraph.modules.filter((file) => file.startsWith(SERVER_DIR)),
+];
+if (leaks.length > 0) {
+  fail(`The testing entry must reach no module of the server entry: ${leaks.join(", ")}`);
 }
 
 /**
@@ -223,6 +260,6 @@ if (loaded.output !== "function") {
 
 console.log(
   `Tarball OK: ${String(paths.length)} files, ${String(EXPORTS.length - 1)} subpath entries and no root export, ` +
-    "./server loads in plain Node under no condition, and the transport " +
-    "entries reach no Next.js and no React.",
+    "./server loads in plain Node under no condition, the transport entries reach no Next.js " +
+    "and no React, and ./testing reaches no module of ./server.",
 );
