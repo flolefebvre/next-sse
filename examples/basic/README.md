@@ -28,7 +28,7 @@ notifications and an admin panel most readers are refused.
 | Publishing from a worker         | [`worker/publish.ts`](worker/publish.ts) (typed, no Next.js) and [`worker/raw-envelope.ts`](worker/raw-envelope.ts) (the `{ v: 1, … }` envelope, no library) |
 | Kick                             | [`app/api/kick/route.ts`](app/api/kick/route.ts), `kickMe` in [`app/actions.ts`](app/actions.ts), [`app/role.tsx`](app/role.tsx)                             |
 | Reset override                   | `onReset` in [`app/announcements.tsx`](app/announcements.tsx), `latestAnnouncements` in [`app/actions.ts`](app/actions.ts)                                   |
-| Testing your app                 | [`app/messages.test.tsx`](app/messages.test.tsx)                                                                                                             |
+| Testing your app                 | [`app/messages.test.tsx`](app/messages.test.tsx), [`app/api/webhook/route.test.ts`](app/api/webhook/route.test.ts)                                           |
 | Custom transport                 | [`lib/transport.ts`](lib/transport.ts), held to the contract in [`lib/transport.test.ts`](lib/transport.test.ts)                                             |
 
 The two test-shaped patterns run in the `example` Vitest project, after the package is built:

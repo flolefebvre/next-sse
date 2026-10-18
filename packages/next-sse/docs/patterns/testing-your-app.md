@@ -1,7 +1,8 @@
 # Testing your app
 
-A live component, tested in jsdom, with the Connection in your hands: no network, no timers, no
-waiting.
+A live component, tested in jsdom with the Connection in your hands, and server code that
+Publishes, tested under plain Node against a real Instance: no network, no Next.js, no mocks of
+the library.
 
 Example app:
 [`app/messages.test.tsx`](https://github.com/flolefebvre/next-sse/blob/main/examples/basic/app/messages.test.tsx).

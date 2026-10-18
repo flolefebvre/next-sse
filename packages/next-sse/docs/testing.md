@@ -2,7 +2,8 @@
 
 Everything in `@flefebvre/next-sse/testing`. It is for an App's own suite: the `EventSource`
 double the library's client tests run on, the Snapshot sealer, the reader of what server code
-Published, and the contract suite every Transport owes. `vitest` is an optional peer dependency, needed only by `transportContract`.
+Published, and the contract suite every Transport owes. `vitest` is an optional peer dependency,
+needed only by `transportContract`.
 
 ## Testing a live component
 
