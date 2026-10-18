@@ -5,6 +5,7 @@ import {
   type ChatApp,
   type ChatAppOptions,
 } from "../packages/next-sse/src/server/chat-app.testkit.js";
+import { INSTANCE_SLOT } from "../packages/next-sse/src/internal/instance-slot.js";
 import type { Transport } from "../packages/next-sse/src/transport/index.js";
 import { framesOf, messageOf, type Frame } from "../packages/next-sse/src/server/frames.testkit.js";
 import type { Cursor } from "../packages/next-sse/src/transport/index.js";
@@ -61,7 +62,7 @@ export async function twoInstances(
 /** The `globalThis` slot the Instance lives in, as a fresh process would find it. */
 export function emptyTheSlot(): void {
   const globals = globalThis as unknown as { [key: symbol]: unknown };
-  delete globals[Symbol.for("@flefebvre/next-sse")];
+  delete globals[INSTANCE_SLOT];
 }
 
 /** One open Connection on one Instance, as a scenario reads it. */

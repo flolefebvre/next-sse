@@ -3,6 +3,7 @@ import * as v from "valibot";
 import { beforeEach, expect, expectTypeOf, test, vi } from "vitest";
 import { z } from "zod";
 
+import { INSTANCE_SLOT } from "../internal/instance-slot.js";
 import { createMemoryTransport } from "../transport/memory.js";
 import { TransportClosedError } from "../transport/index.js";
 import type { Cursor } from "../transport/index.js";
@@ -16,7 +17,7 @@ import type { EventsOf, Handle, PatternOf } from "./index.js";
  */
 beforeEach(() => {
   const globals = globalThis as unknown as { [key: symbol]: unknown };
-  delete globals[Symbol.for("@flefebvre/next-sse")];
+  delete globals[INSTANCE_SLOT];
 });
 
 const messageSchema = z.object({ text: z.string().trim() });

@@ -1,5 +1,6 @@
 import { beforeEach, expect, expectTypeOf, test, vi } from "vitest";
 
+import { INSTANCE_SLOT } from "../internal/instance-slot.js";
 import type { Entry, Transport } from "../transport/index.js";
 import { createMemoryTransport } from "../transport/memory.js";
 
@@ -8,7 +9,7 @@ import { asType, initSSE } from "./index.js";
 /** The Instance is a `globalThis` slot (ADR-0004): every test here declares its own App. */
 beforeEach(() => {
   const globals = globalThis as unknown as { [key: symbol]: unknown };
-  delete globals[Symbol.for("@flefebvre/next-sse")];
+  delete globals[INSTANCE_SLOT];
 });
 
 /**

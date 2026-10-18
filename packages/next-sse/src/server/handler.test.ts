@@ -2,6 +2,7 @@ import { getEventListeners } from "node:events";
 
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
+import { INSTANCE_SLOT } from "../internal/instance-slot.js";
 import { TransportUnavailableError } from "../transport/index.js";
 import type { Transport } from "../transport/index.js";
 import { createMemoryTransport } from "../transport/memory.js";
@@ -13,7 +14,7 @@ import { currentInstance, type Connection } from "./instance.js";
 
 beforeEach(() => {
   const globals = globalThis as unknown as { [key: symbol]: unknown };
-  delete globals[Symbol.for("@flefebvre/next-sse")];
+  delete globals[INSTANCE_SLOT];
 });
 
 /**
