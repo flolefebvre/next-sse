@@ -1,5 +1,6 @@
 import { beforeEach, expect, test } from "vitest";
 
+import { INSTANCE_SLOT } from "../packages/next-sse/src/internal/instance-slot.js";
 import { chatApp, type ChatApp } from "../packages/next-sse/src/server/chat-app.testkit.js";
 import { framesOf, type Frames } from "../packages/next-sse/src/server/frames.testkit.js";
 import type { Cursor } from "../packages/next-sse/src/transport/index.js";
@@ -21,7 +22,7 @@ const ROOMS = ["42", "7"];
 
 beforeEach(() => {
   const globals = globalThis as unknown as { [key: symbol]: unknown };
-  delete globals[Symbol.for("@flefebvre/next-sse")];
+  delete globals[INSTANCE_SLOT];
 });
 
 const anApp = (lifecycle: { maxLifetime?: number } = {}): ChatApp => chatApp(lifecycle);

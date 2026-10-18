@@ -1,6 +1,7 @@
 import { beforeEach, expect, expectTypeOf, test } from "vitest";
 import { z } from "zod";
 
+import { INSTANCE_SLOT } from "../internal/instance-slot.js";
 import type { Snapshot } from "../client/index.js";
 import { cursorOf } from "../internal/snapshot.js";
 import { createMemoryTransport } from "../transport/memory.js";
@@ -14,7 +15,7 @@ import { initSSE } from "./index.js";
  */
 beforeEach(() => {
   const globals = globalThis as unknown as { [key: symbol]: unknown };
-  delete globals[Symbol.for("@flefebvre/next-sse")];
+  delete globals[INSTANCE_SLOT];
 });
 
 /** One App on a log the test can read for itself, which is how the ordering claim is checked. */

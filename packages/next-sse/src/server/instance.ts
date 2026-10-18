@@ -1,4 +1,5 @@
 import type { ChannelRecord } from "../internal/channel.js";
+import { INSTANCE_SLOT } from "../internal/instance-slot.js";
 import type { Cursor, StoredEntry, Transport, Unsubscribe } from "../transport/index.js";
 
 import {
@@ -11,14 +12,6 @@ import {
 import { selectTransport } from "./select-transport.js";
 
 import type { StoredMessage } from "./wire.js";
-
-/**
- * Where the Instance lives. A `Symbol.for` slot on `globalThis` costs nothing in production
- * and is what keeps one Transport, one Connection table and one Registry across the module
- * re-evaluations Turbopack does on every request after an edit (ADR-0004): without it a
- * Publish from the new module instance would never reach a Connection held by the old one.
- */
-const SLOT = Symbol.for("@flefebvre/next-sse");
 
 /**
  * How many Entries one replay page asks the log for. Large enough that an ordinary reconnect
@@ -220,7 +213,7 @@ export function getInstance(options: InstanceOptions = {}): Instance {
   const heartbeat = milliseconds(options.heartbeat, DEFAULT_HEARTBEAT_MS, "heartbeat");
   const maxLifetime = milliseconds(options.maxLifetime, DEFAULT_MAX_LIFETIME_MS, "maxLifetime");
   const drainWindow = drainMilliseconds(options.drain);
-  const existing = globals[SLOT];
+  const existing = globals[INSTANCE_SLOT];
   if (existing) {
     existing.context = options.context;
     existing.key = options.key;
@@ -250,7 +243,7 @@ export function getInstance(options: InstanceOptions = {}): Instance {
     open: (connection, openOptions) => open(state, connection, openOptions),
     drain: () => drain(state),
   };
-  globals[SLOT] = state;
+  globals[INSTANCE_SLOT] = state;
   if (options.drain !== false) installSignalHandlers(state);
 
   return state;
@@ -270,7 +263,7 @@ export function getInstance(options: InstanceOptions = {}): Instance {
  * cannot stand in for `getInstance`: whoever needs one to exist is configuring it.
  */
 export function currentInstance(): Instance | undefined {
-  return globals[SLOT];
+  return globals[INSTANCE_SLOT];
 }
 
 /**

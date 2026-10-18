@@ -1,8 +1,9 @@
 # Testing reference
 
 Everything in `@flefebvre/next-sse/testing`. It is for an App's own suite: the `EventSource`
-double the library's client tests run on, the Snapshot sealer, and the contract suite every
-Transport owes. `vitest` is an optional peer dependency, needed only by `transportContract`.
+double the library's client tests run on, the Snapshot sealer, the reader of what server code
+Published, and the contract suite every Transport owes. `vitest` is an optional peer dependency,
+needed only by `transportContract`.
 
 ## Testing a live component
 
@@ -68,7 +69,8 @@ test("the room shows what the server rendered, then what arrives", async () => {
 ```
 
 Set `globalThis.IS_REACT_ACT_ENVIRONMENT = true` in the file or in the project's setup, and run
-it in a jsdom environment that does **not** set the `react-server` resolve condition.
+it in a jsdom environment. No resolve condition is needed: every entry of the package has one
+target.
 
 The full version of this test, against a real component:
 [patterns/testing-your-app.md](patterns/testing-your-app.md).
@@ -105,6 +107,64 @@ Connection's URL to assert the resume happened.
 
 It lives in `./testing` and nowhere else: minting a Snapshot around data in production code would
 claim a position the log never gave.
+
+## Testing server code that Publishes
+
+A route handler, or a server function that reads no `next/headers`, is tested by calling it: the
+test imports the code under test, the code imports the Registry, and the Registry's `initSSE`
+builds a real Instance — on the Memory Transport, when `REDIS_URL` is unset. Nothing of the
+library is mocked, and no Next.js runs. Any Vitest environment works, `node` included, with no
+resolve condition.
+
+```ts
+import { recordPublishes } from "@flefebvre/next-sse/testing";
+import { expect, test } from "vitest";
+
+import { createNote } from "./create-note";
+
+test("createNote stores the note and Publishes it", async () => {
+  const published = await recordPublishes();
+
+  expect(await createNote("1", "a")).toEqual(["a"]);
+  expect(await published()).toEqual([
+    { channel: "notes:1", event: "created", payload: { id: "a" } },
+  ]);
+});
+```
+
+The full version, against the example app's webhook route:
+[patterns/testing-your-app.md](patterns/testing-your-app.md#testing-the-server-side).
+
+## `recordPublishes()`
+
+Returns a promise of a reader, `() => Promise<PublishedMessage[]>`. Calling `recordPublishes()`
+takes the log's current position; each call of the reader returns, in order, every Message
+published after that position. That position is the whole of the isolation: two tests that each
+start a recorder do not see each other's Messages, and there is no reset to call.
+
+It finds the Instance through the process-wide slot `initSSE` builds it into, so the App changes
+nothing for its tests. If nothing has called `initSSE` yet it throws, telling the test to import
+the module that builds its Registry first — importing the code under test at the top of the
+file does that.
+
+Two caveats:
+
+- **`test.concurrent` tests in one file share the Instance**, and so see each other's Messages.
+  Sequential tests — the default — do not.
+- **It reads whatever Transport the Instance has.** With `REDIS_URL` set, that is Redis, and
+  Publishes from other processes on the same Prefix may appear.
+
+## `PublishedMessage`
+
+`{ channel, event, payload }`, one per Message:
+
+| Field     | What it is                                                                     |
+| --------- | ------------------------------------------------------------------------------ |
+| `channel` | the Channel name as it is on the wire, `notes:1` — params only exist inside it |
+| `event`   | the event name                                                                 |
+| `payload` | the schema's **Output**: what the log stored, transforms applied               |
+
+Kick control entries are not Messages and are never in the list.
 
 ## `transportContract(options)`
 

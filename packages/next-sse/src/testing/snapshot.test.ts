@@ -1,6 +1,7 @@
 import { beforeEach, expect, expectTypeOf, test } from "vitest";
 import { z } from "zod";
 
+import { INSTANCE_SLOT } from "../internal/instance-slot.js";
 import type { Snapshot } from "../client/index.js";
 import { cursorOf } from "../internal/snapshot.js";
 import { initSSE } from "../server/index.js";
@@ -17,7 +18,7 @@ import { snapshotOf } from "./snapshot.js";
 /** The Instance is a `globalThis` slot (ADR-0004): a leftover one would serve the App below. */
 beforeEach(() => {
   const globals = globalThis as unknown as { [key: symbol]: unknown };
-  delete globals[Symbol.for("@flefebvre/next-sse")];
+  delete globals[INSTANCE_SLOT];
 });
 
 test("a test Snapshot carries the data it was given, at the Cursor it was given", () => {

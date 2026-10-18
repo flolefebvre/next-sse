@@ -1,6 +1,6 @@
 {
   "name": "@flefebvre/next-sse",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Typed, authorization-aware pub/sub over Server-Sent Events for Next.js, gap-free across reconnects, redeploys and the server-render handoff.",
   "type": "module",
   "license": "MIT",
@@ -24,17 +24,11 @@
     "redis",
     "valkey"
   ],
-  "sideEffects": [
-    "./dist/server/outside-react-server.js"
-  ],
+  "sideEffects": false,
   "exports": {
     "./server": {
-      "react-server": {
-        "types": "./dist/server/index.d.ts",
-        "default": "./dist/server/index.js"
-      },
       "types": "./dist/server/index.d.ts",
-      "default": "./dist/server/outside-react-server.js"
+      "default": "./dist/server/index.js"
     },
     "./client": {
       "types": "./dist/client/index.d.ts",

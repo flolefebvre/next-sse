@@ -1,9 +1,13 @@
 # Server reference
 
-Everything in `@flefebvre/next-sse/server`. This entry resolves to the implementation only under
-the `react-server` condition: import it from a Server Component or a server-only module. A
-Client Component that imports it fails at module load, in the browser bundle and during SSR
-alike.
+Everything in `@flefebvre/next-sse/server`. This entry has one target, the implementation, under
+every condition: import it from Server Components, route handlers and other server code — and
+from an App's own tests, which load it under plain Node. Client Components import
+`@flefebvre/next-sse/client` instead.
+
+An App that wants a Client Component import of its Registry to fail can put
+`import "server-only"` at the top of that module; its tests then have to handle that package's
+throw.
 
 ## `initSSE(options?)`
 

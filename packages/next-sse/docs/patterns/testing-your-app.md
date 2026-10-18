@@ -1,7 +1,8 @@
 # Testing your app
 
-A live component, tested in jsdom, with the Connection in your hands: no network, no timers, no
-waiting.
+A live component, tested in jsdom with the Connection in your hands, and server code that
+Publishes, tested under plain Node against a real Instance: no network, no Next.js, no mocks of
+the library.
 
 Example app:
 [`app/messages.test.tsx`](https://github.com/flolefebvre/next-sse/blob/main/examples/basic/app/messages.test.tsx).
@@ -107,8 +108,8 @@ test("the room shows what the server rendered, then what arrives on the Channel"
 });
 ```
 
-Run it in a jsdom environment that does **not** set the `react-server` resolve condition — a
-Vitest project of its own is the tidy way.
+Run it in a jsdom environment, with no resolve condition to set — a Vitest project of its own is
+the tidy way.
 
 ## More scenarios
 
@@ -129,8 +130,56 @@ connection.emit("reconnect");
 
 ## Testing the server side
 
-- **A Publish and its Handle** — call the action and assert on what your data layer stored; the
-  Publish itself is the library's business.
+Server code that Publishes is tested by calling it. Importing it imports the Registry, whose
+`initSSE` builds a real Instance on the Memory Transport; `recordPublishes()` reads back what was
+Published after it started, so the test asserts on both what the App stored and what it sent.
+
+Example app:
+[`app/api/webhook/route.test.ts`](https://github.com/flolefebvre/next-sse/blob/main/examples/basic/app/api/webhook/route.test.ts).
+
+```ts
+// app/api/webhook/route.test.ts
+import { recordPublishes } from "@flefebvre/next-sse/testing";
+import { expect, test } from "vitest";
+
+import { listMessages } from "@/lib/messages";
+
+import { POST } from "./route";
+
+const post = (body: unknown): Request =>
+  new Request("http://localhost/api/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+test("a webhook call stores the Message and Publishes it on the room's Channel", async () => {
+  const published = await recordPublishes();
+
+  const response = await POST(post({ text: "  from the webhook ", roomId: "lobby" }));
+
+  expect(response.status).toBe(200);
+  const stored = listMessages("lobby");
+  expect(stored.map(({ text }) => text)).toEqual(["  from the webhook "]);
+  // The payload is the schema's Output: the `message` schema trims, so the trimmed text went out.
+  expect(await published()).toEqual([
+    {
+      channel: "chat:lobby",
+      event: "message",
+      payload: { id: stored[0]?.id, text: "from the webhook" },
+    },
+  ]);
+});
+```
+
+- **The target reads no `next/headers`.** A route handler, or a function the action calls, runs
+  under plain Node; an action that reads `cookies()` needs a request scope only Next.js provides.
+- **Isolation is the recorder's start.** Each test starts its own and sees only what came after
+  it; `test.concurrent` tests in one file see each other's Messages ([testing.md](../testing.md)).
+- **`REDIS_URL` unset in tests.** Set, the Instance Publishes to Redis and the recorder reads it.
+
+The other server-side seams:
+
 - **Authorize** — it is a plain function in the Registry. Call it with params and a context.
 - **Across Instances, without Next.js** — two `initSSE` Instances sharing one Transport prove
   fan-out, replay and Kick in one process ([testing.md](../testing.md)).

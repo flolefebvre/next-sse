@@ -1,5 +1,6 @@
 import { beforeEach, expect, test } from "vitest";
 
+import { INSTANCE_SLOT } from "../packages/next-sse/src/internal/instance-slot.js";
 import { chatApp, type ChatApp } from "../packages/next-sse/src/server/chat-app.testkit.js";
 import {
   framesOf,
@@ -24,7 +25,7 @@ const LOST = "7";
 
 beforeEach(() => {
   const globals = globalThis as unknown as { [key: symbol]: unknown };
-  delete globals[Symbol.for("@flefebvre/next-sse")];
+  delete globals[INSTANCE_SLOT];
 });
 
 /** One App whose Authorize a scenario can change its mind about, mid-run. */
