@@ -51,13 +51,13 @@ pnpm typecheck          TypeScript with no emit
 
 ## Verification
 
-- check: `pnpm exec tsx scripts/gate.ts format:check,lint,duplication,typecheck,test:unit,test:client`
+- check: `pnpm exec tsx scripts/gate.ts format:check+lint+duplication+typecheck,test:unit+test:client`
 - gate: `pnpm gate`
 - final: gate
 
 Run `check` after each step and each fix; it passed only if the output ends with `--gate OK--`. A change is done when the pushed PR's `gate` check is green. A change that will not be pushed passes `pnpm gate` (ends with `--gate OK--`) once before it is handed over; later fixes re-run `check`. Any other ending is a failure, whatever the rest of the output says.
 
-`scripts/gate.ts` runs the comma-separated `package.json` scripts it is given, in order. A new gate step goes on the `gate` line and into the CI job that matches what it needs: `checks` (Docker-free), `integration` (containers) or `e2e` (post-build).
+`scripts/gate.ts` takes `package.json` scripts: `,` separates stages run in order, `+` joins scripts run in parallel, their output printed as each finishes. Join only scripts that write nothing the other reads or writes: `build` empties `dist`, which `pack:check`, `typecheck:dist` and `test:e2e` read. `test` runs alone because the integration scenarios are load-sensitive. A new gate step goes on the `gate` line and into the CI job that matches what it needs: `checks` (Docker-free), `integration` (containers) or `e2e` (post-build).
 
 ## Testing
 

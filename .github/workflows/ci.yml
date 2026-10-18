@@ -42,7 +42,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run the Docker-free gate steps
-        run: pnpm exec tsx scripts/gate.ts format:check,lint,duplication,typecheck,test:unit,test:client,build,pack:check,typecheck:dist
+        run: pnpm exec tsx scripts/gate.ts format:check+lint+duplication+typecheck,test:unit+test:client,build,pack:check+typecheck:dist
 
   # The backend matrix of ADR-0009: the contract suite and the two-Instance scenarios against a
   # real server, on both engines the library claims to support. The harness reads

@@ -1,7 +1,7 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-type StepResult = { name: string; ok: boolean; ms: number };
+type StepResult = { name: string; ok: boolean; ms: number; bufferedOutput: string };
 
 const useColor = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
 const paint = (code: number, text: string) => (useColor ? `[${code}m${text}[0m` : text);
@@ -21,14 +21,20 @@ const fail = (message: string): never => {
   process.exit(1);
 };
 
-const steps = process.argv
+const stages = process.argv
   .slice(2)
   .flatMap((arg) => arg.split(","))
-  .map((name) => name.trim())
-  .filter(Boolean);
+  .map((stage) =>
+    stage
+      .split("+")
+      .map((name) => name.trim())
+      .filter(Boolean),
+  )
+  .filter((stage) => stage.length > 0);
+const steps = stages.flat();
 
 if (steps.length === 0) {
-  fail("usage: tsx scripts/gate.ts <script>[,<script>...]");
+  fail("usage: tsx scripts/gate.ts <script>[+<script>...][,<script>...]");
 }
 
 const { scripts = {} } = JSON.parse(
@@ -37,37 +43,82 @@ const { scripts = {} } = JSON.parse(
   scripts?: Record<string, string>;
 };
 
+const lifecycleEvent = process.env.npm_lifecycle_event;
+const invokingScript = lifecycleEvent && lifecycleEvent in scripts ? lifecycleEvent : "gate";
+
 const unknown = steps.filter((name) => !(name in scripts));
 if (unknown.length > 0) {
   fail(`no such package.json script: ${unknown.join(", ")}`);
 }
 
-const width = Math.max(...steps.map((name) => name.length));
-const results: StepResult[] = [];
-
-for (const name of steps) {
-  console.log(`\n${bold(`▶ ${name}`)}`);
-  const startedAt = performance.now();
-  const { status } = spawnSync("pnpm", ["run", name], {
-    stdio: "inherit",
-    shell: process.platform === "win32",
+const runStep = (name: string, isBuffered: boolean) =>
+  new Promise<StepResult>((resolve) => {
+    const startedAt = performance.now();
+    const outputChunks: Buffer[] = [];
+    const child = spawn("pnpm", ["run", name], {
+      stdio: isBuffered ? ["ignore", "pipe", "pipe"] : "inherit",
+      shell: process.platform === "win32",
+    });
+    child.stdout?.on("data", (chunk: Buffer) => outputChunks.push(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => outputChunks.push(chunk));
+    const settle = (ok: boolean) =>
+      resolve({
+        name,
+        ok,
+        ms: performance.now() - startedAt,
+        bufferedOutput: Buffer.concat(outputChunks).toString(),
+      });
+    child.on("error", () => settle(false));
+    child.on("close", (status) => settle(status === 0));
   });
-  results.push({ name, ok: status === 0, ms: performance.now() - startedAt });
-  if (status !== 0) break;
-}
 
-console.log("");
-for (const result of results) {
-  const mark = result.ok ? green("✓") : red("✗");
-  console.log(`  ${result.name.padEnd(width)}  ${mark}  ${dim(formatDuration(result.ms))}`);
-}
-for (const skipped of steps.slice(results.length)) {
-  console.log(dim(`  ${skipped.padEnd(width)}  –  skipped`));
-}
-console.log("");
+const width = Math.max(...steps.map((name) => name.length));
 
-const failed = results.find((result) => !result.ok);
-if (failed) {
-  fail(`--gate FAILED at ${failed.name}--`);
-}
-console.log(green("--gate OK--"));
+const runStagesUntilFailure = async () => {
+  const resultsByStep = new Map<string, StepResult>();
+  for (const stage of stages) {
+    const isBuffered = stage.length > 1;
+    if (isBuffered) {
+      console.log(
+        `\n${bold(`▶ ${stage.join(" + ")}`)} ${dim("in parallel, each output printed as it finishes")}`,
+      );
+    } else {
+      console.log(`\n${bold(`▶ ${stage[0]}`)}`);
+    }
+    const stageResults = await Promise.all(
+      stage.map(async (name) => {
+        const result = await runStep(name, isBuffered);
+        if (isBuffered) {
+          console.log(`\n${bold(`▶ ${name}`)}`);
+          process.stdout.write(result.bufferedOutput);
+        }
+        return result;
+      }),
+    );
+    for (const result of stageResults) resultsByStep.set(result.name, result);
+    if (stageResults.some((result) => !result.ok)) break;
+  }
+  return resultsByStep;
+};
+
+const printSummary = (resultsByStep: Map<string, StepResult>) => {
+  console.log("");
+  for (const name of steps) {
+    const result = resultsByStep.get(name);
+    if (!result) {
+      console.log(dim(`  ${name.padEnd(width)}  –  skipped`));
+      continue;
+    }
+    const mark = result.ok ? green("✓") : red("✗");
+    console.log(`  ${name.padEnd(width)}  ${mark}  ${dim(formatDuration(result.ms))}`);
+  }
+  console.log("");
+
+  const failedSteps = steps.filter((name) => resultsByStep.get(name)?.ok === false);
+  if (failedSteps.length > 0) {
+    fail(`--${invokingScript} FAILED at ${failedSteps.join(", ")}--`);
+  }
+  console.log(green(`--${invokingScript} OK--`));
+};
+
+void runStagesUntilFailure().then(printSummary);

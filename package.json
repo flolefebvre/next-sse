@@ -23,7 +23,7 @@
     "build": "pnpm --filter @flefebvre/next-sse run build",
     "pack:check": "tsx scripts/pack-check.ts",
     "typecheck:dist": "tsc -p tests/dist-consumer/tsconfig.json && tsc -p tests/worker-consumer/tsconfig.json && pnpm --filter next-sse-example-basic typecheck",
-    "gate": "tsx scripts/gate.ts format:check,lint,duplication,typecheck,test,build,pack:check,typecheck:dist,test:e2e"
+    "gate": "tsx scripts/gate.ts format:check+lint+duplication+typecheck,test,build,pack:check+typecheck:dist,test:e2e"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
