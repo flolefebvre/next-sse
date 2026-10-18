@@ -9,12 +9,12 @@ import type { ChannelDeclaration, Registry, StandardSchemaV1 } from "@flefebvre/
  * runner, a queue consumer, a data importer. It resolves `@flefebvre/next-sse` through the real
  * exports map against the built `dist`, exactly as an installed consumer does.
  *
- * The App is named the only way this process may name it — as a type. `import type` of the
- * `./server` entry is the escape ADR-0008 leaves open, and running this file is what proves it
- * is an escape at all: the entry throws at module load under every condition but `react-server`,
- * and a type-only import of it is erased before the specifier ever reaches Node. A worker that
- * names its App's Registry therefore loads none of the App's Authorize, session or database
- * code. In a real project the line is `import type { sse } from "../app/lib/sse"`; it is spelled
+ * The App is named the way this process should name it — as a type. A worker could import the
+ * Registry itself since ADR-0012, but it should not: that would load the App's Authorize, session
+ * and database code, and install the Drain's signal handlers in a process that holds no
+ * Connection. `import type` of the `./server` entry is erased before the specifier ever reaches
+ * Node, and running this file is what proves the typed path costs this process nothing of the
+ * App. In a real project the line is `import type { sse } from "../app/lib/sse"`; it is spelled
  * out here because this fixture has no App beside it.
  */
 interface Message {

@@ -68,7 +68,8 @@ test("the room shows what the server rendered, then what arrives", async () => {
 ```
 
 Set `globalThis.IS_REACT_ACT_ENVIRONMENT = true` in the file or in the project's setup, and run
-it in a jsdom environment that does **not** set the `react-server` resolve condition.
+it in a jsdom environment. No resolve condition is needed: every entry of the package has one
+target.
 
 The full version of this test, against a real component:
 [patterns/testing-your-app.md](patterns/testing-your-app.md).

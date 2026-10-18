@@ -15,7 +15,7 @@
   "excludeFiles": ["AGENTS.md", "CLAUDE.md", "CONTEXT.md"],
   "rules": [
     "Import a subpath, never the package: there is no root export. ./server, ./client, ./transport, ./transport/memory, ./transport/redis, ./testing.",
-    "./server is for Server Components and server-only modules: it resolves to the implementation under the react-server condition and throws everywhere else, so a Client Component cannot import the Registry.",
+    "./server is for server code (Server Components, route handlers, server actions, and their tests under plain Node); it resolves to the implementation under every condition, and Client Components import ./client instead.",
     "Requires Next.js >= 16.3.0, React >= 19.2.0, Node >= 22.12, ESM only, App Router only.",
     "A Channel is the only primitive: declare pattern, events (any Standard Schema) and authorize together in one server-only Registry built by createSSE, and re-export sse.handlers from one route file.",
     "All configuration goes on initSSE (context, key, transport, heartbeat, maxLifetime, drain); createSSE takes the Channel record and nothing else.",

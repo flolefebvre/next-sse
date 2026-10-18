@@ -127,9 +127,9 @@ Six subpaths, and no root export.
 | `/transport/redis`  | `createRedisTransport`, `createRedisPublisher`                                | [transport.md](docs/transport.md) |
 | `/testing`          | `transportContract`, `FakeEventSource`, `snapshotOf`                          | [testing.md](docs/testing.md)     |
 
-`/server` resolves to the implementation only under the `react-server` condition; imported
-anywhere else it throws at module load, so a Client Component cannot pull the Registry — and
-whatever the Registry imports — into the browser bundle.
+`/server` resolves to the implementation everywhere: a Server Component, a route handler, and an
+App's own tests under plain Node all load the same module. Keeping the Registry — and whatever it
+imports — out of Client Components is the App's call; [server.md](docs/server.md) says how.
 
 ## Going further
 

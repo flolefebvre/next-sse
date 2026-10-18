@@ -40,10 +40,10 @@ Six subpaths, and no root export.
 
 1. **Import a subpath, never the package.** `import … from "@flefebvre/next-sse"` does not
    resolve; there is no root export.
-2. **`./server` is for Server Components and server-only modules.** It resolves to the
-   implementation under the `react-server` condition and to a module that throws everywhere
-   else, so a Client Component importing the Registry fails at module load — in the browser
-   bundle and during SSR alike.
+2. **`./server` is for server code.** Server Components, route handlers, server actions, and an
+   App's own tests of them: it resolves to the implementation under every condition, so plain
+   Node loads it too. Client Components import `./client`; keeping the Registry out of them is
+   the App's call ([server.md](server.md)).
 3. **Publish through Handles only.** `sse.chat({ roomId }).message(payload)`. There is no
    generic `sse.publish`; the escape hatch is the Transport's own `publish`.
 4. **Authorize runs at connect and at every reconnect, per Channel, never per Message.** A

@@ -107,8 +107,8 @@ test("the room shows what the server rendered, then what arrives on the Channel"
 });
 ```
 
-Run it in a jsdom environment that does **not** set the `react-server` resolve condition — a
-Vitest project of its own is the tidy way.
+Run it in a jsdom environment, with no resolve condition to set — a Vitest project of its own is
+the tidy way.
 
 ## More scenarios
 

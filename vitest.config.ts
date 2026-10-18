@@ -15,19 +15,11 @@ const E2E_TESTS = ["e2e/**/*.e2e.test.ts"];
  */
 const EXAMPLE_TESTS = ["examples/*/**/*.test.ts", "examples/*/**/*.test.tsx"];
 
-/**
- * The condition every server module of the package is written under, so that a test loading
- * one resolves the same files Next.js does in a Server Component. The `client` project is
- * the deliberate exception (ADR-0009): it must resolve as a browser bundle does.
- */
-const REACT_SERVER = { conditions: ["react-server"] };
-
 export default defineConfig({
   test: {
     projects: [
       {
         extends: true,
-        resolve: REACT_SERVER,
         test: {
           name: "unit",
           environment: "node",
@@ -51,7 +43,6 @@ export default defineConfig({
       },
       {
         extends: true,
-        resolve: REACT_SERVER,
         test: {
           name: "integration",
           environment: "node",
@@ -85,7 +76,6 @@ export default defineConfig({
       },
       {
         extends: true,
-        resolve: REACT_SERVER,
         test: {
           name: "e2e",
           environment: "node",
