@@ -12,9 +12,13 @@ import type {
 } from "../packages/next-sse/src/transport/index.js";
 import type {
   RedisClientLike,
+  RedisErrorHook,
   RedisOperation,
 } from "../packages/next-sse/src/transport/redis-client.js";
-import { createRedisTransport } from "../packages/next-sse/src/transport/redis.js";
+import {
+  createRedisPublisher,
+  createRedisTransport,
+} from "../packages/next-sse/src/transport/redis.js";
 import { logKeyOf } from "../packages/next-sse/src/transport/redis-reply.js";
 
 import type { FailoverTopology, KillableTopology, RunningTopology } from "./redis-topologies.js";
@@ -249,12 +253,10 @@ export async function readerSurvivesAFailover(
   const prefix = freshPrefix();
   const failures: Reported[] = [];
   const gaps: Reported[] = [];
-  const transport = createRedisTransport({
-    client,
-    prefix,
-    onError: (error, operation) =>
-      failures.push({ at: Date.now(), what: `${operation}: ${String(error)}` }),
-  });
+  const report: RedisErrorHook = (error, operation) => {
+    failures.push({ at: Date.now(), what: `${operation}: ${String(error)}` });
+  };
+  const transport = createRedisTransport({ client, prefix, onError: report });
   const seen: StoredEntry[] = [];
 
   try {
@@ -283,7 +285,14 @@ export async function readerSurvivesAFailover(
 
     const readable = await vi.waitFor(() => transport.tail(), { timeout: left(), interval: 100 });
     const usable = Date.now();
-    const sends = await publishedOnce(transport, tick("after"), readable, left);
+    const sends = await publishedOnce(tick("after"), {
+      client,
+      prefix,
+      log: transport,
+      after: readable,
+      left,
+      onError: report,
+    });
     const published = Date.now();
 
     await vi.waitFor(() => expect(seen).toHaveLength(2), { timeout: left(), interval: 25 });
@@ -321,6 +330,20 @@ export async function readerSurvivesAFailover(
 const AFTER_THE_POSITION_HELD = 10;
 
 /**
+ * Where `publishedOnce` sends and asks: the client and Prefix each send's Publisher is opened on,
+ * the case's Transport for the read — a Publisher has none — the position held before the send,
+ * what is left of the budget, and where a failed send is reported so the case still prints it.
+ */
+interface PublishingOn {
+  client: RedisClientLike;
+  prefix: string;
+  log: Transport;
+  after: Cursor;
+  left: () => number;
+  onError: RedisErrorHook;
+}
+
+/**
  * Publish one Entry exactly once **on the log**, which is not what sending one `XADD` gives you
  * (#86).
  *
@@ -337,31 +360,52 @@ const AFTER_THE_POSITION_HELD = 10;
  * when the log does not hold it. A blind retry would put it in the log twice, and a duplicate is
  * the one thing the assertion below could not tell apart from a hole.
  *
+ * Asking the log is only sound once the send it asks about has settled, and a rejection by our
+ * own deadline is not that: node-redis's Sentinel client keeps an `XADD` the demoted master
+ * refused with `READONLY` and re-routes it after its own reset — which sleeps a second at a time
+ * while the sentinel still reports the failover — and a deadline that fires meanwhile cannot
+ * cancel it. The read then resumes on the new master ahead of the parked `XADD`, finds nothing,
+ * and the second send lands beside the first: two "after"s, the flake this was rewritten for.
+ * So each send goes through a Publisher of its own, on the same client and Prefix, whose
+ * deadline is all that is left of the budget: a rejection before the budget is spent is then
+ * the client giving up on the command itself, with nothing left in flight to overtake, and one
+ * at the end of it is thrown, never followed by a read.
+ *
  * It buys no time it was not given: every attempt is inside the same end-to-end budget, and the
  * failure the budget ran out on is the one that is thrown. What it answers is how many sends it
  * took, which the case prints — a run that needed a second one is exactly the run this exists
  * for, and it should be visible rather than smoothed away.
  */
-async function publishedOnce(
-  transport: Transport,
-  entry: Entry,
-  after: Cursor,
-  left: () => number,
-): Promise<number> {
+async function publishedOnce(entry: Entry, on: PublishingOn): Promise<number> {
+  let failed: unknown = new Error("the failover budget ran out before the Entry could be sent");
+
   for (let sends = 1; ; sends++) {
+    const budget = on.left();
+    if (budget <= 0) throw failed;
+
+    const publisher = createRedisPublisher({
+      client: on.client,
+      prefix: on.prefix,
+      operationTimeout: budget,
+      onError: on.onError,
+    });
+
     try {
-      await transport.publish(entry);
+      await publisher.publish(entry);
 
       return sends;
     } catch (error) {
-      if (left() <= 0) throw error;
+      if (on.left() <= 0) throw error;
+      failed = error;
 
-      const page = await vi.waitFor(() => transport.read(after, AFTER_THE_POSITION_HELD), {
-        timeout: left(),
+      const page = await vi.waitFor(() => on.log.read(on.after, AFTER_THE_POSITION_HELD), {
+        timeout: on.left(),
         interval: 100,
       });
 
       if (!("gone" in page) && page.entries.some((stored) => sameTick(stored, entry))) return sends;
+    } finally {
+      await publisher.close();
     }
   }
 }
